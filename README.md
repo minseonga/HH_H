@@ -27,6 +27,8 @@ pip install -e .
 
 Dowload coco train2014 and val2014 images from [here](https://cocodataset.org/#download) and put them in `dataset/coco`.
 
+Please uncomment `self._validate_model_kwargs(model_kwargs.copy())` in transformers/generation/utils.py in the source code of your installed transformers. This step is required because some model_kwargs parameters in our source code were newly added and aren't yet supported in the Transformers package.
+
 ```
 sh ./bash_scripts/attribute.sh
 ```
