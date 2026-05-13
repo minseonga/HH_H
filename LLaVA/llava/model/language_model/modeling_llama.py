@@ -580,6 +580,20 @@ class LlamaAttention(nn.Module):
                     if aggre_attention >= self.config.adhh_threshold:
                         attn_weights[:, head, -1, self.config.img_start_pos+self.config.img_length:] = 0
 
+        # Soft routing variant of AD-HH: keep the same fixed heads and threshold,
+        # but continuously downscale text attention instead of zeroing it.
+        if getattr(self.config, "soft_deactivate", False):
+            if head_list is not None:
+                text_start_idx = self.config.img_start_pos + self.config.img_length
+                temperature = max(float(getattr(self.config, "soft_temperature", 0.05)), 1e-6)
+                gamma = float(getattr(self.config, "soft_gamma", 0.5))
+                threshold = float(getattr(self.config, "adhh_threshold", 0.0))
+                for head in head_list:
+                    text_attention = attn_weights[:, head, -1, text_start_idx:]
+                    text_mass = torch.sum(text_attention, dim=-1, keepdim=True)
+                    alpha = torch.sigmoid((text_mass - threshold) / temperature).to(attn_weights.dtype)
+                    text_attention *= (1.0 - gamma * alpha)
+
         # TODO: add attention reweighting code here
         if getattr(self.config, "reweight_text", False) and head_list is not None:
             text_start_idx = self.config.img_start_pos + self.config.img_length
@@ -1666,4 +1680,3 @@ class LlamaForSequenceClassification(LlamaPreTrainedModel):
             hidden_states=transformer_outputs.hidden_states,
             attentions=transformer_outputs.attentions,
         )
-

@@ -136,7 +136,7 @@ def eval_model(args):
 
     data_loader = create_data_loader(questions, args.image_folder, tokenizer, image_processor, model.config)
 
-    if args.adaptive_deactivate:
+    if args.adaptive_deactivate or args.soft_deactivate:
         if model_path == 'liuhaotian/llava-v1.5-7b':
             model.config.hal_attention_heads = [[16, 29], [26, 9], [13, 31], [15, 10], [20, 12], [30, 9], [19, 18], [17, 0], [18, 9], [26, 28], \
                             [19, 27], [18, 26], [15, 25], [14, 16], [31, 26], [15, 24], [31, 3], [22, 20], [27, 29], [17, 28]]
@@ -156,7 +156,12 @@ def eval_model(args):
             model.config.img_length = 1948
 
         model.config.adhh_threshold = args.adhh_threshold
-        model.config.adaptive_deactivate = True
+        if args.adaptive_deactivate:
+            model.config.adaptive_deactivate = True
+        if args.soft_deactivate:
+            model.config.soft_deactivate = True
+            model.config.soft_gamma = args.soft_gamma
+            model.config.soft_temperature = args.soft_temperature
 
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
@@ -220,9 +225,13 @@ if __name__ == "__main__":
     parser.add_argument("--max_new_tokens", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--adaptive_deactivate", action='store_true', default=False)
+    parser.add_argument("--soft_deactivate", action='store_true', default=False)
     parser.add_argument("--adhh_threshold", type=float, default=0.0)
+    parser.add_argument("--soft_gamma", type=float, default=0.5)
+    parser.add_argument("--soft_temperature", type=float, default=0.05)
 
     args = parser.parse_args()
+    if args.adaptive_deactivate and args.soft_deactivate:
+        raise ValueError("--adaptive_deactivate and --soft_deactivate are mutually exclusive")
     set_seed(args.seed)
     eval_model(args)
-

@@ -59,6 +59,9 @@ if __name__ == "__main__":
 
     results = evaluator.evaluation_report
     cap_dict['overall_metrics']['Bleu'] = results['Bleu']
+    cap_dict['overall_metrics']['avg_caption_length'] = float(
+        np.mean([len(output.split()) for output in outputs])
+    )
 
     # save to json pretty print
     chair_json_path = args.answers_file.replace('.jsonl', '_eval_results.json')
@@ -68,4 +71,3 @@ if __name__ == "__main__":
         json.dump(cap_dict, f, indent=4)
 
     print(cap_dict['overall_metrics'])
-
