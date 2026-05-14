@@ -300,7 +300,7 @@ def main():
                 coco, image_id, args.image_folder, tokenizer, image_processor, model.config, args.conv_mode
             )
             input_ids = input_ids.to(device="cuda", non_blocking=True).unsqueeze(0)
-            image_tensor = image_tensor.to(dtype=torch.float16, device="cuda", non_blocking=True)
+            image_tensor = image_tensor.to(dtype=torch.float16, device="cuda", non_blocking=True).unsqueeze(0)
 
             hard_tokens, hard_text = generate_sequence(model, tokenizer, input_ids, image_tensor, image_size, "hard", args)
             soft_tokens, soft_text = generate_sequence(model, tokenizer, input_ids, image_tensor, image_size, "soft", args)
