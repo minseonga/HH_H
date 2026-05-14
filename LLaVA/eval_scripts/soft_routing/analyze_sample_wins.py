@@ -45,6 +45,10 @@ def object_metrics(item):
         "correct_object_mention_count": len(correct_nodes),
         "hallucinated_object_mention_count": len(hallucinated_nodes),
         "caption_length": len(item.get("caption", "").split()),
+        "gt_objects": " ".join(sorted(gt_objects)),
+        "correct_objects": " ".join(sorted(correct_set)),
+        "hallucinated_objects": " ".join(sorted(hallucinated_set)),
+        "generated_objects": " ".join(sorted(generated_set)),
     }
 
 
@@ -94,7 +98,15 @@ def close(a, b, eps):
     return abs(float(a) - float(b)) <= eps
 
 
-def classify(hard, soft, greedy=None, eps=1e-9):
+def classify(
+    hard,
+    soft,
+    greedy=None,
+    eps=1e-9,
+    min_chair_i_delta=0.0,
+    min_recall_delta=0.0,
+    min_bleu4_delta=0.0,
+):
     hard_chair = hard["chair_i"]
     soft_chair = soft["chair_i"]
     hard_recall = hard["object_recall"]
@@ -102,22 +114,25 @@ def classify(hard, soft, greedy=None, eps=1e-9):
     hard_bleu = hard.get("bleu4")
     soft_bleu = soft.get("bleu4")
 
-    if soft_chair < hard_chair - eps:
+    if soft_chair < hard_chair - max(eps, min_chair_i_delta):
         return "soft_win", "lower_chair_i"
-    if close(soft_chair, hard_chair, eps) and soft_recall > hard_recall + eps:
+    if close(soft_chair, hard_chair, eps) and soft_recall > hard_recall + max(eps, min_recall_delta):
         return "soft_win", "same_chair_i_higher_recall"
     if (
         close(soft_chair, hard_chair, eps)
         and close(soft_recall, hard_recall, eps)
         and hard_bleu is not None
         and soft_bleu is not None
-        and soft_bleu > hard_bleu + eps
+        and soft_bleu > hard_bleu + max(eps, min_bleu4_delta)
     ):
         return "soft_win", "same_chair_i_recall_higher_bleu4"
 
-    if hard_chair < soft_chair - eps and hard_recall >= soft_recall - eps:
+    if hard_chair < soft_chair - max(eps, min_chair_i_delta) and hard_recall >= soft_recall - eps:
         return "hard_win", "lower_chair_i_recall_not_worse"
-    if hard_chair < soft_chair - eps and hard_recall < soft_recall - eps:
+    if (
+        hard_chair < soft_chair - max(eps, min_chair_i_delta)
+        and hard_recall < soft_recall - max(eps, min_recall_delta)
+    ):
         return "hard_tradeoff", "lower_chair_i_lower_recall"
 
     if greedy is not None:
@@ -131,7 +146,15 @@ def classify(hard, soft, greedy=None, eps=1e-9):
     return "tie", "near_equal"
 
 
-def build_rows(greedy_results, hard_results, soft_results, eps):
+def build_rows(
+    greedy_results,
+    hard_results,
+    soft_results,
+    eps,
+    min_chair_i_delta,
+    min_recall_delta,
+    min_bleu4_delta,
+):
     image_ids = sorted(set(hard_results) & set(soft_results), key=lambda x: int(x))
     if greedy_results is not None:
         image_ids = [image_id for image_id in image_ids if image_id in greedy_results]
@@ -151,7 +174,15 @@ def build_rows(greedy_results, hard_results, soft_results, eps):
         if greedy_metrics is not None:
             greedy_metrics["bleu4"] = greedy_item.get("bleu4")
 
-        winner, reason = classify(hard_metrics, soft_metrics, greedy_metrics, eps=eps)
+        winner, reason = classify(
+            hard_metrics,
+            soft_metrics,
+            greedy_metrics,
+            eps=eps,
+            min_chair_i_delta=min_chair_i_delta,
+            min_recall_delta=min_recall_delta,
+            min_bleu4_delta=min_bleu4_delta,
+        )
 
         row = {
             "image_id": image_id,
@@ -203,6 +234,11 @@ def write_csv(path, rows):
         "hard_bleu4",
         "soft_bleu4",
         "delta_bleu4_soft_minus_hard",
+        "hard_gt_objects",
+        "hard_correct_objects",
+        "hard_hallucinated_objects",
+        "soft_correct_objects",
+        "soft_hallucinated_objects",
         "hard_caption",
         "soft_caption",
         "greedy_caption",
@@ -251,6 +287,9 @@ def main():
     parser.add_argument("--annotation-file", default=None)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--eps", type=float, default=1e-9)
+    parser.add_argument("--min-chair-i-delta", type=float, default=0.0)
+    parser.add_argument("--min-recall-delta", type=float, default=0.0)
+    parser.add_argument("--min-bleu4-delta", type=float, default=0.0)
     parser.add_argument("--top-k", type=int, default=20)
     args = parser.parse_args()
 
@@ -263,7 +302,15 @@ def main():
     if greedy_results is not None:
         add_bleu4(greedy_results, args.annotation_file)
 
-    rows = build_rows(greedy_results, hard_results, soft_results, eps=args.eps)
+    rows = build_rows(
+        greedy_results,
+        hard_results,
+        soft_results,
+        eps=args.eps,
+        min_chair_i_delta=args.min_chair_i_delta,
+        min_recall_delta=args.min_recall_delta,
+        min_bleu4_delta=args.min_bleu4_delta,
+    )
     os.makedirs(args.output_dir, exist_ok=True)
 
     write_jsonl(os.path.join(args.output_dir, "sample_comparison.jsonl"), rows)
