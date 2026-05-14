@@ -136,7 +136,7 @@ def eval_model(args):
 
     data_loader = create_data_loader(questions, args.image_folder, tokenizer, image_processor, model.config)
 
-    if args.adaptive_deactivate or args.soft_deactivate:
+    if args.adaptive_deactivate or args.soft_deactivate or args.dynamic_deactivate:
         if model_path == 'liuhaotian/llava-v1.5-7b':
             model.config.hal_attention_heads = [[16, 29], [26, 9], [13, 31], [15, 10], [20, 12], [30, 9], [19, 18], [17, 0], [18, 9], [26, 28], \
                             [19, 27], [18, 26], [15, 25], [14, 16], [31, 26], [15, 24], [31, 3], [22, 20], [27, 29], [17, 28]]
@@ -162,6 +162,14 @@ def eval_model(args):
             model.config.soft_deactivate = True
             model.config.soft_gamma = args.soft_gamma
             model.config.soft_temperature = args.soft_temperature
+        if args.dynamic_deactivate:
+            model.config.dynamic_deactivate = True
+            model.config.dynamic_gamma = args.dynamic_gamma
+            model.config.dynamic_temperature = args.dynamic_temperature
+            model.config.dynamic_margin_weight = args.dynamic_margin_weight
+            model.config.dynamic_ratio_weight = args.dynamic_ratio_weight
+            model.config.dynamic_consensus_weight = args.dynamic_consensus_weight
+            model.config.dynamic_bias = args.dynamic_bias
 
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
@@ -226,12 +234,19 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--adaptive_deactivate", action='store_true', default=False)
     parser.add_argument("--soft_deactivate", action='store_true', default=False)
+    parser.add_argument("--dynamic_deactivate", action='store_true', default=False)
     parser.add_argument("--adhh_threshold", type=float, default=0.0)
     parser.add_argument("--soft_gamma", type=float, default=0.5)
     parser.add_argument("--soft_temperature", type=float, default=0.05)
+    parser.add_argument("--dynamic_gamma", type=float, default=1.0)
+    parser.add_argument("--dynamic_temperature", type=float, default=0.05)
+    parser.add_argument("--dynamic_margin_weight", type=float, default=1.0)
+    parser.add_argument("--dynamic_ratio_weight", type=float, default=0.25)
+    parser.add_argument("--dynamic_consensus_weight", type=float, default=0.5)
+    parser.add_argument("--dynamic_bias", type=float, default=0.0)
 
     args = parser.parse_args()
-    if args.adaptive_deactivate and args.soft_deactivate:
-        raise ValueError("--adaptive_deactivate and --soft_deactivate are mutually exclusive")
+    if sum([args.adaptive_deactivate, args.soft_deactivate, args.dynamic_deactivate]) > 1:
+        raise ValueError("--adaptive_deactivate, --soft_deactivate, and --dynamic_deactivate are mutually exclusive")
     set_seed(args.seed)
     eval_model(args)
