@@ -24,6 +24,7 @@ RUN_GENERATION="${RUN_GENERATION:-1}"
 RUN_STRICT_ANALYSIS="${RUN_STRICT_ANALYSIS:-1}"
 RUN_DIVERGENCE="${RUN_DIVERGENCE:-1}"
 RUN_AUC="${RUN_AUC:-1}"
+RUN_TOKEN_ANALYSIS="${RUN_TOKEN_ANALYSIS:-1}"
 RUN_DYNAMIC_EVAL="${RUN_DYNAMIC_EVAL:-1}"
 FORCE="${FORCE:-0}"
 
@@ -144,6 +145,14 @@ run_auc() {
         --output-dir "${diag_dir}/feature_auc"
 }
 
+run_token_analysis() {
+    local diag_dir="${BASE_RESULT_PATH}/diagnostics_hard_vs_soft${BEST_SOFT_GAMMA}"
+    echo "[run] token-level first-divergence analysis"
+    python -m eval_scripts.soft_routing.analyze_token_diagnostics \
+        --diagnostics-jsonl "${diag_dir}/first_divergence.jsonl" \
+        --output-dir "${diag_dir}/token_analysis"
+}
+
 run_dynamic_eval() {
     local dyn_tag="dynamic_v1_g${DYNAMIC_GAMMA}_m${DYNAMIC_MARGIN_WEIGHT}_r${DYNAMIC_RATIO_WEIGHT}_c${DYNAMIC_CONSENSUS_WEIGHT}_b${DYNAMIC_BIAS}"
     local result_path="${BASE_RESULT_PATH}/${dyn_tag}"
@@ -213,6 +222,9 @@ if [ "${RUN_DIVERGENCE}" = "1" ]; then
 fi
 if [ "${RUN_AUC}" = "1" ]; then
     run_auc
+fi
+if [ "${RUN_TOKEN_ANALYSIS}" = "1" ]; then
+    run_token_analysis
 fi
 if [ "${RUN_DYNAMIC_EVAL}" = "1" ]; then
     run_dynamic_eval
