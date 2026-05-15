@@ -42,6 +42,14 @@ def json_custom_serializer(obj):
     else:
         raise TypeError("Type %s not serializable" % type(obj))
 
+
+def score_item(difference, layer_idx, head_idx):
+    return {
+        "layer": int(layer_idx),
+        "head": int(head_idx),
+        "score": float(difference[layer_idx][head_idx].item()),
+    }
+
 # Custom dataset class
 class CustomDataset(Dataset):
     def __init__(self, questions, image_folder, tokenizer, image_processor, model_config):
@@ -228,11 +236,20 @@ def get_constrative_influence(args):
 
     results = {}
     _, flat_indices = torch.topk(difference.flatten(), args.topk, largest=True)
-    indices = [[flat_indice.numpy() // 32, flat_indice.numpy() % 32] for flat_indice in flat_indices]
+    indices = [[int(flat_indice.item()) // args.head_num, int(flat_indice.item()) % args.head_num] for flat_indice in flat_indices]
     results.update({'hal_heads': indices})
+    results.update({'hal_head_scores': [score_item(difference, layer_idx, head_idx) for layer_idx, head_idx in indices]})
     _, flat_indices = torch.topk(difference.flatten(), args.topk, largest=False)
-    indices =  [[flat_indice.numpy() // 32, flat_indice.numpy() % 32] for flat_indice in flat_indices]
+    indices =  [[int(flat_indice.item()) // args.head_num, int(flat_indice.item()) % args.head_num] for flat_indice in flat_indices]
     results.update({'non_hal_heads': indices})
+    results.update({'non_hal_head_scores': [score_item(difference, layer_idx, head_idx) for layer_idx, head_idx in indices]})
+    results.update({
+        'contrastive_scores': [
+            score_item(difference, layer_idx, head_idx)
+            for layer_idx in range(args.layer_num)
+            for head_idx in range(args.head_num)
+        ]
+    })
     print(results)
 
     print(f'{args.output_path}/attribution_result.json')

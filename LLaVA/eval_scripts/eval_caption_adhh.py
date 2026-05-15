@@ -19,6 +19,7 @@ import random
 from PIL import Image
 from transformers import set_seed
 from pycocotools.coco import COCO
+from eval_scripts.soft_routing.head_prior_utils import default_heads_for_model, load_head_priors
 
 def split_list(lst, n):
     """Split a list into n (roughly) equal-sized chunks"""
@@ -136,24 +137,27 @@ def eval_model(args):
 
     data_loader = create_data_loader(questions, args.image_folder, tokenizer, image_processor, model.config)
 
-    if args.adaptive_deactivate or args.soft_deactivate or args.dynamic_deactivate:
+    if args.adaptive_deactivate or args.soft_deactivate or args.dynamic_deactivate or args.attribution_soft_deactivate:
         if model_path == 'liuhaotian/llava-v1.5-7b':
-            model.config.hal_attention_heads = [[16, 29], [26, 9], [13, 31], [15, 10], [20, 12], [30, 9], [19, 18], [17, 0], [18, 9], [26, 28], \
-                            [19, 27], [18, 26], [15, 25], [14, 16], [31, 26], [15, 24], [31, 3], [22, 20], [27, 29], [17, 28]]
             model.config.img_start_pos = 35
             model.config.img_length = 576
         elif model_path == 'liuhaotian/llava-v1.5-13b':
-            model.config.hal_attention_heads = [[0, 8], [29, 27], [23, 18], [20, 11], [36, 26], [19, 37], [22, 16], [22, 34], [21, 31], [20, 34], \
-                                                [37, 11], [17, 25], [35, 10], [17, 5], [15, 26], [0, 22], [19, 5], [19, 0], [14, 1], [23, 20], \
-                                                [21, 6], [30, 24], [26, 27], [21, 32], [15, 28], [15, 31], [19, 30], [20, 8], [19, 14], [14, 9], 
-                                                [39, 26], [25, 1], [18, 32], [17, 27], [39, 32]]
             model.config.img_start_pos = 35
             model.config.img_length = 576
 
         elif model_path == 'liuhaotian/llava-v1.6-34b':
-            model.config.hal_attention_heads =  [[45, 34], [43, 4], [43, 48], [44, 29], [35, 47], [40, 27], [54, 34], [37, 48], [43, 2], [41, 34]]
             model.config.img_start_pos = 33
             model.config.img_length = 1948
+
+        heads, priors, prior_source = load_head_priors(
+            args.attention_head_path,
+            top_k=args.top_k,
+            prior_mode=args.head_prior_mode,
+            default_heads=default_heads_for_model(model_path),
+        )
+        model.config.hal_attention_heads = heads
+        model.config.head_attribution_priors = priors
+        model.config.head_attribution_prior_source = prior_source
 
         model.config.adhh_threshold = args.adhh_threshold
         if args.adaptive_deactivate:
@@ -170,6 +174,16 @@ def eval_model(args):
             model.config.dynamic_ratio_weight = args.dynamic_ratio_weight
             model.config.dynamic_consensus_weight = args.dynamic_consensus_weight
             model.config.dynamic_bias = args.dynamic_bias
+        if args.attribution_soft_deactivate:
+            model.config.attribution_soft_deactivate = True
+            model.config.attribution_soft_gamma = args.attribution_soft_gamma
+            model.config.attribution_soft_mode = args.attribution_soft_mode
+            model.config.attribution_tau_low = args.attribution_tau_low
+            model.config.attribution_tau_high = args.attribution_tau_high
+            if args.head_thresholds_path:
+                with open(args.head_thresholds_path, "r") as f:
+                    threshold_data = json.load(f)
+                model.config.head_text_thresholds = threshold_data.get("head_text_thresholds", threshold_data)
 
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
@@ -235,7 +249,11 @@ if __name__ == "__main__":
     parser.add_argument("--adaptive_deactivate", action='store_true', default=False)
     parser.add_argument("--soft_deactivate", action='store_true', default=False)
     parser.add_argument("--dynamic_deactivate", action='store_true', default=False)
+    parser.add_argument("--attribution_soft_deactivate", action='store_true', default=False)
     parser.add_argument("--adhh_threshold", type=float, default=0.0)
+    parser.add_argument("--attention_head_path", type=str, default="")
+    parser.add_argument("--top_k", type=int, default=20)
+    parser.add_argument("--head_prior_mode", type=str, default="auto", choices=["auto", "score", "rank", "uniform"])
     parser.add_argument("--soft_gamma", type=float, default=0.5)
     parser.add_argument("--soft_temperature", type=float, default=0.05)
     parser.add_argument("--dynamic_gamma", type=float, default=1.0)
@@ -244,9 +262,14 @@ if __name__ == "__main__":
     parser.add_argument("--dynamic_ratio_weight", type=float, default=0.25)
     parser.add_argument("--dynamic_consensus_weight", type=float, default=0.5)
     parser.add_argument("--dynamic_bias", type=float, default=0.0)
+    parser.add_argument("--attribution_soft_gamma", type=float, default=1.0)
+    parser.add_argument("--attribution_soft_mode", type=str, default="linear", choices=["linear", "sqrt", "quadratic", "budget"])
+    parser.add_argument("--attribution_tau_low", type=float, default=0.4)
+    parser.add_argument("--attribution_tau_high", type=float, default=0.9)
+    parser.add_argument("--head_thresholds_path", type=str, default="")
 
     args = parser.parse_args()
-    if sum([args.adaptive_deactivate, args.soft_deactivate, args.dynamic_deactivate]) > 1:
-        raise ValueError("--adaptive_deactivate, --soft_deactivate, and --dynamic_deactivate are mutually exclusive")
+    if sum([args.adaptive_deactivate, args.soft_deactivate, args.dynamic_deactivate, args.attribution_soft_deactivate]) > 1:
+        raise ValueError("Only one intervention mode can be enabled")
     set_seed(args.seed)
     eval_model(args)

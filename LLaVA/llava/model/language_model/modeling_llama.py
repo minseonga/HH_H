@@ -630,6 +630,51 @@ class LlamaAttention(nn.Module):
                     strength = gamma * torch.sigmoid(risk).to(attn_weights.dtype)
                     attn_weights[:, head, -1, text_start_idx:] *= (1.0 - strength)
 
+        if getattr(self.config, "attribution_soft_deactivate", False):
+            if head_list is not None:
+                text_start_idx = self.config.img_start_pos + self.config.img_length
+                priors = getattr(self.config, "head_attribution_priors", {})
+                thresholds = getattr(self.config, "head_text_thresholds", {})
+                gamma = float(getattr(self.config, "attribution_soft_gamma", 1.0))
+                mode = getattr(self.config, "attribution_soft_mode", "linear")
+                default_low = float(getattr(self.config, "attribution_tau_low", getattr(self.config, "adhh_threshold", 0.4)))
+                default_high = float(getattr(self.config, "attribution_tau_high", 0.9))
+                eps = float(getattr(self.config, "attribution_soft_eps", 1e-6))
+                head_values = []
+                for head in head_list:
+                    key = f"{int(self.layer_idx)}:{int(head)}"
+                    prior = float(priors.get(key, 1.0))
+                    threshold = thresholds.get(key, {})
+                    low = float(threshold.get("low", default_low))
+                    high = float(threshold.get("high", default_high))
+                    if high <= low:
+                        high = low + eps
+                    text_attention = attn_weights[:, head, -1, text_start_idx:]
+                    text_mass = torch.sum(text_attention, dim=-1, keepdim=True)
+                    excess = torch.clamp((text_mass - low) / (high - low), min=0.0, max=1.0)
+                    if mode == "sqrt":
+                        shaped = torch.sqrt(excess)
+                    elif mode == "quadratic":
+                        shaped = excess * excess
+                    else:
+                        shaped = excess
+                    head_values.append((head, text_attention, prior, excess, shaped))
+
+                budget = None
+                if mode == "budget":
+                    weighted_active = []
+                    for _, _, prior, excess, shaped in head_values:
+                        weighted_active.append((excess > 0).to(attn_weights.dtype) * prior)
+                    budget = torch.sqrt(torch.stack(weighted_active, dim=0).sum(dim=0) + eps)
+
+                for head, text_attention, prior, excess, shaped in head_values:
+                    if mode == "budget":
+                        strength = gamma * prior * excess / budget
+                    else:
+                        strength = gamma * prior * shaped
+                    strength = torch.clamp(strength, min=0.0, max=1.0).to(attn_weights.dtype)
+                    text_attention *= (1.0 - strength)
+
         if getattr(self.config, "record_intervention_diagnostics", False):
             if head_list is not None:
                 img_slice = slice(self.config.img_start_pos, self.config.img_start_pos + self.config.img_length)
@@ -637,15 +682,19 @@ class LlamaAttention(nn.Module):
                 threshold = float(getattr(self.config, "adhh_threshold", 0.0))
                 soft_temperature = max(float(getattr(self.config, "soft_temperature", 0.05)), 1e-6)
                 soft_gamma = float(getattr(self.config, "soft_gamma", 0.5))
+                priors = getattr(self.config, "head_attribution_priors", {})
                 records = getattr(self.config, "intervention_diagnostics", None)
                 if records is not None:
                     for head in head_list:
+                        key = f"{int(self.layer_idx)}:{int(head)}"
                         text_mass = torch.sum(attn_weights[:, head, -1, text_start_idx:]).detach().float().cpu().item()
                         img_mass = torch.sum(attn_weights[:, head, -1, img_slice]).detach().float().cpu().item()
                         soft_alpha = torch.sigmoid(torch.tensor((text_mass - threshold) / soft_temperature)).item()
                         records.append({
                             "layer": int(self.layer_idx) if self.layer_idx is not None else -1,
                             "head": int(head),
+                            "head_key": key,
+                            "attribution_prior": float(priors.get(key, 1.0)),
                             "text_mass": text_mass,
                             "img_mass": img_mass,
                             "margin": text_mass - threshold,
