@@ -104,7 +104,13 @@ def eval_model(args):
     disable_torch_init()
     model_path = os.path.expanduser(args.model_path)
     model_name = get_model_name_from_path(model_path)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
+    tokenizer, model, image_processor, context_len = load_pretrained_model(
+        model_path,
+        args.model_base,
+        model_name,
+        load_8bit=args.load_8bit,
+        load_4bit=args.load_4bit,
+    )
 
     questions = []
     sampled_img_ids = []
@@ -272,6 +278,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", type=str, default="facebook/opt-350m")
     parser.add_argument("--model-base", type=str, default=None)
+    parser.add_argument("--load-8bit", action="store_true", default=False)
+    parser.add_argument("--load-4bit", action="store_true", default=False)
     parser.add_argument("--image-folder", type=str, default="")
     parser.add_argument("--image-split", type=str, default="train2014")
     parser.add_argument("--annotation-dir", type=str, default="")

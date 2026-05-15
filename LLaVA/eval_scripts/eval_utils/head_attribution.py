@@ -125,7 +125,10 @@ def zero_ablation_greedy_search(
         next_tokens = torch.argmax(next_tokens_scores, dim=-1).detach()
         next_word = tokenizer.decode(next_tokens)
         original_probs = F.softmax(next_token_logits, dim=-1)
-        original_log_probs = F.log_softmax(next_token_logits, dim=-1)
+        original_log_probs = F.log_softmax(next_token_logits, dim=-1) if model_kwargs['influence_score'] == 'log_prob_diff' else None
+        target_token = next_tokens[0]
+        original_prob = original_probs[0, target_token].item()
+        original_log_prob = original_log_probs[0, target_token].item() if original_log_probs is not None else None
 
         def custom_hook(module, input, layer_idx, head_idx):
             ablated_input = input[0]
@@ -144,31 +147,40 @@ def zero_ablation_greedy_search(
                 o_proj_module = o_proj_modules[layer_idx]
                 for head_idx in range(32):
                     hook_handle = o_proj_module.register_forward_pre_hook(attach_custom_hook(layer_idx, head_idx))
-                    # second forward pass
-                    outputs_ablated = self(
-                        **model_inputs,
-                        return_dict=True,
-                        output_attentions=False,
-                        output_hidden_states=False,
-                    )
-                    next_token_logits_ablated = outputs_ablated.logits[:, -1, :]
-                    ablated_probs = F.softmax(next_token_logits_ablated, dim=-1)
-                    ablated_log_probs = F.log_softmax(next_token_logits_ablated, dim=-1)
-
-                    if model_kwargs['influence_score'] == 'prob_diff':
-                        influence = (original_probs[0, next_tokens[0]] - ablated_probs[0, next_tokens[0]]).item()
-                    elif model_kwargs['influence_score'] == 'abs_prob_diff':
-                        influence = (original_probs[0, next_tokens[0]] - ablated_probs[0, next_tokens[0]]).abs().item()
-                    elif model_kwargs['influence_score'] == 'log_prob_diff':
-                        influence = (original_log_probs[0, next_tokens[0]] - ablated_log_probs[0, next_tokens[0]]).item()
-                    
-                    influences[layer_idx][head_idx] = {'original_prob': original_probs[0, next_tokens[0]].item(), \
-                                                        'perturbed_prob': ablated_probs[0, next_tokens[0]].item(), \
-                                                        'original_log_prob': original_log_probs[0, next_tokens[0]].item(), \
-                                                        'perturbed_log_prob': ablated_log_probs[0, next_tokens[0]].item(), \
-                                                        'influence': influence}
-                    hook_handle.remove()
-                    del outputs_ablated, next_token_logits_ablated, ablated_probs, ablated_log_probs
+                    try:
+                        # second forward pass
+                        ablated_inputs = dict(model_inputs)
+                        ablated_inputs["use_cache"] = False
+                        outputs_ablated = self(
+                            **ablated_inputs,
+                            return_dict=True,
+                            output_attentions=False,
+                            output_hidden_states=False,
+                        )
+                        next_token_logits_ablated = outputs_ablated.logits[:, -1, :]
+                        ablated_probs = F.softmax(next_token_logits_ablated, dim=-1)
+                        ablated_prob = ablated_probs[0, target_token].item()
+                        ablated_log_prob = None
+                        if model_kwargs['influence_score'] == 'prob_diff':
+                            influence = original_prob - ablated_prob
+                        elif model_kwargs['influence_score'] == 'abs_prob_diff':
+                            influence = abs(original_prob - ablated_prob)
+                        elif model_kwargs['influence_score'] == 'log_prob_diff':
+                            ablated_log_probs = F.log_softmax(next_token_logits_ablated, dim=-1)
+                            ablated_log_prob = ablated_log_probs[0, target_token].item()
+                            influence = original_log_prob - ablated_log_prob
+                            del ablated_log_probs
+                        else:
+                            raise ValueError(f"Unknown influence_score={model_kwargs['influence_score']}")
+                        
+                        influences[layer_idx][head_idx] = {'original_prob': original_prob, \
+                                                            'perturbed_prob': ablated_prob, \
+                                                            'original_log_prob': original_log_prob, \
+                                                            'perturbed_log_prob': ablated_log_prob, \
+                                                            'influence': influence}
+                    finally:
+                        hook_handle.remove()
+                    del outputs_ablated, next_token_logits_ablated, ablated_probs
 
             if next_word in model_kwargs['hallucinated_tokens']:
                 hallucination_influences[f'{next_word}_{count}'] = influences
