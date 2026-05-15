@@ -19,7 +19,7 @@ from transformers.generation.utils import GenerateNonBeamOutput, GenerateEncoder
 tokenizer = transformers.AutoTokenizer.from_pretrained("liuhaotian/llava-v1.5-7b", use_fast=False)
 
 _ORIGINAL_VALIDATE_MODEL_KWARGS = transformers.generation.utils.GenerationMixin._validate_model_kwargs
-_ATTRIBUTION_KWARGS = {"hallucinated_tokens", "non_hallucinated_tokens", "influence_score"}
+_ATTRIBUTION_KWARGS = {"hallucinated_tokens", "non_hallucinated_tokens", "influence_score", "candidate_heads"}
 
 
 def validate_model_kwargs_with_attribution(self, model_kwargs):
@@ -99,6 +99,13 @@ def zero_ablation_greedy_search(
     for name, module in self.model.named_modules():
         if 'o_proj' in name:
             o_proj_modules.append(module)
+    num_layers = len(o_proj_modules)
+    num_heads = self.config.num_attention_heads
+    candidate_heads = model_kwargs.get("candidate_heads")
+    if candidate_heads is None:
+        heads_to_ablate = [(layer_idx, head_idx) for layer_idx in range(num_layers) for head_idx in range(num_heads)]
+    else:
+        heads_to_ablate = [(int(layer_idx), int(head_idx)) for layer_idx, head_idx in candidate_heads]
     
     while True:
         if synced_gpus:
@@ -142,44 +149,52 @@ def zero_ablation_greedy_search(
             return hook_fn
 
         if next_word in model_kwargs['hallucinated_tokens'] or next_word in model_kwargs['non_hallucinated_tokens']:
-            influences = [[[] for _ in range(32)] for _ in range(32)]
-            for layer_idx in range(32):
+            default_influence = {
+                'original_prob': original_prob,
+                'perturbed_prob': original_prob,
+                'original_log_prob': original_log_prob,
+                'perturbed_log_prob': original_log_prob,
+                'influence': 0.0,
+            }
+            influences = [[dict(default_influence) for _ in range(num_heads)] for _ in range(num_layers)]
+            for layer_idx, head_idx in heads_to_ablate:
+                if layer_idx >= num_layers or head_idx >= num_heads:
+                    continue
                 o_proj_module = o_proj_modules[layer_idx]
-                for head_idx in range(32):
-                    hook_handle = o_proj_module.register_forward_pre_hook(attach_custom_hook(layer_idx, head_idx))
-                    try:
-                        # second forward pass
-                        ablated_inputs = dict(model_inputs)
-                        outputs_ablated = self(
-                            **ablated_inputs,
-                            return_dict=True,
-                            output_attentions=False,
-                            output_hidden_states=False,
-                        )
-                        next_token_logits_ablated = outputs_ablated.logits[:, -1, :]
-                        ablated_probs = F.softmax(next_token_logits_ablated, dim=-1)
-                        ablated_prob = ablated_probs[0, target_token].item()
-                        ablated_log_prob = None
-                        if model_kwargs['influence_score'] == 'prob_diff':
-                            influence = original_prob - ablated_prob
-                        elif model_kwargs['influence_score'] == 'abs_prob_diff':
-                            influence = abs(original_prob - ablated_prob)
-                        elif model_kwargs['influence_score'] == 'log_prob_diff':
-                            ablated_log_probs = F.log_softmax(next_token_logits_ablated, dim=-1)
-                            ablated_log_prob = ablated_log_probs[0, target_token].item()
-                            influence = original_log_prob - ablated_log_prob
-                            del ablated_log_probs
-                        else:
-                            raise ValueError(f"Unknown influence_score={model_kwargs['influence_score']}")
-                        
-                        influences[layer_idx][head_idx] = {'original_prob': original_prob, \
-                                                            'perturbed_prob': ablated_prob, \
-                                                            'original_log_prob': original_log_prob, \
-                                                            'perturbed_log_prob': ablated_log_prob, \
-                                                            'influence': influence}
-                    finally:
-                        hook_handle.remove()
-                    del outputs_ablated, next_token_logits_ablated, ablated_probs
+                hook_handle = o_proj_module.register_forward_pre_hook(attach_custom_hook(layer_idx, head_idx))
+                try:
+                    # second forward pass
+                    ablated_inputs = dict(model_inputs)
+                    outputs_ablated = self(
+                        **ablated_inputs,
+                        return_dict=True,
+                        output_attentions=False,
+                        output_hidden_states=False,
+                    )
+                    next_token_logits_ablated = outputs_ablated.logits[:, -1, :]
+                    ablated_probs = F.softmax(next_token_logits_ablated, dim=-1)
+                    ablated_prob = ablated_probs[0, target_token].item()
+                    ablated_log_prob = None
+                    if model_kwargs['influence_score'] == 'prob_diff':
+                        influence = original_prob - ablated_prob
+                    elif model_kwargs['influence_score'] == 'abs_prob_diff':
+                        influence = abs(original_prob - ablated_prob)
+                    elif model_kwargs['influence_score'] == 'log_prob_diff':
+                        ablated_log_probs = F.log_softmax(next_token_logits_ablated, dim=-1)
+                        ablated_log_prob = ablated_log_probs[0, target_token].item()
+                        influence = original_log_prob - ablated_log_prob
+                        del ablated_log_probs
+                    else:
+                        raise ValueError(f"Unknown influence_score={model_kwargs['influence_score']}")
+                    
+                    influences[layer_idx][head_idx] = {'original_prob': original_prob, \
+                                                        'perturbed_prob': ablated_prob, \
+                                                        'original_log_prob': original_log_prob, \
+                                                        'perturbed_log_prob': ablated_log_prob, \
+                                                        'influence': influence}
+                finally:
+                    hook_handle.remove()
+                del outputs_ablated, next_token_logits_ablated, ablated_probs
 
             if next_word in model_kwargs['hallucinated_tokens']:
                 hallucination_influences[f'{next_word}_{count}'] = influences

@@ -21,6 +21,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 from eval_scripts.eval_utils.head_attribution import set_zero_ablation_greedy_search
+from eval_scripts.soft_routing.head_prior_utils import load_head_priors
 set_zero_ablation_greedy_search()
 
 def split_list(lst, n):
@@ -49,6 +50,13 @@ def score_item(difference, layer_idx, head_idx):
         "head": int(head_idx),
         "score": float(difference[layer_idx][head_idx].item()),
     }
+
+
+def load_candidate_heads(args):
+    if not args.candidate_head_path:
+        return None
+    heads, _, _ = load_head_priors(args.candidate_head_path, top_k=args.candidate_topk)
+    return [[int(layer_idx), int(head_idx)] for layer_idx, head_idx in heads]
 
 # Custom dataset class
 class CustomDataset(Dataset):
@@ -142,6 +150,9 @@ def eval_model(args):
         print(f'It seems that this is a plain model, but it is not using a mmtag prompt, auto switching to {args.conv_mode}.')
 
     data_loader = create_data_loader(questions, args.image_folder, tokenizer, image_processor, model.config)
+    candidate_heads = load_candidate_heads(args)
+    if candidate_heads is not None:
+        print(f"Using {len(candidate_heads)} candidate heads for attribution: {candidate_heads}")
     os.makedirs(args.output_path, exist_ok=True)
 
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
@@ -178,6 +189,7 @@ def eval_model(args):
                 return_dict_in_generate=True, 
                 hallucinated_tokens=hallucinated_tokens, 
                 non_hallucinated_tokens=non_hallucinated_tokens,
+                candidate_heads=candidate_heads,
                 influence_score=args.influence_score)
             
         torch.save(hallucination_influences, hall_path)
@@ -213,6 +225,7 @@ def eval_model(args):
         
     
 def get_constrative_influence(args):
+    candidate_heads = load_candidate_heads(args)
 
     files = os.listdir(args.output_path)
     hallucination_samples = []
@@ -252,21 +265,32 @@ def get_constrative_influence(args):
     plt.savefig(f'{args.output_path}/constrastive_influences.png')
 
     results = {}
-    _, flat_indices = torch.topk(difference.flatten(), args.topk, largest=True)
-    indices = [[int(flat_indice.item()) // args.head_num, int(flat_indice.item()) % args.head_num] for flat_indice in flat_indices]
-    results.update({'hal_heads': indices})
-    results.update({'hal_head_scores': [score_item(difference, layer_idx, head_idx) for layer_idx, head_idx in indices]})
-    _, flat_indices = torch.topk(difference.flatten(), args.topk, largest=False)
-    indices =  [[int(flat_indice.item()) // args.head_num, int(flat_indice.item()) % args.head_num] for flat_indice in flat_indices]
-    results.update({'non_hal_heads': indices})
-    results.update({'non_hal_head_scores': [score_item(difference, layer_idx, head_idx) for layer_idx, head_idx in indices]})
-    results.update({
-        'contrastive_scores': [
-            score_item(difference, layer_idx, head_idx)
-            for layer_idx in range(args.layer_num)
-            for head_idx in range(args.head_num)
-        ]
-    })
+    if candidate_heads is not None:
+        candidate_scores = [score_item(difference, layer_idx, head_idx) for layer_idx, head_idx in candidate_heads]
+        hal_scores = sorted(candidate_scores, key=lambda item: item["score"], reverse=True)
+        non_hal_scores = sorted(candidate_scores, key=lambda item: item["score"])
+        results.update({'hal_heads': [[item["layer"], item["head"]] for item in hal_scores]})
+        results.update({'hal_head_scores': hal_scores})
+        results.update({'non_hal_heads': [[item["layer"], item["head"]] for item in non_hal_scores]})
+        results.update({'non_hal_head_scores': non_hal_scores})
+        results.update({'contrastive_scores': candidate_scores})
+        results.update({'candidate_head_path': args.candidate_head_path})
+    else:
+        _, flat_indices = torch.topk(difference.flatten(), args.topk, largest=True)
+        indices = [[int(flat_indice.item()) // args.head_num, int(flat_indice.item()) % args.head_num] for flat_indice in flat_indices]
+        results.update({'hal_heads': indices})
+        results.update({'hal_head_scores': [score_item(difference, layer_idx, head_idx) for layer_idx, head_idx in indices]})
+        _, flat_indices = torch.topk(difference.flatten(), args.topk, largest=False)
+        indices =  [[int(flat_indice.item()) // args.head_num, int(flat_indice.item()) % args.head_num] for flat_indice in flat_indices]
+        results.update({'non_hal_heads': indices})
+        results.update({'non_hal_head_scores': [score_item(difference, layer_idx, head_idx) for layer_idx, head_idx in indices]})
+        results.update({
+            'contrastive_scores': [
+                score_item(difference, layer_idx, head_idx)
+                for layer_idx in range(args.layer_num)
+                for head_idx in range(args.head_num)
+            ]
+        })
     print(results)
 
     print(f'{args.output_path}/attribution_result.json')
@@ -297,6 +321,8 @@ if __name__ == "__main__":
     parser.add_argument("--start_idx", type=int, default=0)
     parser.add_argument("--end_idx", type=int, default=10000)
     parser.add_argument("--topk", type=int, default=30)
+    parser.add_argument("--candidate-head-path", type=str, default="")
+    parser.add_argument("--candidate-topk", type=int, default=20)
     parser.add_argument("--influence_score", type=str, default='prob_diff')
     parser.add_argument("--layer_num", type=int, default=32)
     parser.add_argument("--head_num", type=int, default=32)
