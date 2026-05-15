@@ -58,6 +58,27 @@ def load_candidate_heads(args):
     heads, _, _ = load_head_priors(args.candidate_head_path, top_k=args.candidate_topk)
     return [[int(layer_idx), int(head_idx)] for layer_idx, head_idx in heads]
 
+
+def unique_preserve_order(values):
+    seen = set()
+    output = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        output.append(value)
+    return output
+
+
+def decode_object_tokens(tokenizer, words):
+    tokens = []
+    for word in words:
+        token_ids = tokenizer(word)['input_ids']
+        if len(token_ids) < 2:
+            continue
+        tokens.append(tokenizer.decode(token_ids[1]))
+    return unique_preserve_order(tokens)
+
 # Custom dataset class
 class CustomDataset(Dataset):
     def __init__(self, questions, image_folder, tokenizer, image_processor, model_config):
@@ -168,10 +189,10 @@ def eval_model(args):
         input_ids = input_ids.to(device='cuda', non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True)
 
-        hallucinated_ids = [tokenizer(word)['input_ids'] for word in line['mscoco_hallucinated_words']]
-        hallucinated_tokens = [tokenizer.decode(hallucinated_id[1]) for hallucinated_id in hallucinated_ids]
-        non_hallucinated_ids = [tokenizer(word)['input_ids'] for word in line['mscoco_non_hallucinated_words']]
-        non_hallucinated_tokens = [tokenizer.decode(non_hallucinated_id[1]) for non_hallucinated_id in non_hallucinated_ids]
+        hallucinated_words = unique_preserve_order(line['mscoco_hallucinated_words'])
+        non_hallucinated_words = unique_preserve_order(line['mscoco_non_hallucinated_words'])
+        hallucinated_tokens = decode_object_tokens(tokenizer, hallucinated_words)
+        non_hallucinated_tokens = decode_object_tokens(tokenizer, non_hallucinated_words)
 
         with torch.inference_mode():
             _, hallucination_influences, non_hallucination_influences = model.generate(
@@ -190,6 +211,9 @@ def eval_model(args):
                 hallucinated_tokens=hallucinated_tokens, 
                 non_hallucinated_tokens=non_hallucinated_tokens,
                 candidate_heads=candidate_heads,
+                max_hall_attribution_events=args.max_hall_events_per_sample,
+                max_nonhall_attribution_events=args.max_nonhall_events_per_sample,
+                dedupe_attribution_tokens=args.dedupe_attribution_tokens,
                 influence_score=args.influence_score)
             
         torch.save(hallucination_influences, hall_path)
@@ -323,6 +347,10 @@ if __name__ == "__main__":
     parser.add_argument("--topk", type=int, default=30)
     parser.add_argument("--candidate-head-path", type=str, default="")
     parser.add_argument("--candidate-topk", type=int, default=20)
+    parser.add_argument("--max-hall-events-per-sample", type=int, default=1)
+    parser.add_argument("--max-nonhall-events-per-sample", type=int, default=3)
+    parser.add_argument("--dedupe-attribution-tokens", action="store_true", default=True)
+    parser.add_argument("--no-dedupe-attribution-tokens", dest="dedupe_attribution_tokens", action="store_false")
     parser.add_argument("--influence_score", type=str, default='prob_diff')
     parser.add_argument("--layer_num", type=int, default=32)
     parser.add_argument("--head_num", type=int, default=32)

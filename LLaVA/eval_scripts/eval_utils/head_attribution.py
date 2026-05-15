@@ -19,7 +19,15 @@ from transformers.generation.utils import GenerateNonBeamOutput, GenerateEncoder
 tokenizer = transformers.AutoTokenizer.from_pretrained("liuhaotian/llava-v1.5-7b", use_fast=False)
 
 _ORIGINAL_VALIDATE_MODEL_KWARGS = transformers.generation.utils.GenerationMixin._validate_model_kwargs
-_ATTRIBUTION_KWARGS = {"hallucinated_tokens", "non_hallucinated_tokens", "influence_score", "candidate_heads"}
+_ATTRIBUTION_KWARGS = {
+    "hallucinated_tokens",
+    "non_hallucinated_tokens",
+    "influence_score",
+    "candidate_heads",
+    "max_hall_attribution_events",
+    "max_nonhall_attribution_events",
+    "dedupe_attribution_tokens",
+}
 
 
 def validate_model_kwargs_with_attribution(self, model_kwargs):
@@ -106,6 +114,13 @@ def zero_ablation_greedy_search(
         heads_to_ablate = [(layer_idx, head_idx) for layer_idx in range(num_layers) for head_idx in range(num_heads)]
     else:
         heads_to_ablate = [(int(layer_idx), int(head_idx)) for layer_idx, head_idx in candidate_heads]
+    max_hall_events = int(model_kwargs.get("max_hall_attribution_events", 1))
+    max_nonhall_events = int(model_kwargs.get("max_nonhall_attribution_events", 3))
+    dedupe_attribution_tokens = bool(model_kwargs.get("dedupe_attribution_tokens", True))
+    hall_event_count = 0
+    nonhall_event_count = 0
+    seen_hall_tokens = set()
+    seen_nonhall_tokens = set()
     
     while True:
         if synced_gpus:
@@ -148,7 +163,21 @@ def zero_ablation_greedy_search(
                 return custom_hook(module, input, layer_idx, head_idx)
             return hook_fn
 
-        if next_word in model_kwargs['hallucinated_tokens'] or next_word in model_kwargs['non_hallucinated_tokens']:
+        is_hall_token = next_word in model_kwargs['hallucinated_tokens']
+        is_nonhall_token = next_word in model_kwargs['non_hallucinated_tokens']
+        should_attribute_hall = (
+            is_hall_token
+            and (max_hall_events <= 0 or hall_event_count < max_hall_events)
+            and (not dedupe_attribution_tokens or next_word not in seen_hall_tokens)
+        )
+        should_attribute_nonhall = (
+            (not should_attribute_hall)
+            and is_nonhall_token
+            and (max_nonhall_events <= 0 or nonhall_event_count < max_nonhall_events)
+            and (not dedupe_attribution_tokens or next_word not in seen_nonhall_tokens)
+        )
+
+        if should_attribute_hall or should_attribute_nonhall:
             default_influence = {
                 'original_prob': original_prob,
                 'perturbed_prob': original_prob,
@@ -196,10 +225,14 @@ def zero_ablation_greedy_search(
                     hook_handle.remove()
                 del outputs_ablated, next_token_logits_ablated, ablated_probs
 
-            if next_word in model_kwargs['hallucinated_tokens']:
+            if should_attribute_hall:
                 hallucination_influences[f'{next_word}_{count}'] = influences
-            elif next_word in model_kwargs['non_hallucinated_tokens']:
+                hall_event_count += 1
+                seen_hall_tokens.add(next_word)
+            elif should_attribute_nonhall:
                 non_hallucination_influences[f'{next_word}_{count}'] = influences
+                nonhall_event_count += 1
+                seen_nonhall_tokens.add(next_word)
 
             gc.collect()
             torch.cuda.empty_cache()
