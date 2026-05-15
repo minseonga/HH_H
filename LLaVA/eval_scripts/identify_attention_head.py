@@ -142,6 +142,11 @@ def eval_model(args):
         print(line)
         question_id = line["question_id"]
         image_file = line["image"]
+        hall_path = os.path.join(args.output_path, f'hallucination_influences_{question_id}.pth')
+        non_hall_path = os.path.join(args.output_path, f'non_hallucination_influences_{question_id}.pth')
+        if args.resume and os.path.exists(hall_path) and os.path.exists(non_hall_path):
+            print(f"skip existing attribution for {question_id}")
+            continue
 
         input_ids = input_ids.to(device='cuda', non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True)
@@ -162,37 +167,43 @@ def eval_model(args):
                 num_beams=args.num_beams,
                 max_new_tokens=args.max_new_tokens,
                 use_cache=True,
-                output_attentions=True,
+                output_attentions=False,
+                output_hidden_states=False,
                 return_dict_in_generate=True, 
                 hallucinated_tokens=hallucinated_tokens, 
                 non_hallucinated_tokens=non_hallucinated_tokens,
                 influence_score=args.influence_score)
             
-        torch.save(hallucination_influences, os.path.join(args.output_path, f'hallucination_influences_{question_id}.pth'))
-        torch.save(non_hallucination_influences, os.path.join(args.output_path, f'non_hallucination_influences_{question_id}.pth'))
+        torch.save(hallucination_influences, hall_path)
+        torch.save(non_hallucination_influences, non_hall_path)
         torch.cuda.empty_cache()
 
-        influences = []
-        for _, v in hallucination_influences.items():
-            influence = torch.zeros(args.layer_num, args.head_num)
-            for layer_idx in range(args.layer_num):
-                for head_idx in range(args.head_num):
-                    influence[layer_idx][head_idx] = v[layer_idx][head_idx]['influence']
-            influences.append(influence)
-        plt.figure(figsize=(8,8))
-        sns.heatmap(torch.mean(torch.stack(influences), 0).cpu().numpy(),cmap="coolwarm", center=0)
-        plt.savefig(f'{args.output_path}/hallucination_influences_{question_id}.png')
-        
-        influences = []
-        for _, v in non_hallucination_influences.items():
-            influence = torch.zeros(args.layer_num, args.head_num)
-            for layer_idx in range(args.layer_num):
-                for head_idx in range(args.head_num):
-                    influence[layer_idx][head_idx] = v[layer_idx][head_idx]['influence']
-            influences.append(influence)
-        plt.figure(figsize=(8,8))
-        sns.heatmap(torch.mean(torch.stack(influences), 0).cpu().numpy(),cmap="coolwarm", center=0)
-        plt.savefig(f'{args.output_path}/non_hallucination_influences_{question_id}.png')
+        if args.save_heatmaps:
+            influences = []
+            for _, v in hallucination_influences.items():
+                influence = torch.zeros(args.layer_num, args.head_num)
+                for layer_idx in range(args.layer_num):
+                    for head_idx in range(args.head_num):
+                        influence[layer_idx][head_idx] = v[layer_idx][head_idx]['influence']
+                influences.append(influence)
+            if influences:
+                plt.figure(figsize=(8,8))
+                sns.heatmap(torch.mean(torch.stack(influences), 0).cpu().numpy(),cmap="coolwarm", center=0)
+                plt.savefig(f'{args.output_path}/hallucination_influences_{question_id}.png')
+                plt.close()
+            
+            influences = []
+            for _, v in non_hallucination_influences.items():
+                influence = torch.zeros(args.layer_num, args.head_num)
+                for layer_idx in range(args.layer_num):
+                    for head_idx in range(args.head_num):
+                        influence[layer_idx][head_idx] = v[layer_idx][head_idx]['influence']
+                influences.append(influence)
+            if influences:
+                plt.figure(figsize=(8,8))
+                sns.heatmap(torch.mean(torch.stack(influences), 0).cpu().numpy(),cmap="coolwarm", center=0)
+                plt.savefig(f'{args.output_path}/non_hallucination_influences_{question_id}.png')
+                plt.close()
         
     
 def get_constrative_influence(args):
@@ -281,6 +292,8 @@ if __name__ == "__main__":
     parser.add_argument("--influence_score", type=str, default='prob_diff')
     parser.add_argument("--layer_num", type=int, default=32)
     parser.add_argument("--head_num", type=int, default=32)
+    parser.add_argument("--resume", action="store_true", default=False)
+    parser.add_argument("--save_heatmaps", action="store_true", default=False)
     args = parser.parse_args()
     set_seed(args.seed)
     

@@ -2,6 +2,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+import gc
 import time
 import warnings
 from typing import List, Optional, Union
@@ -136,8 +137,8 @@ def zero_ablation_greedy_search(
                     outputs_ablated = self(
                         **model_inputs,
                         return_dict=True,
-                        output_attentions=True,
-                        output_hidden_states=True,
+                        output_attentions=False,
+                        output_hidden_states=False,
                     )
                     next_token_logits_ablated = outputs_ablated.logits[:, -1, :]
                     ablated_probs = F.softmax(next_token_logits_ablated, dim=-1)
@@ -156,12 +157,14 @@ def zero_ablation_greedy_search(
                                                         'perturbed_log_prob': ablated_log_probs[0, next_tokens[0]].item(), \
                                                         'influence': influence}
                     hook_handle.remove()
+                    del outputs_ablated, next_token_logits_ablated, ablated_probs, ablated_log_probs
 
             if next_word in model_kwargs['hallucinated_tokens']:
                 hallucination_influences[f'{next_word}_{count}'] = influences
             elif next_word in model_kwargs['non_hallucinated_tokens']:
                 non_hallucination_influences[f'{next_word}_{count}'] = influences
 
+            gc.collect()
             torch.cuda.empty_cache()
 
         if synced_gpus and this_peer_finished:
@@ -246,5 +249,4 @@ def zero_ablation_greedy_search(
 
 def set_zero_ablation_greedy_search():
     transformers.generation.utils.GenerationMixin.greedy_search = zero_ablation_greedy_search
-
 
