@@ -150,7 +150,6 @@ def zero_ablation_greedy_search(
                     try:
                         # second forward pass
                         ablated_inputs = dict(model_inputs)
-                        ablated_inputs["use_cache"] = False
                         outputs_ablated = self(
                             **ablated_inputs,
                             return_dict=True,
