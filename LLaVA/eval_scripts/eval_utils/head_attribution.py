@@ -18,6 +18,17 @@ from transformers.generation.stopping_criteria import (
 from transformers.generation.utils import GenerateNonBeamOutput, GenerateEncoderDecoderOutput, GenerateDecoderOnlyOutput
 tokenizer = transformers.AutoTokenizer.from_pretrained("liuhaotian/llava-v1.5-7b", use_fast=False)
 
+_ORIGINAL_VALIDATE_MODEL_KWARGS = transformers.generation.utils.GenerationMixin._validate_model_kwargs
+_ATTRIBUTION_KWARGS = {"hallucinated_tokens", "non_hallucinated_tokens", "influence_score"}
+
+
+def validate_model_kwargs_with_attribution(self, model_kwargs):
+    model_kwargs = dict(model_kwargs)
+    for key in _ATTRIBUTION_KWARGS:
+        model_kwargs.pop(key, None)
+    return _ORIGINAL_VALIDATE_MODEL_KWARGS(self, model_kwargs)
+
+
 def zero_ablation_greedy_search(
     self,
     input_ids: torch.LongTensor,
@@ -249,4 +260,4 @@ def zero_ablation_greedy_search(
 
 def set_zero_ablation_greedy_search():
     transformers.generation.utils.GenerationMixin.greedy_search = zero_ablation_greedy_search
-
+    transformers.generation.utils.GenerationMixin._validate_model_kwargs = validate_model_kwargs_with_attribution
