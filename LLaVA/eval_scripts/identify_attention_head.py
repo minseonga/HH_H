@@ -356,10 +356,14 @@ if __name__ == "__main__":
     parser.add_argument("--head_num", type=int, default=32)
     parser.add_argument("--resume", action="store_true", default=False)
     parser.add_argument("--save_heatmaps", action="store_true", default=False)
+    parser.add_argument("--skip-aggregate", action="store_true", default=False)
+    parser.add_argument("--aggregate-only", action="store_true", default=False)
     args = parser.parse_args()
     set_seed(args.seed)
     
     # get hallucination and non-hallucination influences for each question
-    eval_model(args)
+    if not args.aggregate_only:
+        eval_model(args)
     # average the influences over all questions
-    get_constrative_influence(args)
+    if not args.skip_aggregate:
+        get_constrative_influence(args)
