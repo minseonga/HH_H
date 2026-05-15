@@ -113,7 +113,7 @@ def eval_model(args):
         for cap in caps:
             if cap["metrics"]["CHAIRs"] == 1:
                 image_id = "{:012d}".format(cap["image_id"])
-                image_file = f"COCO_train2014_{image_id}.jpg"
+                image_file = cap.get("image", f"COCO_{args.image_split}_{image_id}.jpg")
                 question = {
                     "question_id": cap["image_id"],
                     "image": image_file,
@@ -262,6 +262,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-path", type=str, default="facebook/opt-350m")
     parser.add_argument("--model-base", type=str, default=None)
     parser.add_argument("--image-folder", type=str, default="")
+    parser.add_argument("--image-split", type=str, default="train2014")
     parser.add_argument("--annotation-dir", type=str, default="")
     parser.add_argument("--answers-file", type=str, default="answer.jsonl")
     parser.add_argument("--output-path", type=str, default="")
