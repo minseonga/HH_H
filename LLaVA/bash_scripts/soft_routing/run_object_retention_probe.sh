@@ -72,6 +72,11 @@ CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.analyze_obj
     --soft-temperature "${SOFT_TEMPERATURE}" \
     2>&1 | tee "${LOG_DIR}/object_retention_probe_soft${SOFT_GAMMA}_max${MAX_PER_LABEL}.log"
 
+if [ -f "${OUTPUT_DIR}/object_retention_features.csv" ]; then
+    python -m eval_scripts.soft_routing.summarize_object_retention_features \
+        --features-csv "${OUTPUT_DIR}/object_retention_features.csv"
+fi
+
 echo "[summary] group means"
 if [ -f "${OUTPUT_DIR}/group_feature_means.csv" ]; then
     column -s, -t "${OUTPUT_DIR}/group_feature_means.csv" | head -40
@@ -85,4 +90,9 @@ fi
 echo "[summary] lost-grounded vs hallucinated-object AUC"
 if [ -f "${OUTPUT_DIR}/lost_vs_hallucinated_auc.csv" ]; then
     column -s, -t "${OUTPUT_DIR}/lost_vs_hallucinated_auc.csv" | head -30
+fi
+
+echo "[summary] oracle visual support correlations"
+if [ -f "${OUTPUT_DIR}/oracle_visual_support_correlations.csv" ]; then
+    column -s, -t "${OUTPUT_DIR}/oracle_visual_support_correlations.csv" | head -30
 fi
