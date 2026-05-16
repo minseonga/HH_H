@@ -15,6 +15,7 @@ SOFT_TEMPERATURE="${SOFT_TEMPERATURE:-0.05}"
 SOFT_GAMMA="${SOFT_GAMMA:-0.75}"
 TOP_K="${TOP_K:-20}"
 MAX_PER_LABEL="${MAX_PER_LABEL:-100}"
+HALLUCINATED_SOURCE="${HALLUCINATED_SOURCE:-soft}"
 
 BASE_RESULT_PATH="${BASE_RESULT_PATH:-./results/${DATASET}/soft_routing_smoke_n${NUM_SAMPLES}_seed${SEED}_tau${ADHH_THRESHOLD}_T${SOFT_TEMPERATURE}}"
 HARD_RESULTS="${HARD_RESULTS:-${BASE_RESULT_PATH}/hard_tau${ADHH_THRESHOLD}/captions_eval_results.json}"
@@ -44,6 +45,7 @@ echo "[info] soft results: ${SOFT_RESULTS}"
 echo "[info] prior path: ${PRIOR_PATH:-built-in rank prior}"
 echo "[info] output dir: ${OUTPUT_DIR}"
 echo "[info] max per label: ${MAX_PER_LABEL}"
+echo "[info] hallucinated source: ${HALLUCINATED_SOURCE}"
 
 CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.analyze_object_retention_steps \
     --hard-results "${HARD_RESULTS}" \
@@ -55,6 +57,7 @@ CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.analyze_obj
     --model-path "${MODEL_PATH}" \
     --conv-mode vicuna_v1 \
     --max-per-label "${MAX_PER_LABEL}" \
+    --hallucinated-source "${HALLUCINATED_SOURCE}" \
     --adhh-threshold "${ADHH_THRESHOLD}" \
     --soft-gamma "${SOFT_GAMMA}" \
     --soft-temperature "${SOFT_TEMPERATURE}" \
@@ -68,4 +71,9 @@ fi
 echo "[summary] lost-grounded AUC"
 if [ -f "${OUTPUT_DIR}/lost_grounded_auc.csv" ]; then
     column -s, -t "${OUTPUT_DIR}/lost_grounded_auc.csv" | head -30
+fi
+
+echo "[summary] lost-grounded vs hallucinated-object AUC"
+if [ -f "${OUTPUT_DIR}/lost_vs_hallucinated_auc.csv" ]; then
+    column -s, -t "${OUTPUT_DIR}/lost_vs_hallucinated_auc.csv" | head -30
 fi

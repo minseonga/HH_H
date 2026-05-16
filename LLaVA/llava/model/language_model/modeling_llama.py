@@ -630,6 +630,62 @@ class LlamaAttention(nn.Module):
                     strength = gamma * torch.sigmoid(risk).to(attn_weights.dtype)
                     attn_weights[:, head, -1, text_start_idx:] *= (1.0 - strength)
 
+        if getattr(self.config, "retention_aware_deactivate", False):
+            if head_list is not None:
+                text_start_idx = self.config.img_start_pos + self.config.img_length
+                priors = getattr(self.config, "head_attribution_priors", {})
+                threshold = float(getattr(self.config, "adhh_threshold", 0.0))
+                temperature = max(float(getattr(self.config, "retention_soft_temperature", 0.05)), 1e-6)
+                soft_gamma = float(getattr(self.config, "retention_soft_gamma", 0.75))
+                retention_rho = float(getattr(self.config, "retention_rho", 0.1))
+                retention_lambda = float(getattr(self.config, "retention_lambda", 1.0))
+                retention_feature = getattr(self.config, "retention_feature", "mean_prior_text_mass")
+                retention_policy_mode = getattr(self.config, "retention_policy_mode", "hard_or_soft")
+                eps = float(getattr(self.config, "retention_eps", 1e-6))
+
+                head_values = []
+                trigger_values = []
+                prior_text_values = []
+                excess_values = []
+                weighted_excess_values = []
+                weighted_trigger_values = []
+                for head in head_list:
+                    key = f"{int(self.layer_idx)}:{int(head)}"
+                    prior = float(priors.get(key, 1.0))
+                    text_attention = attn_weights[:, head, -1, text_start_idx:]
+                    text_mass = torch.sum(text_attention, dim=-1, keepdim=True)
+                    trigger = (text_mass >= threshold).to(attn_weights.dtype)
+                    excess = torch.clamp(text_mass - threshold, min=0.0)
+                    alpha = torch.sigmoid((text_mass - threshold) / temperature).to(attn_weights.dtype)
+                    head_values.append((head, text_attention, prior, trigger, excess, alpha))
+                    trigger_values.append(trigger)
+                    prior_text_values.append(text_mass * prior)
+                    excess_values.append(excess)
+                    weighted_excess_values.append(excess * prior)
+                    weighted_trigger_values.append(trigger * prior)
+
+                if retention_feature == "trigger_frac":
+                    retention_risk = torch.stack(trigger_values, dim=0).mean(dim=0)
+                elif retention_feature == "weighted_trigger_count":
+                    retention_risk = torch.stack(weighted_trigger_values, dim=0).sum(dim=0)
+                elif retention_feature == "weighted_excess":
+                    retention_risk = torch.stack(weighted_excess_values, dim=0).sum(dim=0)
+                elif retention_feature == "mean_excess":
+                    retention_risk = torch.stack(excess_values, dim=0).mean(dim=0)
+                else:
+                    retention_risk = torch.stack(prior_text_values, dim=0).mean(dim=0)
+
+                high_retention = (retention_risk >= retention_rho).to(attn_weights.dtype)
+                for head, text_attention, prior, trigger, excess, alpha in head_values:
+                    if retention_policy_mode == "cap":
+                        strength = soft_gamma * prior * alpha / (1.0 + retention_lambda * retention_risk + eps)
+                    else:
+                        hard_strength = trigger
+                        soft_strength = soft_gamma * alpha
+                        strength = high_retention * soft_strength + (1.0 - high_retention) * hard_strength
+                    strength = torch.clamp(strength, min=0.0, max=1.0).to(attn_weights.dtype)
+                    text_attention *= (1.0 - strength)
+
         if getattr(self.config, "attribution_soft_deactivate", False):
             if head_list is not None:
                 text_start_idx = self.config.img_start_pos + self.config.img_length
@@ -683,12 +739,39 @@ class LlamaAttention(nn.Module):
                 soft_temperature = max(float(getattr(self.config, "soft_temperature", 0.05)), 1e-6)
                 soft_gamma = float(getattr(self.config, "soft_gamma", 0.5))
                 priors = getattr(self.config, "head_attribution_priors", {})
+                diagnostic_output_start = int(getattr(self.config, "diagnostic_output_start_pos", text_start_idx))
+                diagnostic_recent_window = int(getattr(self.config, "diagnostic_recent_window", 16))
                 records = getattr(self.config, "intervention_diagnostics", None)
                 if records is not None:
                     for head in head_list:
                         key = f"{int(self.layer_idx)}:{int(head)}"
-                        text_mass = torch.sum(attn_weights[:, head, -1, text_start_idx:]).detach().float().cpu().item()
-                        img_mass = torch.sum(attn_weights[:, head, -1, img_slice]).detach().float().cpu().item()
+                        output_start = min(max(diagnostic_output_start, text_start_idx), kv_seq_len)
+                        recent_start = min(max(kv_seq_len - diagnostic_recent_window, output_start), kv_seq_len)
+                        text_slice = slice(text_start_idx, kv_seq_len)
+                        question_slice = slice(text_start_idx, output_start)
+                        output_slice = slice(output_start, kv_seq_len)
+                        recent_slice = slice(recent_start, kv_seq_len)
+
+                        head_weights = attn_weights[:, head, -1, :]
+                        head_values = value_states[:, head, :, :]
+                        text_attention = head_weights[:, text_slice]
+                        question_attention = head_weights[:, question_slice]
+                        output_attention = head_weights[:, output_slice]
+                        recent_attention = head_weights[:, recent_slice]
+
+                        text_mass = torch.sum(text_attention).detach().float().cpu().item()
+                        question_mass = torch.sum(question_attention).detach().float().cpu().item()
+                        output_mass = torch.sum(output_attention).detach().float().cpu().item()
+                        recent_mass = torch.sum(recent_attention).detach().float().cpu().item()
+                        img_mass = torch.sum(head_weights[:, img_slice]).detach().float().cpu().item()
+                        text_value = torch.bmm(text_attention.float().unsqueeze(1), head_values[:, text_slice, :].float()).squeeze(1)
+                        question_value = torch.bmm(question_attention.float().unsqueeze(1), head_values[:, question_slice, :].float()).squeeze(1)
+                        output_value = torch.bmm(output_attention.float().unsqueeze(1), head_values[:, output_slice, :].float()).squeeze(1)
+                        recent_value = torch.bmm(recent_attention.float().unsqueeze(1), head_values[:, recent_slice, :].float()).squeeze(1)
+                        text_value_norm = torch.linalg.vector_norm(text_value).detach().float().cpu().item()
+                        question_value_norm = torch.linalg.vector_norm(question_value).detach().float().cpu().item()
+                        output_value_norm = torch.linalg.vector_norm(output_value).detach().float().cpu().item()
+                        recent_value_norm = torch.linalg.vector_norm(recent_value).detach().float().cpu().item()
                         soft_alpha = torch.sigmoid(torch.tensor((text_mass - threshold) / soft_temperature)).item()
                         records.append({
                             "layer": int(self.layer_idx) if self.layer_idx is not None else -1,
@@ -696,7 +779,15 @@ class LlamaAttention(nn.Module):
                             "head_key": key,
                             "attribution_prior": float(priors.get(key, 1.0)),
                             "text_mass": text_mass,
+                            "question_attention": question_mass,
+                            "output_attention": output_mass,
+                            "recent_output_attention": recent_mass,
                             "img_mass": img_mass,
+                            "text_value_norm": text_value_norm,
+                            "removed_text_value_norm": text_value_norm,
+                            "question_value_norm": question_value_norm,
+                            "output_value_norm": output_value_norm,
+                            "recent_output_value_norm": recent_value_norm,
                             "margin": text_mass - threshold,
                             "text_img_log_ratio": math.log((text_mass + 1e-6) / (img_mass + 1e-6)),
                             "hard_trigger": bool(text_mass >= threshold),

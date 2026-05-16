@@ -29,6 +29,17 @@ FEATURES = [
     "max_weighted_excess",
     "mean_prior_text_mass",
     "max_prior_text_mass",
+    "mean_question_attention",
+    "mean_output_attention",
+    "mean_recent_output_attention",
+    "mean_image_attention",
+    "weighted_question_attention",
+    "weighted_recent_output_attention",
+    "weighted_image_attention",
+    "mean_removed_text_value_norm",
+    "max_removed_text_value_norm",
+    "weighted_removed_text_value_norm",
+    "weighted_recent_output_value_norm",
     "target_logprob_drop_hard",
     "target_logprob_drop_soft",
     "target_drop_gap_hard_minus_soft",
@@ -72,9 +83,13 @@ def grounded_nodes(sentence):
     return {node for _, node in node_pairs(sentence, "mscoco_non_hallucinated_words")}
 
 
-def first_words_by_node(sentence):
+def hallucinated_nodes(sentence):
+    return {node for _, node in node_pairs(sentence, "mscoco_hallucinated_words")}
+
+
+def first_words_by_node(sentence, key="mscoco_non_hallucinated_words"):
     mapping = {}
-    for word, node in node_pairs(sentence, "mscoco_non_hallucinated_words"):
+    for word, node in node_pairs(sentence, key):
         mapping.setdefault(node, word)
     return mapping
 
@@ -112,7 +127,34 @@ def find_object_first_token(tokenizer, caption_ids, object_word):
     return None, None, None
 
 
-def select_rows(hard_by_id, soft_by_id, tokenizer, max_per_label):
+def add_row(rows, counts, tokenizer, sentence, hard, label, node, word, max_per_label, caption_source):
+    if counts[label] >= max_per_label:
+        return
+    caption_ids = tokenizer(sentence["caption"], add_special_tokens=False)["input_ids"]
+    token_pos, target_id, matched_ids = find_object_first_token(tokenizer, caption_ids, word)
+    if token_pos is None:
+        return
+    rows.append({
+        "image_id": str(sentence["image_id"]),
+        "image": sentence["image"],
+        "label": label,
+        "caption_source": caption_source,
+        "object_node": node,
+        "object_word": word,
+        "target_token_pos": token_pos,
+        "target_token_id": target_id,
+        "matched_token_ids": matched_ids,
+        "probe_caption_ids": caption_ids,
+        "probe_caption": sentence["caption"],
+        "soft_caption": sentence["caption"] if caption_source == "soft" else "",
+        "hard_caption": hard["caption"] if hard is not None else "",
+        "hard_generated_nodes": sorted(generated_nodes(hard)) if hard is not None else [],
+        "probe_generated_nodes": sorted(generated_nodes(sentence)),
+    })
+    counts[label] += 1
+
+
+def select_rows(hard_by_id, soft_by_id, tokenizer, max_per_label, hallucinated_source="soft"):
     rows = []
     counts = Counter()
     for image_id, soft in soft_by_id.items():
@@ -121,8 +163,7 @@ def select_rows(hard_by_id, soft_by_id, tokenizer, max_per_label):
             continue
         soft_grounded = grounded_nodes(soft)
         hard_grounded = grounded_nodes(hard)
-        soft_words = first_words_by_node(soft)
-        caption_ids = tokenizer(soft["caption"], add_special_tokens=False)["input_ids"]
+        soft_words = first_words_by_node(soft, "mscoco_non_hallucinated_words")
 
         groups = [
             ("lost_grounded", sorted(soft_grounded - hard_grounded)),
@@ -130,28 +171,20 @@ def select_rows(hard_by_id, soft_by_id, tokenizer, max_per_label):
         ]
         for label, nodes in groups:
             for node in nodes:
-                if counts[label] >= max_per_label:
-                    continue
                 word = soft_words.get(node, node)
-                token_pos, target_id, matched_ids = find_object_first_token(tokenizer, caption_ids, word)
-                if token_pos is None:
-                    continue
-                rows.append({
-                    "image_id": image_id,
-                    "image": soft["image"],
-                    "label": label,
-                    "object_node": node,
-                    "object_word": word,
-                    "target_token_pos": token_pos,
-                    "target_token_id": target_id,
-                    "matched_token_ids": matched_ids,
-                    "soft_caption_ids": caption_ids,
-                    "soft_caption": soft["caption"],
-                    "hard_caption": hard["caption"],
-                    "hard_generated_nodes": sorted(generated_nodes(hard)),
-                    "soft_generated_nodes": sorted(generated_nodes(soft)),
-                })
-                counts[label] += 1
+                add_row(rows, counts, tokenizer, soft, hard, label, node, word, max_per_label, "soft")
+
+        hall_sources = []
+        if hallucinated_source in {"soft", "both"}:
+            hall_sources.append(("soft", soft))
+        if hallucinated_source in {"hard", "both"}:
+            hall_sources.append(("hard", hard))
+        for source_name, sentence in hall_sources:
+            hall_words = first_words_by_node(sentence, "mscoco_hallucinated_words")
+            for node in sorted(hallucinated_nodes(sentence)):
+                word = hall_words.get(node, node)
+                label = f"hallucinated_object_{source_name}" if hallucinated_source == "both" else "hallucinated_object"
+                add_row(rows, counts, tokenizer, sentence, hard, label, node, word, max_per_label, source_name)
     return rows
 
 
@@ -183,6 +216,7 @@ def clear_modes(model):
         "soft_deactivate",
         "dynamic_deactivate",
         "attribution_soft_deactivate",
+        "retention_aware_deactivate",
         "record_intervention_diagnostics",
     ]:
         if hasattr(model.config, name):
@@ -223,6 +257,9 @@ def build_prompt_inputs(row, image_folder, tokenizer, image_processor, model_con
 def one_step(model, tokenizer, prompt_ids, prefix_ids, image_tensor, image_size, target_token_id, mode, record=False):
     prefix_tensor = torch.tensor(prefix_ids, device=prompt_ids.device, dtype=prompt_ids.dtype).unsqueeze(0)
     step_input = torch.cat([prompt_ids, prefix_tensor], dim=1) if prefix_ids else prompt_ids
+    if record:
+        model.config.diagnostic_output_start_pos = int(prompt_ids.shape[1] - 1 + getattr(model.config, "img_length", 576))
+        model.config.diagnostic_recent_window = 16
     set_mode(model, mode, record=record)
     with torch.inference_mode():
         output = model.generate(
@@ -271,10 +308,26 @@ def aggregate_diagnostics(records, priors, threshold, soft_gamma, soft_temperatu
     weighted_excesses = []
     prior_texts = []
     text_masses = []
+    question_attentions = []
+    output_attentions = []
+    recent_output_attentions = []
+    image_attentions = []
+    weighted_question_attentions = []
+    weighted_recent_output_attentions = []
+    weighted_image_attentions = []
+    removed_text_value_norms = []
+    weighted_removed_text_value_norms = []
+    weighted_recent_output_value_norms = []
     for record in records:
         key = record.get("head_key") or head_key(record.get("layer"), record.get("head"))
         prior = float(priors.get(key, 1.0))
         text_mass = float(record.get("text_mass", 0.0))
+        question_attention = float(record.get("question_attention", 0.0))
+        output_attention = float(record.get("output_attention", 0.0))
+        recent_output_attention = float(record.get("recent_output_attention", 0.0))
+        image_attention = float(record.get("img_mass", 0.0))
+        removed_text_value_norm = float(record.get("removed_text_value_norm", 0.0))
+        recent_output_value_norm = float(record.get("recent_output_value_norm", 0.0))
         excess = max(0.0, text_mass - threshold)
         trigger = 1.0 if text_mass >= threshold else 0.0
         trigger_count += int(trigger)
@@ -283,6 +336,16 @@ def aggregate_diagnostics(records, priors, threshold, soft_gamma, soft_temperatu
         weighted_excesses.append(prior * excess)
         prior_texts.append(prior * text_mass)
         text_masses.append(text_mass)
+        question_attentions.append(question_attention)
+        output_attentions.append(output_attention)
+        recent_output_attentions.append(recent_output_attention)
+        image_attentions.append(image_attention)
+        weighted_question_attentions.append(prior * question_attention)
+        weighted_recent_output_attentions.append(prior * recent_output_attention)
+        weighted_image_attentions.append(prior * image_attention)
+        removed_text_value_norms.append(removed_text_value_norm)
+        weighted_removed_text_value_norms.append(prior * removed_text_value_norm)
+        weighted_recent_output_value_norms.append(prior * recent_output_value_norm)
     return {
         "trigger_count": trigger_count,
         "weighted_trigger_count": weighted_trigger_count,
@@ -292,6 +355,17 @@ def aggregate_diagnostics(records, priors, threshold, soft_gamma, soft_temperatu
         "max_weighted_excess": float(np.max(weighted_excesses)) if weighted_excesses else 0.0,
         "mean_prior_text_mass": float(np.mean(prior_texts)) if prior_texts else 0.0,
         "max_prior_text_mass": float(np.max(prior_texts)) if prior_texts else 0.0,
+        "mean_question_attention": float(np.mean(question_attentions)) if question_attentions else 0.0,
+        "mean_output_attention": float(np.mean(output_attentions)) if output_attentions else 0.0,
+        "mean_recent_output_attention": float(np.mean(recent_output_attentions)) if recent_output_attentions else 0.0,
+        "mean_image_attention": float(np.mean(image_attentions)) if image_attentions else 0.0,
+        "weighted_question_attention": float(np.sum(weighted_question_attentions)) if weighted_question_attentions else 0.0,
+        "weighted_recent_output_attention": float(np.sum(weighted_recent_output_attentions)) if weighted_recent_output_attentions else 0.0,
+        "weighted_image_attention": float(np.sum(weighted_image_attentions)) if weighted_image_attentions else 0.0,
+        "mean_removed_text_value_norm": float(np.mean(removed_text_value_norms)) if removed_text_value_norms else 0.0,
+        "max_removed_text_value_norm": float(np.max(removed_text_value_norms)) if removed_text_value_norms else 0.0,
+        "weighted_removed_text_value_norm": float(np.sum(weighted_removed_text_value_norms)) if weighted_removed_text_value_norms else 0.0,
+        "weighted_recent_output_value_norm": float(np.sum(weighted_recent_output_value_norms)) if weighted_recent_output_value_norms else 0.0,
     }
 
 
@@ -335,6 +409,31 @@ def auc_rows(rows):
     return output
 
 
+def pairwise_auc_rows(rows, positive_label, negative_label):
+    filtered = [row for row in rows if row["label"] in {positive_label, negative_label}]
+    labels = [1 if row["label"] == positive_label else 0 for row in filtered]
+    output = []
+    for feature in FEATURES:
+        values = [float(row.get(feature, 0.0)) for row in filtered]
+        if len(set(labels)) < 2 or len(set(values)) < 2:
+            continue
+        auc = float(roc_auc_score(labels, values))
+        output.append({
+            "feature": feature,
+            "positive_label": positive_label,
+            "negative_label": negative_label,
+            "n": len(values),
+            "auroc_high_predicts_positive": auc,
+            "auroc_abs": max(auc, 1.0 - auc),
+            "direction": "high_predicts_positive" if auc >= 0.5 else "low_predicts_positive",
+            "auprc_high_predicts_positive": float(average_precision_score(labels, values)),
+            "mean_positive": mean([v for v, y in zip(values, labels) if y == 1]),
+            "mean_negative": mean([v for v, y in zip(values, labels) if y == 0]),
+        })
+    output.sort(key=lambda item: item["auroc_abs"], reverse=True)
+    return output
+
+
 def write_csv(path, rows):
     if not rows:
         with open(path, "w") as f:
@@ -363,6 +462,7 @@ def main():
     parser.add_argument("--model-base", default=None)
     parser.add_argument("--conv-mode", default="vicuna_v1")
     parser.add_argument("--max-per-label", type=int, default=100)
+    parser.add_argument("--hallucinated-source", type=str, default="soft", choices=["soft", "hard", "both"])
     parser.add_argument("--adhh-threshold", type=float, default=0.4)
     parser.add_argument("--soft-gamma", type=float, default=0.75)
     parser.add_argument("--soft-temperature", type=float, default=0.05)
@@ -383,7 +483,7 @@ def main():
 
     hard_by_id = load_sentences(args.hard_results)
     soft_by_id = load_sentences(args.soft_results)
-    selected = select_rows(hard_by_id, soft_by_id, tokenizer, args.max_per_label)
+    selected = select_rows(hard_by_id, soft_by_id, tokenizer, args.max_per_label, args.hallucinated_source)
 
     os.makedirs(args.output_dir, exist_ok=True)
     output_rows = []
@@ -394,7 +494,7 @@ def main():
             )
             prompt_ids = prompt_ids.to(device="cuda", non_blocking=True)
             image_tensor = image_tensor.to(dtype=torch.float16, device="cuda", non_blocking=True)
-            prefix_ids = row["soft_caption_ids"][:row["target_token_pos"]]
+            prefix_ids = row["probe_caption_ids"][:row["target_token_pos"]]
             target_token_id = int(row["target_token_id"])
 
             original = one_step(model, tokenizer, prompt_ids, prefix_ids, image_tensor, image_size, target_token_id, "none", record=True)
@@ -412,6 +512,7 @@ def main():
                 "image_id": row["image_id"],
                 "image": row["image"],
                 "label": row["label"],
+                "caption_source": row["caption_source"],
                 "object_node": row["object_node"],
                 "object_word": row["object_word"],
                 "target_token": tokenizer.decode([target_token_id]),
@@ -437,6 +538,7 @@ def main():
                 "entropy_soft_minus_original": soft["entropy"] - original["entropy"],
                 "kl_original_to_hard": kl_divergence(original["score"], hard["score"]),
                 "kl_original_to_soft": kl_divergence(original["score"], soft["score"]),
+                "probe_caption": row["probe_caption"],
                 "soft_caption": row["soft_caption"],
                 "hard_caption": row["hard_caption"],
                 "prior_source": prior_source,
@@ -457,6 +559,14 @@ def main():
     write_csv(os.path.join(args.output_dir, "object_retention_features.csv"), output_rows)
     write_csv(os.path.join(args.output_dir, "group_feature_means.csv"), group_means(output_rows))
     write_csv(os.path.join(args.output_dir, "lost_grounded_auc.csv"), auc_rows(output_rows))
+    write_csv(
+        os.path.join(args.output_dir, "lost_vs_hallucinated_auc.csv"),
+        pairwise_auc_rows(output_rows, "lost_grounded", "hallucinated_object"),
+    )
+    write_csv(
+        os.path.join(args.output_dir, "hallucinated_vs_kept_auc.csv"),
+        pairwise_auc_rows(output_rows, "hallucinated_object", "kept_grounded"),
+    )
     print(json.dumps(summary, indent=2))
 
 

@@ -137,7 +137,13 @@ def eval_model(args):
 
     data_loader = create_data_loader(questions, args.image_folder, tokenizer, image_processor, model.config)
 
-    if args.adaptive_deactivate or args.soft_deactivate or args.dynamic_deactivate or args.attribution_soft_deactivate:
+    if (
+        args.adaptive_deactivate
+        or args.soft_deactivate
+        or args.dynamic_deactivate
+        or args.attribution_soft_deactivate
+        or args.retention_aware_deactivate
+    ):
         if model_path == 'liuhaotian/llava-v1.5-7b':
             model.config.img_start_pos = 35
             model.config.img_length = 576
@@ -184,6 +190,14 @@ def eval_model(args):
                 with open(args.head_thresholds_path, "r") as f:
                     threshold_data = json.load(f)
                 model.config.head_text_thresholds = threshold_data.get("head_text_thresholds", threshold_data)
+        if args.retention_aware_deactivate:
+            model.config.retention_aware_deactivate = True
+            model.config.retention_policy_mode = args.retention_policy_mode
+            model.config.retention_feature = args.retention_feature
+            model.config.retention_rho = args.retention_rho
+            model.config.retention_lambda = args.retention_lambda
+            model.config.retention_soft_gamma = args.retention_soft_gamma
+            model.config.retention_soft_temperature = args.retention_soft_temperature
 
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
@@ -250,6 +264,7 @@ if __name__ == "__main__":
     parser.add_argument("--soft_deactivate", action='store_true', default=False)
     parser.add_argument("--dynamic_deactivate", action='store_true', default=False)
     parser.add_argument("--attribution_soft_deactivate", action='store_true', default=False)
+    parser.add_argument("--retention_aware_deactivate", action='store_true', default=False)
     parser.add_argument("--adhh_threshold", type=float, default=0.0)
     parser.add_argument("--attention_head_path", type=str, default="")
     parser.add_argument("--top_k", type=int, default=20)
@@ -267,9 +282,26 @@ if __name__ == "__main__":
     parser.add_argument("--attribution_tau_low", type=float, default=0.4)
     parser.add_argument("--attribution_tau_high", type=float, default=0.9)
     parser.add_argument("--head_thresholds_path", type=str, default="")
+    parser.add_argument("--retention_policy_mode", type=str, default="hard_or_soft", choices=["hard_or_soft", "cap"])
+    parser.add_argument(
+        "--retention_feature",
+        type=str,
+        default="mean_prior_text_mass",
+        choices=["mean_prior_text_mass", "mean_excess", "weighted_excess", "trigger_frac", "weighted_trigger_count"],
+    )
+    parser.add_argument("--retention_rho", type=float, default=0.1)
+    parser.add_argument("--retention_lambda", type=float, default=1.0)
+    parser.add_argument("--retention_soft_gamma", type=float, default=0.75)
+    parser.add_argument("--retention_soft_temperature", type=float, default=0.05)
 
     args = parser.parse_args()
-    if sum([args.adaptive_deactivate, args.soft_deactivate, args.dynamic_deactivate, args.attribution_soft_deactivate]) > 1:
+    if sum([
+        args.adaptive_deactivate,
+        args.soft_deactivate,
+        args.dynamic_deactivate,
+        args.attribution_soft_deactivate,
+        args.retention_aware_deactivate,
+    ]) > 1:
         raise ValueError("Only one intervention mode can be enabled")
     set_seed(args.seed)
     eval_model(args)
