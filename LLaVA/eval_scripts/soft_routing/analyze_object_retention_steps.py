@@ -411,7 +411,25 @@ def auc_rows(rows):
 
 def pairwise_auc_rows(rows, positive_label, negative_label):
     filtered = [row for row in rows if row["label"] in {positive_label, negative_label}]
-    labels = [1 if row["label"] == positive_label else 0 for row in filtered]
+    return pairwise_auc_for_rows(filtered, positive_label, negative_label, lambda row: row["label"] == positive_label)
+
+
+def pairwise_prefix_auc_rows(rows, positive_label, negative_prefix):
+    filtered = [
+        row
+        for row in rows
+        if row["label"] == positive_label or row["label"].startswith(negative_prefix)
+    ]
+    return pairwise_auc_for_rows(
+        filtered,
+        positive_label,
+        f"{negative_prefix}*",
+        lambda row: row["label"] == positive_label,
+    )
+
+
+def pairwise_auc_for_rows(filtered, positive_label, negative_label, is_positive):
+    labels = [1 if is_positive(row) else 0 for row in filtered]
     output = []
     for feature in FEATURES:
         values = [float(row.get(feature, 0.0)) for row in filtered]
@@ -432,6 +450,20 @@ def pairwise_auc_rows(rows, positive_label, negative_label):
         })
     output.sort(key=lambda item: item["auroc_abs"], reverse=True)
     return output
+
+
+def pairwise_positive_prefix_auc_rows(rows, positive_prefix, negative_label):
+    filtered = [
+        row
+        for row in rows
+        if row["label"].startswith(positive_prefix) or row["label"] == negative_label
+    ]
+    return pairwise_auc_for_rows(
+        filtered,
+        f"{positive_prefix}*",
+        negative_label,
+        lambda row: row["label"].startswith(positive_prefix),
+    )
 
 
 def write_csv(path, rows):
@@ -561,11 +593,19 @@ def main():
     write_csv(os.path.join(args.output_dir, "lost_grounded_auc.csv"), auc_rows(output_rows))
     write_csv(
         os.path.join(args.output_dir, "lost_vs_hallucinated_auc.csv"),
-        pairwise_auc_rows(output_rows, "lost_grounded", "hallucinated_object"),
+        pairwise_prefix_auc_rows(output_rows, "lost_grounded", "hallucinated_object"),
+    )
+    write_csv(
+        os.path.join(args.output_dir, "lost_vs_hallucinated_hard_auc.csv"),
+        pairwise_auc_rows(output_rows, "lost_grounded", "hallucinated_object_hard"),
+    )
+    write_csv(
+        os.path.join(args.output_dir, "lost_vs_hallucinated_soft_auc.csv"),
+        pairwise_auc_rows(output_rows, "lost_grounded", "hallucinated_object_soft"),
     )
     write_csv(
         os.path.join(args.output_dir, "hallucinated_vs_kept_auc.csv"),
-        pairwise_auc_rows(output_rows, "hallucinated_object", "kept_grounded"),
+        pairwise_positive_prefix_auc_rows(output_rows, "hallucinated_object", "kept_grounded"),
     )
     print(json.dumps(summary, indent=2))
 
