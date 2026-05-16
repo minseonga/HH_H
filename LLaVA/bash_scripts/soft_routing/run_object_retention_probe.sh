@@ -18,6 +18,13 @@ MAX_PER_LABEL="${MAX_PER_LABEL:-100}"
 HALLUCINATED_SOURCE="${HALLUCINATED_SOURCE:-soft}"
 COMPUTE_VISUAL_SUPPORT="${COMPUTE_VISUAL_SUPPORT:-0}"
 VISUAL_ABLATION="${VISUAL_ABLATION:-zero}"
+SUPPRESSION_SWEEP="${SUPPRESSION_SWEEP:-}"
+SWEEP_BIN_FEATURE="${SWEEP_BIN_FEATURE:-max_norm_excess}"
+SWEEP_BIN_EDGES="${SWEEP_BIN_EDGES:-0,0.2,0.4,0.6,0.8,1.0}"
+SWEEP_TAU_LOW="${SWEEP_TAU_LOW:-${ADHH_THRESHOLD}}"
+SWEEP_TAU_HIGH="${SWEEP_TAU_HIGH:-0.9}"
+SWEEP_SAFE_DROP="${SWEEP_SAFE_DROP:-0.1}"
+SWEEP_HALL_DROP_FRACTION="${SWEEP_HALL_DROP_FRACTION:-0.8}"
 
 BASE_RESULT_PATH="${BASE_RESULT_PATH:-./results/${DATASET}/soft_routing_smoke_n${NUM_SAMPLES}_seed${SEED}_tau${ADHH_THRESHOLD}_T${SOFT_TEMPERATURE}}"
 HARD_RESULTS="${HARD_RESULTS:-${BASE_RESULT_PATH}/hard_tau${ADHH_THRESHOLD}/captions_eval_results.json}"
@@ -49,10 +56,25 @@ echo "[info] output dir: ${OUTPUT_DIR}"
 echo "[info] max per label: ${MAX_PER_LABEL}"
 echo "[info] hallucinated source: ${HALLUCINATED_SOURCE}"
 echo "[info] compute visual support: ${COMPUTE_VISUAL_SUPPORT}"
+echo "[info] suppression sweep: ${SUPPRESSION_SWEEP:-disabled}"
+echo "[info] sweep bin feature: ${SWEEP_BIN_FEATURE}"
 
 visual_support_args=()
 if [ "${COMPUTE_VISUAL_SUPPORT}" = "1" ]; then
     visual_support_args=(--compute-visual-support --visual-ablation "${VISUAL_ABLATION}")
+fi
+
+sweep_args=()
+if [ -n "${SUPPRESSION_SWEEP}" ]; then
+    sweep_args=(
+        --suppression-sweep "${SUPPRESSION_SWEEP}"
+        --sweep-bin-feature "${SWEEP_BIN_FEATURE}"
+        --sweep-bin-edges "${SWEEP_BIN_EDGES}"
+        --sweep-tau-low "${SWEEP_TAU_LOW}"
+        --sweep-tau-high "${SWEEP_TAU_HIGH}"
+        --sweep-safe-drop "${SWEEP_SAFE_DROP}"
+        --sweep-hall-drop-fraction "${SWEEP_HALL_DROP_FRACTION}"
+    )
 fi
 
 CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.analyze_object_retention_steps \
@@ -67,6 +89,7 @@ CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.analyze_obj
     --max-per-label "${MAX_PER_LABEL}" \
     --hallucinated-source "${HALLUCINATED_SOURCE}" \
     "${visual_support_args[@]}" \
+    "${sweep_args[@]}" \
     --adhh-threshold "${ADHH_THRESHOLD}" \
     --soft-gamma "${SOFT_GAMMA}" \
     --soft-temperature "${SOFT_TEMPERATURE}" \
@@ -90,6 +113,16 @@ fi
 echo "[summary] lost-grounded vs hallucinated-object AUC"
 if [ -f "${OUTPUT_DIR}/lost_vs_hallucinated_auc.csv" ]; then
     column -s, -t "${OUTPUT_DIR}/lost_vs_hallucinated_auc.csv" | head -30
+fi
+
+echo "[summary] suppression sweep by group/bin"
+if [ -f "${OUTPUT_DIR}/suppression_sweep_by_group_bin.csv" ]; then
+    column -s, -t "${OUTPUT_DIR}/suppression_sweep_by_group_bin.csv" | head -80
+fi
+
+echo "[summary] suppression sweep policy table"
+if [ -f "${OUTPUT_DIR}/suppression_sweep_policy_table.csv" ]; then
+    column -s, -t "${OUTPUT_DIR}/suppression_sweep_policy_table.csv" | head -40
 fi
 
 echo "[summary] oracle visual support correlations"

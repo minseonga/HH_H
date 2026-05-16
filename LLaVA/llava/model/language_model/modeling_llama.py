@@ -594,6 +594,18 @@ class LlamaAttention(nn.Module):
                     alpha = torch.sigmoid((text_mass - threshold) / temperature).to(attn_weights.dtype)
                     text_attention *= (1.0 - gamma * alpha)
 
+        if getattr(self.config, "fixed_strength_deactivate", False):
+            if head_list is not None:
+                text_start_idx = self.config.img_start_pos + self.config.img_length
+                threshold = float(getattr(self.config, "adhh_threshold", 0.0))
+                strength = float(getattr(self.config, "fixed_suppression_strength", 1.0))
+                strength = min(max(strength, 0.0), 1.0)
+                for head in head_list:
+                    text_attention = attn_weights[:, head, -1, text_start_idx:]
+                    text_mass = torch.sum(text_attention, dim=-1, keepdim=True)
+                    trigger = (text_mass >= threshold).to(attn_weights.dtype)
+                    text_attention *= (1.0 - strength * trigger)
+
         # Training-free dynamic soft routing. This keeps AD-HH's fixed head set,
         # but makes suppression strength vary by head and decoding state.
         if getattr(self.config, "dynamic_deactivate", False):

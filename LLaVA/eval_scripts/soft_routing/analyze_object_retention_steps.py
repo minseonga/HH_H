@@ -23,6 +23,9 @@ from eval_scripts.soft_routing.head_prior_utils import default_heads_for_model, 
 FEATURES = [
     "trigger_count",
     "weighted_trigger_count",
+    "mean_norm_excess",
+    "max_norm_excess",
+    "weighted_norm_excess",
     "mean_excess",
     "max_excess",
     "weighted_excess",
@@ -231,6 +234,7 @@ def clear_modes(model):
         "dynamic_deactivate",
         "attribution_soft_deactivate",
         "retention_aware_deactivate",
+        "fixed_strength_deactivate",
         "record_intervention_diagnostics",
     ]:
         if hasattr(model.config, name):
@@ -244,6 +248,9 @@ def set_mode(model, mode, record=False):
         model.config.adaptive_deactivate = True
     elif mode == "soft":
         model.config.soft_deactivate = True
+    elif mode.startswith("fixed:"):
+        model.config.fixed_strength_deactivate = True
+        model.config.fixed_suppression_strength = float(mode.split(":", 1)[1])
     elif mode == "none":
         pass
     else:
@@ -337,9 +344,140 @@ def visual_support_features(original, no_image):
     }
 
 
-def aggregate_diagnostics(records, priors, threshold, soft_gamma, soft_temperature):
+def parse_float_list(text):
+    if not text:
+        return []
+    return [float(item.strip()) for item in text.split(",") if item.strip()]
+
+
+def e_bin(value, bin_edges):
+    for low, high in zip(bin_edges[:-1], bin_edges[1:]):
+        if value >= low and value < high:
+            return f"[{low:.1f},{high:.1f})"
+    return f"[{bin_edges[-2]:.1f},{bin_edges[-1]:.1f}]"
+
+
+def sweep_one_step(model, tokenizer, prompt_ids, prefix_ids, image_tensor, image_size, target_token_id, strengths):
+    outputs = {}
+    for strength in strengths:
+        mode = "none" if abs(strength) < 1e-12 else f"fixed:{strength}"
+        outputs[strength] = one_step(
+            model,
+            tokenizer,
+            prompt_ids,
+            prefix_ids,
+            image_tensor,
+            image_size,
+            target_token_id,
+            mode,
+        )
+    return outputs
+
+
+def sweep_features(original, sweep_outputs):
+    features = {}
+    for strength, output in sweep_outputs.items():
+        tag = f"{strength:.2f}".replace(".", "p")
+        features[f"logprob_s{tag}"] = output["target_logprob"]
+        features[f"drop_s{tag}"] = original["target_logprob"] - output["target_logprob"]
+        features[f"rank_s{tag}"] = output["target_rank"]
+        features[f"rank_delta_s{tag}"] = output["target_rank"] - original["target_rank"]
+        features[f"entropy_s{tag}"] = output["entropy"]
+        features[f"kl_original_to_s{tag}"] = kl_divergence(original["score"], output["score"])
+        features[f"next_token_s{tag}"] = output["next_token"]
+    return features
+
+
+def summarize_sweep_by_group_bin(rows, strengths, bin_feature):
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[(row["label"], row["e_bin"])].append(row)
+
+    output = []
+    for (label, bin_name), items in sorted(grouped.items()):
+        record = {
+            "label": label,
+            "e_bin": bin_name,
+            "n": len(items),
+            bin_feature: mean([float(item.get(bin_feature, 0.0)) for item in items]),
+            "mean_norm_excess": mean([float(item.get("mean_norm_excess", 0.0)) for item in items]),
+            "max_norm_excess": mean([float(item.get("max_norm_excess", 0.0)) for item in items]),
+            "weighted_norm_excess": mean([float(item.get("weighted_norm_excess", 0.0)) for item in items]),
+        }
+        for strength in strengths:
+            tag = f"{strength:.2f}".replace(".", "p")
+            record[f"drop_s{tag}"] = mean([float(item.get(f"drop_s{tag}", 0.0)) for item in items])
+            record[f"rank_delta_s{tag}"] = mean([float(item.get(f"rank_delta_s{tag}", 0.0)) for item in items])
+            record[f"kl_s{tag}"] = mean([float(item.get(f"kl_original_to_s{tag}", 0.0)) for item in items])
+        output.append(record)
+    return output
+
+
+def summarize_sweep_policy(rows, strengths, bin_feature, safe_drop, hall_drop_fraction):
+    output = []
+    bin_names = sorted(set(row["e_bin"] for row in rows))
+    for bin_name in bin_names:
+        hall = [row for row in rows if row["e_bin"] == bin_name and row["label"].startswith("hallucinated_object")]
+        grounded = [row for row in rows if row["e_bin"] == bin_name and row["label"] in {"kept_grounded", "lost_grounded"}]
+        lost = [row for row in rows if row["e_bin"] == bin_name and row["label"] == "lost_grounded"]
+
+        record = {
+            "e_bin": bin_name,
+            "n_hallucinated": len(hall),
+            "n_grounded": len(grounded),
+            "n_lost_grounded": len(lost),
+            bin_feature: mean([float(row.get(bin_feature, 0.0)) for row in rows if row["e_bin"] == bin_name]),
+        }
+
+        best_s = None
+        if hall:
+            hard_tag = f"{max(strengths):.2f}".replace(".", "p")
+            hard_drop = mean([float(row.get(f"drop_s{hard_tag}", 0.0)) for row in hall]) or 0.0
+            target_drop = hall_drop_fraction * hard_drop
+            for strength in sorted(strengths):
+                tag = f"{strength:.2f}".replace(".", "p")
+                current_drop = mean([float(row.get(f"drop_s{tag}", 0.0)) for row in hall]) or 0.0
+                if current_drop >= target_drop:
+                    best_s = strength
+                    break
+            record["hard_hallucinated_drop"] = hard_drop
+            record["target_hallucinated_drop"] = target_drop
+        record["best_s_for_hallucinated"] = best_s
+
+        safe_s = None
+        if grounded:
+            for strength in sorted(strengths):
+                tag = f"{strength:.2f}".replace(".", "p")
+                current_drop = mean([float(row.get(f"drop_s{tag}", 0.0)) for row in grounded]) or 0.0
+                if current_drop <= safe_drop:
+                    safe_s = strength
+            hard_tag = f"{max(strengths):.2f}".replace(".", "p")
+            record["hard_grounded_drop"] = mean([float(row.get(f"drop_s{hard_tag}", 0.0)) for row in grounded])
+            record["hard_overkill_rate"] = mean([
+                1.0 if float(row.get(f"drop_s{hard_tag}", 0.0)) > safe_drop else 0.0
+                for row in grounded
+            ])
+        record["safe_s_for_grounded"] = safe_s
+
+        if lost:
+            hard_tag = f"{max(strengths):.2f}".replace(".", "p")
+            record["hard_lost_grounded_drop"] = mean([float(row.get(f"drop_s{hard_tag}", 0.0)) for row in lost])
+            record["lost_grounded_hard_overkill_rate"] = mean([
+                1.0 if float(row.get(f"drop_s{hard_tag}", 0.0)) > safe_drop else 0.0
+                for row in lost
+            ])
+        output.append(record)
+    return output
+
+
+def aggregate_diagnostics(records, priors, threshold, soft_gamma, soft_temperature, norm_low=None, norm_high=0.9):
     trigger_count = 0
     weighted_trigger_count = 0.0
+    if norm_low is None:
+        norm_low = threshold
+    norm_den = max(float(norm_high) - float(norm_low), 1e-6)
+    norm_excesses = []
+    weighted_norm_excesses = []
     excesses = []
     weighted_excesses = []
     prior_texts = []
@@ -377,9 +515,12 @@ def aggregate_diagnostics(records, priors, threshold, soft_gamma, soft_temperatu
         removed_text_value_norm = float(record.get("removed_text_value_norm", 0.0))
         recent_output_value_norm = float(record.get("recent_output_value_norm", 0.0))
         excess = max(0.0, text_mass - threshold)
+        norm_excess = min(max((text_mass - norm_low) / norm_den, 0.0), 1.0)
         trigger = 1.0 if text_mass >= threshold else 0.0
         trigger_count += int(trigger)
         weighted_trigger_count += prior * trigger
+        norm_excesses.append(norm_excess)
+        weighted_norm_excesses.append(prior * norm_excess)
         excesses.append(excess)
         weighted_excesses.append(prior * excess)
         prior_texts.append(prior * text_mass)
@@ -405,6 +546,9 @@ def aggregate_diagnostics(records, priors, threshold, soft_gamma, soft_temperatu
     return {
         "trigger_count": trigger_count,
         "weighted_trigger_count": weighted_trigger_count,
+        "mean_norm_excess": float(np.mean(norm_excesses)) if norm_excesses else 0.0,
+        "max_norm_excess": float(np.max(norm_excesses)) if norm_excesses else 0.0,
+        "weighted_norm_excess": float(np.sum(weighted_norm_excesses)) if weighted_norm_excesses else 0.0,
         "mean_excess": float(np.mean(excesses)) if excesses else 0.0,
         "max_excess": float(np.max(excesses)) if excesses else 0.0,
         "weighted_excess": float(np.sum(weighted_excesses)) if weighted_excesses else 0.0,
@@ -568,7 +712,28 @@ def main():
     parser.add_argument("--adhh-threshold", type=float, default=0.4)
     parser.add_argument("--soft-gamma", type=float, default=0.75)
     parser.add_argument("--soft-temperature", type=float, default=0.05)
+    parser.add_argument("--suppression-sweep", default="")
+    parser.add_argument(
+        "--sweep-bin-feature",
+        default="max_norm_excess",
+        choices=["mean_norm_excess", "max_norm_excess", "weighted_norm_excess"],
+    )
+    parser.add_argument("--sweep-bin-edges", default="0,0.2,0.4,0.6,0.8,1.0")
+    parser.add_argument("--sweep-tau-low", type=float, default=None)
+    parser.add_argument("--sweep-tau-high", type=float, default=0.9)
+    parser.add_argument("--sweep-safe-drop", type=float, default=0.1)
+    parser.add_argument("--sweep-hall-drop-fraction", type=float, default=0.8)
     args = parser.parse_args()
+
+    sweep_strengths = parse_float_list(args.suppression_sweep)
+    sweep_bin_edges = parse_float_list(args.sweep_bin_edges)
+    sweep_tau_low = args.sweep_tau_low if args.sweep_tau_low is not None else args.adhh_threshold
+    if sweep_strengths:
+        sweep_strengths = sorted(set(min(max(strength, 0.0), 1.0) for strength in sweep_strengths))
+        if len(sweep_bin_edges) < 2:
+            raise ValueError("--sweep-bin-edges must contain at least two comma-separated values")
+        if args.sweep_tau_high <= sweep_tau_low:
+            raise ValueError("--sweep-tau-high must be greater than --sweep-tau-low")
 
     disable_torch_init()
     model_name = get_model_name_from_path(os.path.expanduser(args.model_path))
@@ -622,7 +787,24 @@ def main():
                 args.adhh_threshold,
                 args.soft_gamma,
                 args.soft_temperature,
+                norm_low=sweep_tau_low,
+                norm_high=args.sweep_tau_high,
             )
+            sweep = {}
+            if sweep_strengths:
+                sweep = sweep_features(
+                    original,
+                    sweep_one_step(
+                        model,
+                        tokenizer,
+                        prompt_ids,
+                        prefix_ids,
+                        image_tensor,
+                        image_size,
+                        target_token_id,
+                        sweep_strengths,
+                    ),
+                )
 
             output = {
                 "image_id": row["image_id"],
@@ -659,7 +841,10 @@ def main():
                 "soft_caption": row["soft_caption"],
                 "hard_caption": row["hard_caption"],
                 "prior_source": prior_source,
+                "e_bin_feature": args.sweep_bin_feature,
+                "e_bin": e_bin(float(features.get(args.sweep_bin_feature, 0.0)), sweep_bin_edges),
                 **features,
+                **sweep,
             }
             output_rows.append(output)
             out.write(json.dumps({**output, "diagnostics": original["diagnostics"]}) + "\n")
@@ -670,6 +855,11 @@ def main():
         "label_counts": dict(Counter(row["label"] for row in output_rows)),
         "prior_source": prior_source,
         "heads": heads,
+        "suppression_sweep": sweep_strengths,
+        "sweep_bin_feature": args.sweep_bin_feature,
+        "sweep_bin_edges": sweep_bin_edges,
+        "sweep_tau_low": sweep_tau_low,
+        "sweep_tau_high": args.sweep_tau_high,
     }
     with open(os.path.join(args.output_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -692,6 +882,22 @@ def main():
         os.path.join(args.output_dir, "hallucinated_vs_kept_auc.csv"),
         pairwise_positive_prefix_auc_rows(output_rows, "hallucinated_object", "kept_grounded"),
     )
+    if sweep_strengths:
+        write_csv(os.path.join(args.output_dir, "suppression_sweep_rows.csv"), output_rows)
+        write_csv(
+            os.path.join(args.output_dir, "suppression_sweep_by_group_bin.csv"),
+            summarize_sweep_by_group_bin(output_rows, sweep_strengths, args.sweep_bin_feature),
+        )
+        write_csv(
+            os.path.join(args.output_dir, "suppression_sweep_policy_table.csv"),
+            summarize_sweep_policy(
+                output_rows,
+                sweep_strengths,
+                args.sweep_bin_feature,
+                args.sweep_safe_drop,
+                args.sweep_hall_drop_fraction,
+            ),
+        )
     print(json.dumps(summary, indent=2))
 
 
