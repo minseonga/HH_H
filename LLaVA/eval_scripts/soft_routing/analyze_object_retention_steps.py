@@ -36,6 +36,15 @@ FEATURES = [
     "weighted_question_attention",
     "weighted_recent_output_attention",
     "weighted_image_attention",
+    "mean_visual_mass_ratio",
+    "mean_visual_value_ratio",
+    "mean_recent_output_ratio",
+    "weighted_visual_mass_ratio",
+    "weighted_visual_value_ratio",
+    "weighted_recent_output_ratio",
+    "mean_img_value_norm",
+    "weighted_img_value_norm",
+    "visual_value_minus_mass_ratio",
     "mean_removed_text_value_norm",
     "max_removed_text_value_norm",
     "weighted_removed_text_value_norm",
@@ -342,6 +351,14 @@ def aggregate_diagnostics(records, priors, threshold, soft_gamma, soft_temperatu
     weighted_question_attentions = []
     weighted_recent_output_attentions = []
     weighted_image_attentions = []
+    visual_mass_ratios = []
+    visual_value_ratios = []
+    recent_output_ratios = []
+    weighted_visual_mass_ratios = []
+    weighted_visual_value_ratios = []
+    weighted_recent_output_ratios = []
+    img_value_norms = []
+    weighted_img_value_norms = []
     removed_text_value_norms = []
     weighted_removed_text_value_norms = []
     weighted_recent_output_value_norms = []
@@ -353,6 +370,10 @@ def aggregate_diagnostics(records, priors, threshold, soft_gamma, soft_temperatu
         output_attention = float(record.get("output_attention", 0.0))
         recent_output_attention = float(record.get("recent_output_attention", 0.0))
         image_attention = float(record.get("img_mass", 0.0))
+        visual_mass_ratio = float(record.get("visual_mass_ratio", 0.0))
+        visual_value_ratio = float(record.get("visual_value_ratio", 0.0))
+        recent_output_ratio = float(record.get("recent_output_ratio", 0.0))
+        img_value_norm = float(record.get("img_value_norm", 0.0))
         removed_text_value_norm = float(record.get("removed_text_value_norm", 0.0))
         recent_output_value_norm = float(record.get("recent_output_value_norm", 0.0))
         excess = max(0.0, text_mass - threshold)
@@ -370,6 +391,14 @@ def aggregate_diagnostics(records, priors, threshold, soft_gamma, soft_temperatu
         weighted_question_attentions.append(prior * question_attention)
         weighted_recent_output_attentions.append(prior * recent_output_attention)
         weighted_image_attentions.append(prior * image_attention)
+        visual_mass_ratios.append(visual_mass_ratio)
+        visual_value_ratios.append(visual_value_ratio)
+        recent_output_ratios.append(recent_output_ratio)
+        weighted_visual_mass_ratios.append(prior * visual_mass_ratio)
+        weighted_visual_value_ratios.append(prior * visual_value_ratio)
+        weighted_recent_output_ratios.append(prior * recent_output_ratio)
+        img_value_norms.append(img_value_norm)
+        weighted_img_value_norms.append(prior * img_value_norm)
         removed_text_value_norms.append(removed_text_value_norm)
         weighted_removed_text_value_norms.append(prior * removed_text_value_norm)
         weighted_recent_output_value_norms.append(prior * recent_output_value_norm)
@@ -389,6 +418,18 @@ def aggregate_diagnostics(records, priors, threshold, soft_gamma, soft_temperatu
         "weighted_question_attention": float(np.sum(weighted_question_attentions)) if weighted_question_attentions else 0.0,
         "weighted_recent_output_attention": float(np.sum(weighted_recent_output_attentions)) if weighted_recent_output_attentions else 0.0,
         "weighted_image_attention": float(np.sum(weighted_image_attentions)) if weighted_image_attentions else 0.0,
+        "mean_visual_mass_ratio": float(np.mean(visual_mass_ratios)) if visual_mass_ratios else 0.0,
+        "mean_visual_value_ratio": float(np.mean(visual_value_ratios)) if visual_value_ratios else 0.0,
+        "mean_recent_output_ratio": float(np.mean(recent_output_ratios)) if recent_output_ratios else 0.0,
+        "weighted_visual_mass_ratio": float(np.sum(weighted_visual_mass_ratios)) if weighted_visual_mass_ratios else 0.0,
+        "weighted_visual_value_ratio": float(np.sum(weighted_visual_value_ratios)) if weighted_visual_value_ratios else 0.0,
+        "weighted_recent_output_ratio": float(np.sum(weighted_recent_output_ratios)) if weighted_recent_output_ratios else 0.0,
+        "mean_img_value_norm": float(np.mean(img_value_norms)) if img_value_norms else 0.0,
+        "weighted_img_value_norm": float(np.sum(weighted_img_value_norms)) if weighted_img_value_norms else 0.0,
+        "visual_value_minus_mass_ratio": (
+            float(np.mean(visual_value_ratios) - np.mean(visual_mass_ratios))
+            if visual_value_ratios and visual_mass_ratios else 0.0
+        ),
         "mean_removed_text_value_norm": float(np.mean(removed_text_value_norms)) if removed_text_value_norms else 0.0,
         "max_removed_text_value_norm": float(np.max(removed_text_value_norms)) if removed_text_value_norms else 0.0,
         "weighted_removed_text_value_norm": float(np.sum(weighted_removed_text_value_norms)) if weighted_removed_text_value_norms else 0.0,

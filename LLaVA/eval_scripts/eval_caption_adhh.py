@@ -143,6 +143,7 @@ def eval_model(args):
         or args.dynamic_deactivate
         or args.attribution_soft_deactivate
         or args.retention_aware_deactivate
+        or args.visual_gate_deactivate
     ):
         if model_path == 'liuhaotian/llava-v1.5-7b':
             model.config.img_start_pos = 35
@@ -198,6 +199,21 @@ def eval_model(args):
             model.config.retention_lambda = args.retention_lambda
             model.config.retention_soft_gamma = args.retention_soft_gamma
             model.config.retention_soft_temperature = args.retention_soft_temperature
+        if args.visual_gate_deactivate:
+            model.config.visual_gate_deactivate = True
+            model.config.visual_gate_gamma = args.visual_gate_gamma
+            model.config.visual_gate_beta = args.visual_gate_beta
+            model.config.visual_gate_v0 = args.visual_gate_v0
+            model.config.visual_gate_temperature = args.visual_gate_temperature
+            model.config.visual_gate_proxy = args.visual_gate_proxy
+            model.config.visual_gate_recent_weight = args.visual_gate_recent_weight
+            model.config.visual_gate_recent_window = args.visual_gate_recent_window
+            model.config.visual_gate_tau_low = args.visual_gate_tau_low
+            model.config.visual_gate_tau_high = args.visual_gate_tau_high
+            if args.head_thresholds_path:
+                with open(args.head_thresholds_path, "r") as f:
+                    threshold_data = json.load(f)
+                model.config.head_text_thresholds = threshold_data.get("head_text_thresholds", threshold_data)
 
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
@@ -265,6 +281,7 @@ if __name__ == "__main__":
     parser.add_argument("--dynamic_deactivate", action='store_true', default=False)
     parser.add_argument("--attribution_soft_deactivate", action='store_true', default=False)
     parser.add_argument("--retention_aware_deactivate", action='store_true', default=False)
+    parser.add_argument("--visual_gate_deactivate", action='store_true', default=False)
     parser.add_argument("--adhh_threshold", type=float, default=0.0)
     parser.add_argument("--attention_head_path", type=str, default="")
     parser.add_argument("--top_k", type=int, default=20)
@@ -293,6 +310,15 @@ if __name__ == "__main__":
     parser.add_argument("--retention_lambda", type=float, default=1.0)
     parser.add_argument("--retention_soft_gamma", type=float, default=0.75)
     parser.add_argument("--retention_soft_temperature", type=float, default=0.05)
+    parser.add_argument("--visual_gate_gamma", type=float, default=1.0)
+    parser.add_argument("--visual_gate_beta", type=float, default=0.75)
+    parser.add_argument("--visual_gate_v0", type=float, default=0.5)
+    parser.add_argument("--visual_gate_temperature", type=float, default=0.15)
+    parser.add_argument("--visual_gate_proxy", type=str, default="value", choices=["value", "mass", "value_recent"])
+    parser.add_argument("--visual_gate_recent_weight", type=float, default=0.0)
+    parser.add_argument("--visual_gate_recent_window", type=int, default=16)
+    parser.add_argument("--visual_gate_tau_low", type=float, default=0.4)
+    parser.add_argument("--visual_gate_tau_high", type=float, default=0.9)
 
     args = parser.parse_args()
     if sum([
@@ -301,6 +327,7 @@ if __name__ == "__main__":
         args.dynamic_deactivate,
         args.attribution_soft_deactivate,
         args.retention_aware_deactivate,
+        args.visual_gate_deactivate,
     ]) > 1:
         raise ValueError("Only one intervention mode can be enabled")
     set_seed(args.seed)

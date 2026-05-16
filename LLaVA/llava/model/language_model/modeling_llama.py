@@ -686,6 +686,64 @@ class LlamaAttention(nn.Module):
                     strength = torch.clamp(strength, min=0.0, max=1.0).to(attn_weights.dtype)
                     text_attention *= (1.0 - strength)
 
+        if getattr(self.config, "visual_gate_deactivate", False):
+            if head_list is not None:
+                img_slice = slice(self.config.img_start_pos, self.config.img_start_pos + self.config.img_length)
+                text_start_idx = self.config.img_start_pos + self.config.img_length
+                priors = getattr(self.config, "head_attribution_priors", {})
+                thresholds = getattr(self.config, "head_text_thresholds", {})
+                gamma = float(getattr(self.config, "visual_gate_gamma", 1.0))
+                beta = float(getattr(self.config, "visual_gate_beta", 0.75))
+                v0 = float(getattr(self.config, "visual_gate_v0", 0.5))
+                temperature = max(float(getattr(self.config, "visual_gate_temperature", 0.15)), 1e-6)
+                proxy = getattr(self.config, "visual_gate_proxy", "value")
+                recent_weight = float(getattr(self.config, "visual_gate_recent_weight", 0.0))
+                recent_window = int(getattr(self.config, "visual_gate_recent_window", 16))
+                default_low = float(getattr(self.config, "visual_gate_tau_low", getattr(self.config, "adhh_threshold", 0.4)))
+                default_high = float(getattr(self.config, "visual_gate_tau_high", 0.9))
+                eps = float(getattr(self.config, "visual_gate_eps", 1e-6))
+                recent_start = min(max(kv_seq_len - recent_window, text_start_idx), kv_seq_len)
+                recent_slice = slice(recent_start, kv_seq_len)
+
+                for head in head_list:
+                    key = f"{int(self.layer_idx)}:{int(head)}"
+                    prior = float(priors.get(key, 1.0))
+                    threshold = thresholds.get(key, {})
+                    low = float(threshold.get("low", default_low))
+                    high = float(threshold.get("high", default_high))
+                    if high <= low:
+                        high = low + eps
+
+                    head_weights = attn_weights[:, head, -1, :]
+                    head_values = value_states[:, head, :, :]
+                    text_attention = head_weights[:, text_start_idx:]
+                    img_attention = head_weights[:, img_slice]
+                    recent_attention = head_weights[:, recent_slice]
+
+                    text_mass = torch.sum(text_attention, dim=-1, keepdim=True)
+                    img_mass = torch.sum(img_attention, dim=-1, keepdim=True)
+                    recent_mass = torch.sum(recent_attention, dim=-1, keepdim=True)
+                    excess = torch.clamp((text_mass - low) / (high - low), min=0.0, max=1.0)
+                    visual_mass_ratio = img_mass / (img_mass + text_mass + eps)
+
+                    if proxy in {"value", "value_recent"}:
+                        text_value = torch.bmm(text_attention.float().unsqueeze(1), head_values[:, text_start_idx:, :].float()).squeeze(1)
+                        img_value = torch.bmm(img_attention.float().unsqueeze(1), head_values[:, img_slice, :].float()).squeeze(1)
+                        text_value_norm = torch.linalg.vector_norm(text_value, dim=-1, keepdim=True)
+                        img_value_norm = torch.linalg.vector_norm(img_value, dim=-1, keepdim=True)
+                        visual_proxy = img_value_norm / (img_value_norm + text_value_norm + eps)
+                    else:
+                        visual_proxy = visual_mass_ratio
+
+                    if proxy == "value_recent":
+                        recent_ratio = recent_mass / (text_mass + eps)
+                        visual_proxy = torch.clamp(visual_proxy + recent_weight * recent_ratio, min=0.0, max=1.0)
+
+                    retention_gate = torch.sigmoid((visual_proxy - v0) / temperature).to(attn_weights.dtype)
+                    strength = gamma * prior * excess * (1.0 - beta * retention_gate)
+                    strength = torch.clamp(strength, min=0.0, max=1.0).to(attn_weights.dtype)
+                    text_attention *= (1.0 - strength)
+
         if getattr(self.config, "attribution_soft_deactivate", False):
             if head_list is not None:
                 text_start_idx = self.config.img_start_pos + self.config.img_length
@@ -758,20 +816,26 @@ class LlamaAttention(nn.Module):
                         question_attention = head_weights[:, question_slice]
                         output_attention = head_weights[:, output_slice]
                         recent_attention = head_weights[:, recent_slice]
+                        img_attention = head_weights[:, img_slice]
 
                         text_mass = torch.sum(text_attention).detach().float().cpu().item()
                         question_mass = torch.sum(question_attention).detach().float().cpu().item()
                         output_mass = torch.sum(output_attention).detach().float().cpu().item()
                         recent_mass = torch.sum(recent_attention).detach().float().cpu().item()
-                        img_mass = torch.sum(head_weights[:, img_slice]).detach().float().cpu().item()
+                        img_mass = torch.sum(img_attention).detach().float().cpu().item()
                         text_value = torch.bmm(text_attention.float().unsqueeze(1), head_values[:, text_slice, :].float()).squeeze(1)
+                        img_value = torch.bmm(img_attention.float().unsqueeze(1), head_values[:, img_slice, :].float()).squeeze(1)
                         question_value = torch.bmm(question_attention.float().unsqueeze(1), head_values[:, question_slice, :].float()).squeeze(1)
                         output_value = torch.bmm(output_attention.float().unsqueeze(1), head_values[:, output_slice, :].float()).squeeze(1)
                         recent_value = torch.bmm(recent_attention.float().unsqueeze(1), head_values[:, recent_slice, :].float()).squeeze(1)
                         text_value_norm = torch.linalg.vector_norm(text_value).detach().float().cpu().item()
+                        img_value_norm = torch.linalg.vector_norm(img_value).detach().float().cpu().item()
                         question_value_norm = torch.linalg.vector_norm(question_value).detach().float().cpu().item()
                         output_value_norm = torch.linalg.vector_norm(output_value).detach().float().cpu().item()
                         recent_value_norm = torch.linalg.vector_norm(recent_value).detach().float().cpu().item()
+                        visual_mass_ratio = img_mass / (img_mass + text_mass + 1e-6)
+                        visual_value_ratio = img_value_norm / (img_value_norm + text_value_norm + 1e-6)
+                        recent_output_ratio = recent_mass / (text_mass + 1e-6)
                         soft_alpha = torch.sigmoid(torch.tensor((text_mass - threshold) / soft_temperature)).item()
                         records.append({
                             "layer": int(self.layer_idx) if self.layer_idx is not None else -1,
@@ -783,7 +847,11 @@ class LlamaAttention(nn.Module):
                             "output_attention": output_mass,
                             "recent_output_attention": recent_mass,
                             "img_mass": img_mass,
+                            "visual_mass_ratio": float(visual_mass_ratio),
                             "text_value_norm": text_value_norm,
+                            "img_value_norm": img_value_norm,
+                            "visual_value_ratio": float(visual_value_ratio),
+                            "recent_output_ratio": float(recent_output_ratio),
                             "removed_text_value_norm": text_value_norm,
                             "question_value_norm": question_value_norm,
                             "output_value_norm": output_value_norm,

@@ -63,6 +63,55 @@ def pairwise_auc(rows, positive_name, negative_name, positive_fn, negative_fn):
     return output
 
 
+def rankdata(values):
+    order = sorted(range(len(values)), key=lambda idx: values[idx])
+    ranks = [0.0] * len(values)
+    idx = 0
+    while idx < len(order):
+        end = idx + 1
+        while end < len(order) and values[order[end]] == values[order[idx]]:
+            end += 1
+        avg_rank = (idx + end - 1) / 2.0
+        for pos in range(idx, end):
+            ranks[order[pos]] = avg_rank
+        idx = end
+    return ranks
+
+
+def corr(a, b):
+    if len(a) < 2 or len(set(a)) < 2 or len(set(b)) < 2:
+        return None
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def oracle_correlations(rows, oracle_feature="visual_support_logprob"):
+    if not rows or oracle_feature not in rows[0]:
+        return []
+    oracle = [to_float(row, oracle_feature) for row in rows]
+    oracle_ranks = rankdata(oracle)
+    output = []
+    for feature in FEATURES:
+        if feature == oracle_feature:
+            continue
+        values = [to_float(row, feature) for row in rows]
+        pearson = corr(values, oracle)
+        spearman = corr(rankdata(values), oracle_ranks)
+        if pearson is None or spearman is None:
+            continue
+        output.append({
+            "feature": feature,
+            "oracle_feature": oracle_feature,
+            "n": len(rows),
+            "pearson": pearson,
+            "spearman": spearman,
+            "abs_spearman": abs(spearman),
+            "mean_feature": mean(values),
+            "mean_oracle": mean(oracle),
+        })
+    output.sort(key=lambda item: item["abs_spearman"], reverse=True)
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--features-csv", required=True)
@@ -113,6 +162,10 @@ def main():
             lambda row: row["label"].startswith("hallucinated_object"),
             lambda row: row["label"] == "kept_grounded",
         ),
+    )
+    write_csv(
+        os.path.join(output_dir, "oracle_visual_support_correlations.csv"),
+        oracle_correlations(rows),
     )
     print(f"wrote summaries to {output_dir}")
 
