@@ -16,6 +16,8 @@ SOFT_GAMMA="${SOFT_GAMMA:-0.75}"
 TOP_K="${TOP_K:-20}"
 MAX_PER_LABEL="${MAX_PER_LABEL:-100}"
 HALLUCINATED_SOURCE="${HALLUCINATED_SOURCE:-soft}"
+COMPUTE_VISUAL_SUPPORT="${COMPUTE_VISUAL_SUPPORT:-0}"
+VISUAL_ABLATION="${VISUAL_ABLATION:-zero}"
 
 BASE_RESULT_PATH="${BASE_RESULT_PATH:-./results/${DATASET}/soft_routing_smoke_n${NUM_SAMPLES}_seed${SEED}_tau${ADHH_THRESHOLD}_T${SOFT_TEMPERATURE}}"
 HARD_RESULTS="${HARD_RESULTS:-${BASE_RESULT_PATH}/hard_tau${ADHH_THRESHOLD}/captions_eval_results.json}"
@@ -46,6 +48,12 @@ echo "[info] prior path: ${PRIOR_PATH:-built-in rank prior}"
 echo "[info] output dir: ${OUTPUT_DIR}"
 echo "[info] max per label: ${MAX_PER_LABEL}"
 echo "[info] hallucinated source: ${HALLUCINATED_SOURCE}"
+echo "[info] compute visual support: ${COMPUTE_VISUAL_SUPPORT}"
+
+visual_support_args=()
+if [ "${COMPUTE_VISUAL_SUPPORT}" = "1" ]; then
+    visual_support_args=(--compute-visual-support --visual-ablation "${VISUAL_ABLATION}")
+fi
 
 CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.analyze_object_retention_steps \
     --hard-results "${HARD_RESULTS}" \
@@ -58,6 +66,7 @@ CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.analyze_obj
     --conv-mode vicuna_v1 \
     --max-per-label "${MAX_PER_LABEL}" \
     --hallucinated-source "${HALLUCINATED_SOURCE}" \
+    "${visual_support_args[@]}" \
     --adhh-threshold "${ADHH_THRESHOLD}" \
     --soft-gamma "${SOFT_GAMMA}" \
     --soft-temperature "${SOFT_TEMPERATURE}" \

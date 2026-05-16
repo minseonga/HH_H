@@ -43,6 +43,11 @@ FEATURES = [
     "target_logprob_drop_hard",
     "target_logprob_drop_soft",
     "target_drop_gap_hard_minus_soft",
+    "target_logprob_no_image",
+    "visual_support_logprob",
+    "visual_support_rank_delta",
+    "kl_original_to_no_image",
+    "entropy_no_image_minus_original",
     "kl_original_to_hard",
     "kl_original_to_soft",
     "entropy_hard_minus_original",
@@ -301,6 +306,28 @@ def kl_divergence(p_score, q_score):
     return float((p * (p_log - q_log)).sum().item())
 
 
+def visual_support_features(original, no_image):
+    if no_image is None:
+        return {
+            "target_logprob_no_image": 0.0,
+            "visual_support_logprob": 0.0,
+            "visual_support_rank_delta": 0.0,
+            "kl_original_to_no_image": 0.0,
+            "entropy_no_image_minus_original": 0.0,
+            "no_image_target_rank": 0,
+            "no_image_next_token": "",
+        }
+    return {
+        "target_logprob_no_image": no_image["target_logprob"],
+        "visual_support_logprob": original["target_logprob"] - no_image["target_logprob"],
+        "visual_support_rank_delta": no_image["target_rank"] - original["target_rank"],
+        "kl_original_to_no_image": kl_divergence(original["score"], no_image["score"]),
+        "entropy_no_image_minus_original": no_image["entropy"] - original["entropy"],
+        "no_image_target_rank": no_image["target_rank"],
+        "no_image_next_token": no_image["next_token"],
+    }
+
+
 def aggregate_diagnostics(records, priors, threshold, soft_gamma, soft_temperature):
     trigger_count = 0
     weighted_trigger_count = 0.0
@@ -495,6 +522,8 @@ def main():
     parser.add_argument("--conv-mode", default="vicuna_v1")
     parser.add_argument("--max-per-label", type=int, default=100)
     parser.add_argument("--hallucinated-source", type=str, default="soft", choices=["soft", "hard", "both"])
+    parser.add_argument("--compute-visual-support", action="store_true", default=False)
+    parser.add_argument("--visual-ablation", type=str, default="zero", choices=["zero"])
     parser.add_argument("--adhh-threshold", type=float, default=0.4)
     parser.add_argument("--soft-gamma", type=float, default=0.75)
     parser.add_argument("--soft-temperature", type=float, default=0.05)
@@ -532,6 +561,20 @@ def main():
             original = one_step(model, tokenizer, prompt_ids, prefix_ids, image_tensor, image_size, target_token_id, "none", record=True)
             hard = one_step(model, tokenizer, prompt_ids, prefix_ids, image_tensor, image_size, target_token_id, "hard")
             soft = one_step(model, tokenizer, prompt_ids, prefix_ids, image_tensor, image_size, target_token_id, "soft")
+            no_image = None
+            if args.compute_visual_support:
+                if args.visual_ablation == "zero":
+                    ablated_image_tensor = torch.zeros_like(image_tensor)
+                no_image = one_step(
+                    model,
+                    tokenizer,
+                    prompt_ids,
+                    prefix_ids,
+                    ablated_image_tensor,
+                    image_size,
+                    target_token_id,
+                    "none",
+                )
             features = aggregate_diagnostics(
                 original["diagnostics"],
                 priors,
@@ -557,6 +600,7 @@ def main():
                 "target_logprob_drop_hard": original["target_logprob"] - hard["target_logprob"],
                 "target_logprob_drop_soft": original["target_logprob"] - soft["target_logprob"],
                 "target_drop_gap_hard_minus_soft": (original["target_logprob"] - hard["target_logprob"]) - (original["target_logprob"] - soft["target_logprob"]),
+                **visual_support_features(original, no_image),
                 "hard_target_rank": hard["target_rank"],
                 "soft_target_rank": soft["target_rank"],
                 "original_target_rank": original["target_rank"],
