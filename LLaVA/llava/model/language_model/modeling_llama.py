@@ -802,7 +802,8 @@ class LlamaAttention(nn.Module):
                     text_attention *= (1.0 - strength)
 
         if getattr(self.config, "record_intervention_diagnostics", False):
-            if head_list is not None:
+            diag_heads = range(self.num_heads) if getattr(self.config, "record_all_head_diagnostics", False) else head_list
+            if diag_heads is not None:
                 img_slice = slice(self.config.img_start_pos, self.config.img_start_pos + self.config.img_length)
                 text_start_idx = self.config.img_start_pos + self.config.img_length
                 threshold = float(getattr(self.config, "adhh_threshold", 0.0))
@@ -813,7 +814,7 @@ class LlamaAttention(nn.Module):
                 diagnostic_recent_window = int(getattr(self.config, "diagnostic_recent_window", 16))
                 records = getattr(self.config, "intervention_diagnostics", None)
                 if records is not None:
-                    for head in head_list:
+                    for head in diag_heads:
                         key = f"{int(self.layer_idx)}:{int(head)}"
                         output_start = min(max(diagnostic_output_start, text_start_idx), kv_seq_len)
                         recent_start = min(max(kv_seq_len - diagnostic_recent_window, output_start), kv_seq_len)
@@ -835,6 +836,12 @@ class LlamaAttention(nn.Module):
                         output_mass = torch.sum(output_attention).detach().float().cpu().item()
                         recent_mass = torch.sum(recent_attention).detach().float().cpu().item()
                         img_mass = torch.sum(img_attention).detach().float().cpu().item()
+                        img_distribution = img_attention.float() / (torch.sum(img_attention.float(), dim=-1, keepdim=True) + 1e-6)
+                        img_entropy = -torch.sum(
+                            img_distribution * torch.log(img_distribution + 1e-6),
+                            dim=-1,
+                        ).detach().float().cpu().item()
+                        img_entropy_norm = img_entropy / math.log(max(self.config.img_length, 2))
                         text_value = torch.bmm(text_attention.float().unsqueeze(1), head_values[:, text_slice, :].float()).squeeze(1)
                         img_value = torch.bmm(img_attention.float().unsqueeze(1), head_values[:, img_slice, :].float()).squeeze(1)
                         question_value = torch.bmm(question_attention.float().unsqueeze(1), head_values[:, question_slice, :].float()).squeeze(1)
@@ -860,6 +867,10 @@ class LlamaAttention(nn.Module):
                             "recent_output_attention": recent_mass,
                             "img_mass": img_mass,
                             "visual_mass_ratio": float(visual_mass_ratio),
+                            "img_entropy": float(img_entropy),
+                            "img_entropy_norm": float(img_entropy_norm),
+                            "text_ratio": float(text_mass / (text_mass + img_mass + 1e-6)),
+                            "text_ratio_img_entropy": float((text_mass / (text_mass + img_mass + 1e-6)) * img_entropy_norm),
                             "text_value_norm": text_value_norm,
                             "img_value_norm": img_value_norm,
                             "visual_value_ratio": float(visual_value_ratio),
