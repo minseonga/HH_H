@@ -260,6 +260,58 @@ def overlap_record(name, selected, reference):
     }
 
 
+def rank_reference_heads(rows, reference_heads, selectors, min_layer=None, max_layer=None):
+    filtered = []
+    for row in rows:
+        layer = int(row["layer"])
+        if min_layer is not None and layer < min_layer:
+            continue
+        if max_layer is not None and layer > max_layer:
+            continue
+        filtered.append(row)
+
+    rank_maps = {}
+    for selector_name, score_name in selectors.items():
+        ranked = sorted(filtered, key=lambda item: item[score_name], reverse=True)
+        rank_maps[selector_name] = {
+            row["head_key"]: {
+                "rank": idx + 1,
+                "score": float(row[score_name]),
+            }
+            for idx, row in enumerate(ranked)
+        }
+
+    wide_rows = []
+    long_rows = []
+    for idx, head in enumerate(reference_heads):
+        key = head_key(*head)
+        wide = {
+            "adhh_order": idx + 1,
+            "layer": int(head[0]),
+            "head": int(head[1]),
+            "head_key": key,
+        }
+        for selector_name in selectors:
+            item = rank_maps[selector_name].get(key, {})
+            rank = item.get("rank")
+            score = item.get("score")
+            wide[f"{selector_name}_rank"] = rank
+            wide[f"{selector_name}_score"] = score
+            wide[f"{selector_name}_in_top20"] = bool(rank is not None and rank <= 20)
+            long_rows.append({
+                "selector": selector_name,
+                "adhh_order": idx + 1,
+                "layer": int(head[0]),
+                "head": int(head[1]),
+                "head_key": key,
+                "rank": rank,
+                "score": score,
+                "in_top20": bool(rank is not None and rank <= 20),
+            })
+        wide_rows.append(wide)
+    return wide_rows, long_rows
+
+
 def write_csv(path, rows):
     if not rows:
         with open(path, "w") as f:
@@ -385,12 +437,21 @@ def main():
             score_name,
             {**metadata, "selector": selector_name},
         )
+    rank_rows, rank_long_rows = rank_reference_heads(
+        head_rows,
+        reference_heads,
+        selectors,
+        args.min_layer,
+        args.max_layer,
+    )
 
     summary = {
         **metadata,
         "overlap": overlap_rows,
     }
     write_csv(os.path.join(args.output_dir, "overlap_summary.csv"), overlap_rows)
+    write_csv(os.path.join(args.output_dir, "reference_head_ranks.csv"), rank_rows)
+    write_csv(os.path.join(args.output_dir, "reference_head_ranks_long.csv"), rank_long_rows)
     with open(os.path.join(args.output_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     print(json.dumps(summary, indent=2))

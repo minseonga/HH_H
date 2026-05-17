@@ -85,3 +85,8 @@ echo "[summary] top behavioral heads"
 if [ -f "${OUTPUT_DIR}/head_scores.csv" ]; then
     column -s, -t "${OUTPUT_DIR}/head_scores.csv" | head -30
 fi
+
+echo "[summary] AD-HH reference head ranks under behavioral scores"
+if [ -f "${OUTPUT_DIR}/reference_head_ranks.csv" ]; then
+    column -s, -t "${OUTPUT_DIR}/reference_head_ranks.csv" | head -30
+fi
