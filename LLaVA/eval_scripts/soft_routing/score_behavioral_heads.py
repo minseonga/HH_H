@@ -207,8 +207,39 @@ def aggregate_head_scores_from_stats(stats):
     return rows
 
 
-def top_heads(rows, score_name, top_k):
-    ranked = sorted(rows, key=lambda item: item[score_name], reverse=True)
+def add_layer_normalized_scores(rows):
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[int(row["layer"])].append(row)
+
+    def minmax(items, key, value):
+        values = [float(item[key]) for item in items]
+        low = min(values)
+        high = max(values)
+        if high <= low:
+            return 0.0
+        return (float(value) - low) / (high - low)
+
+    for items in grouped.values():
+        for row in items:
+            row["layer_norm_text_ratio"] = minmax(items, "mean_text_ratio", row["mean_text_ratio"])
+            row["layer_norm_img_entropy"] = minmax(items, "mean_img_entropy_norm", row["mean_img_entropy_norm"])
+            row["layer_norm_text_ratio_img_entropy"] = (
+                row["layer_norm_text_ratio"] * row["layer_norm_img_entropy"]
+            )
+    return rows
+
+
+def top_heads(rows, score_name, top_k, min_layer=None, max_layer=None):
+    filtered = []
+    for row in rows:
+        layer = int(row["layer"])
+        if min_layer is not None and layer < min_layer:
+            continue
+        if max_layer is not None and layer > max_layer:
+            continue
+        filtered.append(row)
+    ranked = sorted(filtered, key=lambda item: item[score_name], reverse=True)
     return [[int(item["layer"]), int(item["head"])] for item in ranked[:top_k]]
 
 
@@ -277,6 +308,8 @@ def main():
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--max-samples", type=int, default=200)
     parser.add_argument("--warmup-tokens", type=int, default=0)
+    parser.add_argument("--min-layer", type=int, default=None)
+    parser.add_argument("--max-layer", type=int, default=None)
     parser.add_argument("--adhh-threshold", type=float, default=0.4)
     args = parser.parse_args()
 
@@ -318,7 +351,7 @@ def main():
             record_file.flush()
             update_head_stats(head_stats, records)
 
-    head_rows = aggregate_head_scores_from_stats(head_stats)
+    head_rows = add_layer_normalized_scores(aggregate_head_scores_from_stats(head_stats))
     head_rows = sorted(head_rows, key=lambda item: item["mean_text_ratio_img_entropy"], reverse=True)
     write_csv(os.path.join(args.output_dir, "head_scores.csv"), head_rows)
 
@@ -327,6 +360,9 @@ def main():
         "image_entropy": "mean_img_entropy_norm",
         "text_ratio_x_image_entropy": "mean_text_ratio_img_entropy",
         "text_img_log_ratio": "mean_text_img_log_ratio",
+        "layer_norm_text_ratio": "layer_norm_text_ratio",
+        "layer_norm_image_entropy": "layer_norm_img_entropy",
+        "layer_norm_text_ratio_x_image_entropy": "layer_norm_text_ratio_img_entropy",
     }
     overlap_rows = []
     metadata = {
@@ -336,9 +372,11 @@ def main():
         "reference_prior_source": prior_source,
         "reference_heads": reference_heads,
         "top_k": args.top_k,
+        "min_layer": args.min_layer,
+        "max_layer": args.max_layer,
     }
     for selector_name, score_name in selectors.items():
-        selected_heads = top_heads(head_rows, score_name, args.top_k)
+        selected_heads = top_heads(head_rows, score_name, args.top_k, args.min_layer, args.max_layer)
         overlap_rows.append(overlap_record(selector_name, selected_heads, reference_heads))
         write_head_json(
             os.path.join(args.output_dir, f"{selector_name}_top{args.top_k}.json"),

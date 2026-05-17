@@ -16,6 +16,8 @@ SOFT_TEMPERATURE="${SOFT_TEMPERATURE:-0.05}"
 TOP_K="${TOP_K:-20}"
 WARMUP_TOKENS="${WARMUP_TOKENS:-0}"
 HEAD_PRIOR_MODE="${HEAD_PRIOR_MODE:-auto}"
+MIN_LAYER="${MIN_LAYER:-}"
+MAX_LAYER="${MAX_LAYER:-}"
 
 BASE_RESULT_PATH="${BASE_RESULT_PATH:-./results/${DATASET}/soft_routing_smoke_n${NUM_SAMPLES}_seed${SEED}_tau${ADHH_THRESHOLD}_T${SOFT_TEMPERATURE}}"
 EVAL_RESULTS="${EVAL_RESULTS:-${BASE_RESULT_PATH}/greedy/captions_eval_results.json}"
@@ -49,6 +51,15 @@ echo "[info] output dir: ${OUTPUT_DIR}"
 echo "[info] max samples: ${MAX_SAMPLES}"
 echo "[info] warmup tokens: ${WARMUP_TOKENS}"
 echo "[info] top K: ${TOP_K}"
+echo "[info] layer filter: ${MIN_LAYER:-none}..${MAX_LAYER:-none}"
+
+layer_args=()
+if [ -n "${MIN_LAYER}" ]; then
+    layer_args+=(--min-layer "${MIN_LAYER}")
+fi
+if [ -n "${MAX_LAYER}" ]; then
+    layer_args+=(--max-layer "${MAX_LAYER}")
+fi
 
 CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.score_behavioral_heads \
     --eval-results "${EVAL_RESULTS}" \
@@ -61,6 +72,7 @@ CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.score_behav
     --top-k "${TOP_K}" \
     --max-samples "${MAX_SAMPLES}" \
     --warmup-tokens "${WARMUP_TOKENS}" \
+    "${layer_args[@]}" \
     --adhh-threshold "${ADHH_THRESHOLD}" \
     2>&1 | tee "${LOG_DIR}/behavioral_head_overlap_warmup${WARMUP_TOKENS}_n${MAX_SAMPLES}.log"
 
