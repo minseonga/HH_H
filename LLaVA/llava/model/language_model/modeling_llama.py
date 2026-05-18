@@ -69,6 +69,45 @@ logger = logging.get_logger(__name__)
 _CONFIG_FOR_DOC = "LlamaConfig"
 
 
+def _record_query_diagnostics(config, layer_idx, query_states, num_heads):
+    if not getattr(config, "record_query_diagnostics", False):
+        return
+    records = getattr(config, "query_diagnostics", None)
+    if records is None:
+        return
+
+    layer = int(layer_idx) if layer_idx is not None else -1
+    min_layer = getattr(config, "query_record_min_layer", None)
+    max_layer = getattr(config, "query_record_max_layer", None)
+    if min_layer is not None and layer < int(min_layer):
+        return
+    if max_layer is not None and layer > int(max_layer):
+        return
+
+    if getattr(config, "query_record_all_heads", True):
+        diag_heads = range(num_heads)
+    else:
+        diag_heads = getattr(config, "query_record_heads", None)
+        if diag_heads is None:
+            return
+
+    batch_idx = int(getattr(config, "query_record_batch_index", 0))
+    q_last = query_states[:, :, -1, :].detach().float().cpu()
+    if batch_idx < 0 or batch_idx >= q_last.shape[0]:
+        return
+    q_last = q_last[batch_idx]
+    for head in diag_heads:
+        head = int(head)
+        if head < 0 or head >= num_heads:
+            continue
+        records.append({
+            "layer": layer,
+            "head": head,
+            "head_key": f"{layer}:{head}",
+            "query": q_last[head].clone(),
+        })
+
+
 def _get_unpad_data(attention_mask):
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
     indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
@@ -534,6 +573,7 @@ class LlamaAttention(nn.Module):
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
@@ -1145,6 +1185,7 @@ class LlamaFlashAttention2(LlamaAttention):
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
@@ -1350,6 +1391,7 @@ class LlamaSdpaAttention(LlamaAttention):
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
