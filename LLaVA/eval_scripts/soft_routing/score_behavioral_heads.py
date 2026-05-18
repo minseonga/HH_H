@@ -26,6 +26,18 @@ SCORE_COLUMNS = [
     "mean_text_img_log_ratio",
 ]
 
+SUMMARY_SCORE_COLUMNS = [
+    "mean_text_ratio",
+    "mean_img_entropy_norm",
+    "mean_text_ratio_img_entropy",
+    "mean_text_mass",
+    "mean_img_mass",
+    "mean_text_img_log_ratio",
+    "layer_norm_text_ratio",
+    "layer_norm_img_entropy",
+    "layer_norm_text_ratio_img_entropy",
+]
+
 
 def load_eval_rows(path, max_samples):
     with open(path, "r") as f:
@@ -243,6 +255,18 @@ def top_heads(rows, score_name, top_k, min_layer=None, max_layer=None):
     return [[int(item["layer"]), int(item["head"])] for item in ranked[:top_k]]
 
 
+def top_head_rows(rows, score_name, top_k, min_layer=None, max_layer=None):
+    filtered = []
+    for row in rows:
+        layer = int(row["layer"])
+        if min_layer is not None and layer < min_layer:
+            continue
+        if max_layer is not None and layer > max_layer:
+            continue
+        filtered.append(row)
+    return sorted(filtered, key=lambda item: item[score_name], reverse=True)[:top_k]
+
+
 def overlap_record(name, selected, reference):
     selected_set = {head_key(*head) for head in selected}
     reference_set = {head_key(*head) for head in reference}
@@ -310,6 +334,95 @@ def rank_reference_heads(rows, reference_heads, selectors, min_layer=None, max_l
             })
         wide_rows.append(wide)
     return wide_rows, long_rows
+
+
+def percentile(values, q):
+    if not values:
+        return None
+    return float(np.percentile(np.array(values, dtype=float), q))
+
+
+def rank_summary_rows(rank_long_rows):
+    grouped = defaultdict(list)
+    for row in rank_long_rows:
+        if row["rank"] is not None:
+            grouped[row["selector"]].append(float(row["rank"]))
+
+    output = []
+    for selector, ranks in sorted(grouped.items()):
+        output.append({
+            "selector": selector,
+            "n_reference_heads": len(ranks),
+            "rank_min": min(ranks),
+            "rank_p25": percentile(ranks, 25),
+            "rank_median": percentile(ranks, 50),
+            "rank_p75": percentile(ranks, 75),
+            "rank_max": max(ranks),
+            "rank_mean": float(np.mean(ranks)),
+            "top20_count": sum(1 for rank in ranks if rank <= 20),
+            "top50_count": sum(1 for rank in ranks if rank <= 50),
+            "top100_count": sum(1 for rank in ranks if rank <= 100),
+            "top200_count": sum(1 for rank in ranks if rank <= 200),
+        })
+    return output
+
+
+def group_summary_record(group_name, items, reference_keys, score_name=None):
+    record = {
+        "group": group_name,
+        "selector_score": score_name or "",
+        "n": len(items),
+        "reference_overlap": sum(1 for item in items if item["head_key"] in reference_keys),
+        "layer_mean": float(np.mean([float(item["layer"]) for item in items])) if items else None,
+        "layer_min": min([int(item["layer"]) for item in items]) if items else None,
+        "layer_max": max([int(item["layer"]) for item in items]) if items else None,
+    }
+    for column in SUMMARY_SCORE_COLUMNS:
+        record[column] = float(np.mean([float(item.get(column, 0.0)) for item in items])) if items else None
+    return record
+
+
+def group_score_summary_rows(rows, reference_heads, selectors, top_k, min_layer=None, max_layer=None):
+    reference_keys = {head_key(*head) for head in reference_heads}
+    filtered = []
+    for row in rows:
+        layer = int(row["layer"])
+        if min_layer is not None and layer < min_layer:
+            continue
+        if max_layer is not None and layer > max_layer:
+            continue
+        filtered.append(row)
+
+    output = [
+        group_summary_record("adhh_reference", [row for row in filtered if row["head_key"] in reference_keys], reference_keys),
+        group_summary_record("non_reference", [row for row in filtered if row["head_key"] not in reference_keys], reference_keys),
+    ]
+    for selector_name, score_name in selectors.items():
+        output.append(group_summary_record(
+            f"{selector_name}_top{top_k}",
+            top_head_rows(rows, score_name, top_k, min_layer, max_layer),
+            reference_keys,
+            score_name,
+        ))
+    return output
+
+
+def selector_top_head_rows(rows, reference_heads, selectors, top_k, min_layer=None, max_layer=None):
+    reference_keys = {head_key(*head) for head in reference_heads}
+    output = []
+    for selector_name, score_name in selectors.items():
+        for idx, row in enumerate(top_head_rows(rows, score_name, top_k, min_layer, max_layer), start=1):
+            output.append({
+                "selector": selector_name,
+                "rank": idx,
+                "layer": int(row["layer"]),
+                "head": int(row["head"]),
+                "head_key": row["head_key"],
+                "is_adhh_reference": row["head_key"] in reference_keys,
+                "selector_score": float(row[score_name]),
+                **{column: row.get(column) for column in SUMMARY_SCORE_COLUMNS},
+            })
+    return output
 
 
 def write_csv(path, rows):
@@ -452,6 +565,15 @@ def main():
     write_csv(os.path.join(args.output_dir, "overlap_summary.csv"), overlap_rows)
     write_csv(os.path.join(args.output_dir, "reference_head_ranks.csv"), rank_rows)
     write_csv(os.path.join(args.output_dir, "reference_head_ranks_long.csv"), rank_long_rows)
+    write_csv(os.path.join(args.output_dir, "reference_rank_summary.csv"), rank_summary_rows(rank_long_rows))
+    write_csv(
+        os.path.join(args.output_dir, "head_group_score_summary.csv"),
+        group_score_summary_rows(head_rows, reference_heads, selectors, args.top_k, args.min_layer, args.max_layer),
+    )
+    write_csv(
+        os.path.join(args.output_dir, "selector_top_heads.csv"),
+        selector_top_head_rows(head_rows, reference_heads, selectors, args.top_k, args.min_layer, args.max_layer),
+    )
     with open(os.path.join(args.output_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     print(json.dumps(summary, indent=2))

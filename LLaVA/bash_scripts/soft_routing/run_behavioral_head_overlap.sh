@@ -90,3 +90,13 @@ echo "[summary] AD-HH reference head ranks under behavioral scores"
 if [ -f "${OUTPUT_DIR}/reference_head_ranks.csv" ]; then
     column -s, -t "${OUTPUT_DIR}/reference_head_ranks.csv" | head -30
 fi
+
+echo "[summary] AD-HH reference rank distribution"
+if [ -f "${OUTPUT_DIR}/reference_rank_summary.csv" ]; then
+    column -s, -t "${OUTPUT_DIR}/reference_rank_summary.csv"
+fi
+
+echo "[summary] head group score comparison"
+if [ -f "${OUTPUT_DIR}/head_group_score_summary.csv" ]; then
+    column -s, -t "${OUTPUT_DIR}/head_group_score_summary.csv" | head -40
+fi
