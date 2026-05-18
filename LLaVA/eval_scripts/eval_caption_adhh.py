@@ -145,6 +145,7 @@ def eval_model(args):
         or args.retention_aware_deactivate
         or args.visual_gate_deactivate
         or args.wide_gate_deactivate
+        or args.online_value_selector_deactivate
     ):
         if model_path == 'liuhaotian/llava-v1.5-7b':
             model.config.img_start_pos = 35
@@ -230,6 +231,21 @@ def eval_model(args):
                 with open(args.head_norm_thresholds_path, "r") as f:
                     threshold_data = json.load(f)
                 model.config.head_norm_thresholds = threshold_data.get("head_norm_thresholds", threshold_data)
+        if args.online_value_selector_deactivate:
+            model.config.online_value_selector_deactivate = True
+            model.config.online_value_selector_mode = args.online_value_selector_mode
+            model.config.online_value_selector_text_tau = args.online_value_selector_text_tau
+            model.config.online_value_selector_gamma = args.online_value_selector_gamma
+            model.config.online_value_selector_layer_top_k = args.online_value_selector_layer_top_k
+            model.config.online_value_selector_require_text_trigger = not args.online_value_selector_no_text_trigger
+            model.config.online_value_selector_norm_threshold = args.online_value_selector_norm_threshold
+            model.config.online_value_selector_norm_low = args.online_value_selector_norm_low
+            model.config.online_value_selector_norm_high = args.online_value_selector_norm_high
+            model.config.online_value_selector_norm_source = args.online_value_selector_norm_source
+            if args.head_norm_thresholds_path:
+                with open(args.head_norm_thresholds_path, "r") as f:
+                    threshold_data = json.load(f)
+                model.config.head_norm_thresholds = threshold_data.get("head_norm_thresholds", threshold_data)
 
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
@@ -299,6 +315,7 @@ if __name__ == "__main__":
     parser.add_argument("--retention_aware_deactivate", action='store_true', default=False)
     parser.add_argument("--visual_gate_deactivate", action='store_true', default=False)
     parser.add_argument("--wide_gate_deactivate", action='store_true', default=False)
+    parser.add_argument("--online_value_selector_deactivate", action='store_true', default=False)
     parser.add_argument("--adhh_threshold", type=float, default=0.0)
     parser.add_argument("--attention_head_path", type=str, default="")
     parser.add_argument("--top_k", type=int, default=20)
@@ -345,6 +362,15 @@ if __name__ == "__main__":
     parser.add_argument("--wide_gate_norm_low", type=float, default=0.0)
     parser.add_argument("--wide_gate_norm_high", type=float, default=1.0)
     parser.add_argument("--wide_gate_norm_source", type=str, default="text_value", choices=["text_value", "head_output"])
+    parser.add_argument("--online_value_selector_mode", type=str, default="continuous", choices=["hard", "continuous"])
+    parser.add_argument("--online_value_selector_layer_top_k", type=int, default=1)
+    parser.add_argument("--online_value_selector_text_tau", type=float, default=0.4)
+    parser.add_argument("--online_value_selector_gamma", type=float, default=1.0)
+    parser.add_argument("--online_value_selector_norm_threshold", type=float, default=0.0)
+    parser.add_argument("--online_value_selector_norm_low", type=float, default=0.0)
+    parser.add_argument("--online_value_selector_norm_high", type=float, default=1.0)
+    parser.add_argument("--online_value_selector_norm_source", type=str, default="text_value", choices=["text_value", "head_output"])
+    parser.add_argument("--online_value_selector_no_text_trigger", action="store_true", default=False)
     parser.add_argument("--head_norm_thresholds_path", type=str, default="")
 
     args = parser.parse_args()
@@ -356,6 +382,7 @@ if __name__ == "__main__":
         args.retention_aware_deactivate,
         args.visual_gate_deactivate,
         args.wide_gate_deactivate,
+        args.online_value_selector_deactivate,
     ]) > 1:
         raise ValueError("Only one intervention mode can be enabled")
     set_seed(args.seed)

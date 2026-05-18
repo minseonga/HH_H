@@ -822,6 +822,96 @@ class LlamaAttention(nn.Module):
                     strength = torch.clamp(strength, min=0.0, max=1.0).to(attn_weights.dtype)
                     text_attention *= (1.0 - strength)
 
+        if getattr(self.config, "online_value_selector_deactivate", False):
+            if head_list is not None:
+                text_start_idx = self.config.img_start_pos + self.config.img_length
+                mode = getattr(self.config, "online_value_selector_mode", "continuous")
+                text_tau = float(getattr(self.config, "online_value_selector_text_tau", getattr(self.config, "adhh_threshold", 0.4)))
+                gamma = float(getattr(self.config, "online_value_selector_gamma", 1.0))
+                layer_top_k = int(getattr(self.config, "online_value_selector_layer_top_k", 1))
+                require_text_trigger = bool(getattr(self.config, "online_value_selector_require_text_trigger", True))
+                default_norm_threshold = float(getattr(self.config, "online_value_selector_norm_threshold", 0.0))
+                default_norm_low = float(getattr(self.config, "online_value_selector_norm_low", default_norm_threshold))
+                default_norm_high = float(getattr(self.config, "online_value_selector_norm_high", max(default_norm_threshold + 1e-6, 1.0)))
+                norm_source = getattr(self.config, "online_value_selector_norm_source", "text_value")
+                norm_thresholds = getattr(self.config, "head_norm_thresholds", {})
+                eps = float(getattr(self.config, "online_value_selector_eps", 1e-6))
+
+                candidates = []
+                for head in head_list:
+                    key = f"{int(self.layer_idx)}:{int(head)}"
+                    head_weights = attn_weights[:, head, -1, :]
+                    head_values = value_states[:, head, :, :]
+                    text_attention = head_weights[:, text_start_idx:]
+                    text_mass = torch.sum(text_attention, dim=-1, keepdim=True)
+
+                    text_value = torch.bmm(
+                        text_attention.float().unsqueeze(1),
+                        head_values[:, text_start_idx:, :].float(),
+                    ).squeeze(1)
+                    if norm_source == "head_output":
+                        norm_value = torch.bmm(
+                            head_weights.float().unsqueeze(1),
+                            head_values.float(),
+                        ).squeeze(1)
+                    else:
+                        norm_value = text_value
+                    norm = torch.linalg.vector_norm(norm_value, dim=-1, keepdim=True)
+
+                    threshold_data = norm_thresholds.get(key, {})
+                    norm_threshold = float(threshold_data.get("threshold", default_norm_threshold))
+                    norm_low = float(threshold_data.get("low", default_norm_low))
+                    norm_high = float(threshold_data.get("high", default_norm_high))
+                    if norm_high <= norm_low:
+                        norm_high = norm_low + eps
+
+                    text_gate = (text_mass >= text_tau).to(attn_weights.dtype)
+                    norm_gate = (norm >= norm_threshold).to(attn_weights.dtype)
+                    norm_excess = torch.clamp((norm - norm_low) / (norm_high - norm_low), min=0.0, max=1.0)
+                    rank_score = norm
+                    if require_text_trigger:
+                        rank_score = torch.where(
+                            text_gate.bool(),
+                            rank_score,
+                            torch.full_like(rank_score, float("-inf")),
+                        )
+                    candidates.append({
+                        "head": head,
+                        "text_attention": text_attention,
+                        "text_gate": text_gate,
+                        "norm_gate": norm_gate,
+                        "norm_excess": norm_excess,
+                        "rank_score": rank_score,
+                    })
+
+                if layer_top_k > 0 and len(candidates) > layer_top_k:
+                    # Caption eval uses batch size 1. Keeping selection in Python avoids
+                    # an extra forward while still making the action depend on online state.
+                    scored = []
+                    for idx, item in enumerate(candidates):
+                        score = item["rank_score"].detach().float().cpu().item()
+                        if math.isfinite(score):
+                            scored.append((score, idx))
+                    selected_indices = {idx for _, idx in sorted(scored, reverse=True)[:layer_top_k]}
+                else:
+                    selected_indices = set()
+                    for idx, item in enumerate(candidates):
+                        score = item["rank_score"].detach().float().cpu().item()
+                        if math.isfinite(score):
+                            selected_indices.add(idx)
+
+                for idx, item in enumerate(candidates):
+                    if idx not in selected_indices:
+                        continue
+                    if mode == "hard":
+                        strength = item["text_gate"] if require_text_trigger else item["norm_gate"]
+                    else:
+                        strength = gamma * item["norm_excess"]
+                        if require_text_trigger:
+                            strength = strength * item["text_gate"]
+                    strength = torch.clamp(strength, min=0.0, max=1.0).to(attn_weights.dtype)
+                    item["text_attention"] *= (1.0 - strength)
+
         if getattr(self.config, "attribution_soft_deactivate", False):
             if head_list is not None:
                 text_start_idx = self.config.img_start_pos + self.config.img_length
