@@ -96,7 +96,7 @@ def load_direction_rows(calibration_npz, top_k, min_auc):
     return rows, direction_dict, threshold_dict
 
 
-def set_projection_config(model, directions, thresholds, strength, gate_mode, temperature):
+def set_projection_config(model, directions, thresholds, strength, gate_mode, temperature, record_diagnostics=True):
     model.config.query_direction_project = bool(strength > 0.0)
     model.config.query_direction_directions = directions
     model.config.query_direction_thresholds = thresholds
@@ -104,6 +104,9 @@ def set_projection_config(model, directions, thresholds, strength, gate_mode, te
     model.config.query_direction_gate_mode = gate_mode
     model.config.query_direction_temperature = float(temperature)
     model.config.query_direction_positive_only = True
+    active_diagnostics = bool(record_diagnostics and strength > 0.0)
+    model.config.record_query_projection_diagnostics = active_diagnostics
+    model.config.query_projection_diagnostics = [] if active_diagnostics else None
 
 
 def clear_projection_config(model):
@@ -111,6 +114,70 @@ def clear_projection_config(model):
     model.config.query_direction_directions = {}
     model.config.query_direction_thresholds = {}
     model.config.query_direction_strength = 0.0
+    model.config.record_query_projection_diagnostics = False
+    model.config.query_projection_diagnostics = None
+
+
+def mean_metric(records, key):
+    values = [float(record[key]) for record in records if key in record]
+    return mean(values)
+
+
+def diagnostic_summary(diagnostics):
+    query_records = [record for record in diagnostics if record.get("kind") == "query_projection"]
+    attention_records = [record for record in diagnostics if record.get("kind") == "attention_projection"]
+    active_query_records = [record for record in query_records if float(record.get("gate", 0.0)) > 0.0]
+    return {
+        "projection_head_count": len(query_records),
+        "active_projection_head_count": len(active_query_records),
+        "mean_gate": mean_metric(query_records, "gate"),
+        "mean_raw_score_before": mean_metric(query_records, "raw_score_before"),
+        "mean_raw_score_after": mean_metric(query_records, "raw_score_after"),
+        "mean_raw_score_delta": mean_metric(query_records, "raw_score_delta"),
+        "mean_normalized_score_before": mean_metric(query_records, "normalized_score_before"),
+        "mean_normalized_score_after": mean_metric(query_records, "normalized_score_after"),
+        "mean_normalized_score_delta": mean_metric(query_records, "normalized_score_delta"),
+        "mean_relative_q_delta": mean_metric(query_records, "relative_q_delta"),
+        "max_relative_q_delta": max([float(record.get("relative_q_delta", 0.0)) for record in query_records], default=None),
+        "mean_attention_logit_delta_norm": mean_metric(attention_records, "attention_logit_delta_norm"),
+        "mean_relative_attention_logit_delta": mean_metric(attention_records, "relative_attention_logit_delta"),
+        "mean_attention_kl": mean_metric(attention_records, "attention_kl"),
+        "mean_attention_l1": mean_metric(attention_records, "attention_l1"),
+    }
+
+
+def flatten_diagnostics(base_row, strength, diagnostics):
+    by_head = defaultdict(dict)
+    for record in diagnostics:
+        key = record.get("head_key", "")
+        by_head[key][record.get("kind", "unknown")] = record
+    rows = []
+    for head_key, records in sorted(by_head.items()):
+        query = records.get("query_projection", {})
+        attention = records.get("attention_projection", {})
+        rows.append({
+            **base_row,
+            "strength": strength,
+            "head_key": head_key,
+            "layer": query.get("layer", attention.get("layer")),
+            "head": query.get("head", attention.get("head")),
+            "gate": query.get("gate"),
+            "threshold": query.get("threshold"),
+            "raw_score_before": query.get("raw_score_before"),
+            "raw_score_after": query.get("raw_score_after"),
+            "raw_score_delta": query.get("raw_score_delta"),
+            "normalized_score_before": query.get("normalized_score_before"),
+            "normalized_score_after": query.get("normalized_score_after"),
+            "normalized_score_delta": query.get("normalized_score_delta"),
+            "q_delta_norm": query.get("q_delta_norm"),
+            "q_norm": query.get("q_norm"),
+            "relative_q_delta": query.get("relative_q_delta"),
+            "attention_logit_delta_norm": attention.get("attention_logit_delta_norm"),
+            "relative_attention_logit_delta": attention.get("relative_attention_logit_delta"),
+            "attention_kl": attention.get("attention_kl"),
+            "attention_l1": attention.get("attention_l1"),
+        })
+    return rows
 
 
 def run_projection_sweep(model, tokenizer, prompt_ids, prefix_ids, image_tensor, image_size, target_token_id, strengths, directions, thresholds, gate_mode, temperature):
@@ -128,6 +195,7 @@ def run_projection_sweep(model, tokenizer, prompt_ids, prefix_ids, image_tensor,
             "none",
             record=False,
         )
+        outputs[strength]["projection_diagnostics"] = list(getattr(model.config, "query_projection_diagnostics", []) or [])
     clear_projection_config(model)
     return outputs
 
@@ -182,6 +250,48 @@ def summarize_hall_vs_grounded(rows, strengths):
         )
         output.append(record)
     return output
+
+
+def summarize_diagnostics_by_group(diagnostic_rows):
+    metrics = [
+        "gate",
+        "raw_score_before",
+        "raw_score_after",
+        "raw_score_delta",
+        "normalized_score_before",
+        "normalized_score_after",
+        "normalized_score_delta",
+        "relative_q_delta",
+        "attention_logit_delta_norm",
+        "relative_attention_logit_delta",
+        "attention_kl",
+        "attention_l1",
+    ]
+    grouped = defaultdict(list)
+    for row in diagnostic_rows:
+        grouped[(row["label_family"], float(row["strength"]))].append(row)
+    output = []
+    for (group, strength), items in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1])):
+        record = {
+            "label_family": group,
+            "strength": strength,
+            "n": len(items),
+            "active_rate": mean([1.0 if safe_float(item.get("gate")) > 0.0 else 0.0 for item in items]),
+        }
+        for metric in metrics:
+            record[f"mean_{metric}"] = mean([safe_float(item.get(metric)) for item in items if item.get(metric) is not None])
+        output.append(record)
+    return output
+
+
+def safe_float(value, default=0.0):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not np.isfinite(value):
+        return default
+    return value
 
 
 def main():
@@ -239,6 +349,7 @@ def main():
     selected = select_rows(hard_by_id, soft_by_id, tokenizer, args.max_per_label, args.hallucinated_source)
 
     output_rows = []
+    diagnostic_rows = []
     with open(os.path.join(args.output_dir, "query_projection_sweep_rows.jsonl"), "w") as out:
         for row in tqdm(selected, desc="projection sweep"):
             prompt_ids, image_tensor, image_size = build_prompt_inputs(
@@ -270,6 +381,17 @@ def main():
                 args.query_direction_temperature,
             )
             original = outputs[0.0]
+            base_diagnostic_row = {
+                "image_id": row["image_id"],
+                "image": row["image"],
+                "label": row["label"],
+                "label_family": label_family(row["label"]),
+                "object_node": row["object_node"],
+                "object_word": row["object_word"],
+                "target_token": tokenizer.decode([target_token_id]),
+                "target_token_id": target_token_id,
+                "target_token_pos": int(row["target_token_pos"]),
+            }
             output = {
                 "image_id": row["image_id"],
                 "image": row["image"],
@@ -298,12 +420,19 @@ def main():
                 output[f"entropy_s{tag}"] = current["entropy"]
                 output[f"kl_original_to_s{tag}"] = kl_divergence(original["score"], current["score"])
                 output[f"next_token_s{tag}"] = current["next_token"]
+                if abs(strength) >= 1e-12:
+                    diagnostics = current.get("projection_diagnostics", [])
+                    for key, value in diagnostic_summary(diagnostics).items():
+                        output[f"{key}_s{tag}"] = value
+                    diagnostic_rows.extend(flatten_diagnostics(base_diagnostic_row, strength, diagnostics))
             output_rows.append(output)
             out.write(json.dumps(output) + "\n")
             out.flush()
 
     write_csv(os.path.join(args.output_dir, "selected_query_directions.csv"), selected_direction_rows)
     write_csv(os.path.join(args.output_dir, "query_projection_sweep_rows.csv"), output_rows)
+    write_csv(os.path.join(args.output_dir, "query_projection_diagnostics.csv"), diagnostic_rows)
+    write_csv(os.path.join(args.output_dir, "query_projection_diagnostics_by_group.csv"), summarize_diagnostics_by_group(diagnostic_rows))
     write_csv(os.path.join(args.output_dir, "query_projection_sweep_by_group.csv"), summarize_by_group(output_rows, strengths))
     write_csv(os.path.join(args.output_dir, "query_projection_sweep_policy_summary.csv"), summarize_hall_vs_grounded(output_rows, strengths))
 

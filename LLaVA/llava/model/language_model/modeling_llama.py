@@ -125,6 +125,8 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
     temperature = max(float(getattr(config, "query_direction_temperature", 0.05)), 1e-6)
     positive_only = bool(getattr(config, "query_direction_positive_only", True))
     thresholds = getattr(config, "query_direction_thresholds", {})
+    records = getattr(config, "query_projection_diagnostics", None)
+    record_diagnostics = bool(getattr(config, "record_query_projection_diagnostics", False) and records is not None)
     eps = float(getattr(config, "query_direction_eps", 1e-6))
 
     for head in range(num_heads):
@@ -155,8 +157,102 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
         coeff = raw_coeff
         if positive_only:
             coeff = torch.clamp(coeff, min=0.0)
-        query_states[:, head, -1, :] = q - strength * gate * coeff * direction
+        projected_q = q - strength * gate * coeff * direction
+        if record_diagnostics:
+            projected_raw_coeff = torch.sum(projected_q * direction, dim=-1, keepdim=True)
+            projected_q_norm = projected_q / torch.clamp(torch.linalg.vector_norm(projected_q, dim=-1, keepdim=True), min=eps)
+            projected_norm_score = torch.sum(projected_q_norm * direction, dim=-1, keepdim=True)
+            q_delta = projected_q - q
+            q_delta_norm = torch.linalg.vector_norm(q_delta, dim=-1, keepdim=True)
+            q_norm_value = torch.linalg.vector_norm(q, dim=-1, keepdim=True)
+            records.append({
+                "kind": "query_projection",
+                "layer": layer,
+                "head": head,
+                "head_key": key,
+                "strength": strength,
+                "gate": gate.detach().float().cpu().item(),
+                "threshold": threshold,
+                "raw_score_before": raw_coeff.detach().float().cpu().item(),
+                "raw_score_after": projected_raw_coeff.detach().float().cpu().item(),
+                "raw_score_delta": (raw_coeff - projected_raw_coeff).detach().float().cpu().item(),
+                "normalized_score_before": norm_score.detach().float().cpu().item(),
+                "normalized_score_after": projected_norm_score.detach().float().cpu().item(),
+                "normalized_score_delta": (norm_score - projected_norm_score).detach().float().cpu().item(),
+                "q_delta_norm": q_delta_norm.detach().float().cpu().item(),
+                "q_norm": q_norm_value.detach().float().cpu().item(),
+                "relative_q_delta": (q_delta_norm / torch.clamp(q_norm_value, min=eps)).detach().float().cpu().item(),
+            })
+        query_states[:, head, -1, :] = projected_q
     return query_states
+
+
+def _record_query_attention_projection_diagnostics(
+    config,
+    layer_idx,
+    original_query_states,
+    projected_query_states,
+    key_states,
+    attention_mask,
+    num_heads,
+    head_dim,
+):
+    if original_query_states is None:
+        return
+    records = getattr(config, "query_projection_diagnostics", None)
+    if not getattr(config, "record_query_projection_diagnostics", False) or records is None:
+        return
+    directions = getattr(config, "query_direction_directions", None)
+    if not directions:
+        return
+
+    layer = int(layer_idx) if layer_idx is not None else -1
+    eps = float(getattr(config, "query_direction_eps", 1e-6))
+    if key_states.shape[1] != num_heads:
+        num_key_value_groups = max(num_heads // key_states.shape[1], 1)
+        key_states = repeat_kv(key_states, num_key_value_groups)
+
+    for head in range(num_heads):
+        key = f"{layer}:{head}"
+        if key not in directions:
+            continue
+        q_original = original_query_states[:, head, -1:, :]
+        q_projected = projected_query_states[:, head, -1:, :]
+        head_keys = key_states[:, head, :, :]
+        original_logits = torch.matmul(q_original, head_keys.transpose(1, 2)) / math.sqrt(head_dim)
+        projected_logits = torch.matmul(q_projected, head_keys.transpose(1, 2)) / math.sqrt(head_dim)
+        if (
+            attention_mask is not None
+            and attention_mask.dim() == 4
+            and attention_mask.shape[-1] == original_logits.shape[-1]
+        ):
+            original_logits = original_logits + attention_mask[:, :, -1, :]
+            projected_logits = projected_logits + attention_mask[:, :, -1, :]
+
+        original_attention = nn.functional.softmax(original_logits.float(), dim=-1)
+        projected_attention = nn.functional.softmax(projected_logits.float(), dim=-1)
+        attention_kl = torch.sum(
+            original_attention * (
+                torch.log(original_attention + eps) - torch.log(projected_attention + eps)
+            ),
+            dim=-1,
+        )
+        attention_l1 = torch.sum(torch.abs(original_attention - projected_attention), dim=-1)
+        logit_delta = projected_logits.float() - original_logits.float()
+        logit_delta_norm = torch.linalg.vector_norm(logit_delta, dim=-1)
+        original_logit_norm = torch.linalg.vector_norm(original_logits.float(), dim=-1)
+        records.append({
+            "kind": "attention_projection",
+            "layer": layer,
+            "head": head,
+            "head_key": key,
+            "attention_logit_delta_norm": logit_delta_norm.detach().float().cpu().item(),
+            "relative_attention_logit_delta": (
+                logit_delta_norm / torch.clamp(original_logit_norm, min=eps)
+            ).detach().float().cpu().item(),
+            "attention_kl": attention_kl.detach().float().cpu().item(),
+            "attention_l1": attention_l1.detach().float().cpu().item(),
+        })
 
 
 def _get_unpad_data(attention_mask):
@@ -624,6 +720,7 @@ class LlamaAttention(nn.Module):
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
@@ -637,6 +734,8 @@ class LlamaAttention(nn.Module):
                 )
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+        if original_query_states is not None:
+            original_query_states, _ = apply_rotary_pos_emb(original_query_states, key_states, cos, sin, position_ids)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         if past_key_value is not None:
@@ -645,6 +744,16 @@ class LlamaAttention(nn.Module):
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
+        _record_query_attention_projection_diagnostics(
+            self.config,
+            self.layer_idx,
+            original_query_states,
+            query_states,
+            key_states,
+            attention_mask,
+            self.num_heads,
+            self.head_dim,
+        )
 
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
@@ -1237,6 +1346,7 @@ class LlamaFlashAttention2(LlamaAttention):
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
@@ -1244,11 +1354,23 @@ class LlamaFlashAttention2(LlamaAttention):
         if past_key_value is not None:
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+        if original_query_states is not None:
+            original_query_states, _ = apply_rotary_pos_emb(original_query_states, key_states, cos, sin, position_ids)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+        _record_query_attention_projection_diagnostics(
+            self.config,
+            self.layer_idx,
+            original_query_states,
+            query_states,
+            key_states,
+            attention_mask,
+            self.num_heads,
+            self.head_dim,
+        )
 
         # TODO: These transpose are quite inefficient but Flash Attention requires the layout [batch_size, sequence_length, num_heads, head_dim]. We would need to refactor the KV cache
         # to be able to avoid many of these transpose/reshape/view.
@@ -1444,6 +1566,7 @@ class LlamaSdpaAttention(LlamaAttention):
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
@@ -1452,6 +1575,8 @@ class LlamaSdpaAttention(LlamaAttention):
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
 
+        if original_query_states is not None:
+            original_query_states, _ = apply_rotary_pos_emb(original_query_states, key_states, cos, sin, position_ids)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         if past_key_value is not None:
@@ -1460,6 +1585,16 @@ class LlamaSdpaAttention(LlamaAttention):
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
+        _record_query_attention_projection_diagnostics(
+            self.config,
+            self.layer_idx,
+            original_query_states,
+            query_states,
+            key_states,
+            attention_mask,
+            self.num_heads,
+            self.head_dim,
+        )
 
         if attention_mask is not None:
             if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):

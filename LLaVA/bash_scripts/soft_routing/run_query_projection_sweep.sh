@@ -100,3 +100,8 @@ echo "[summary] projection policy summary"
 if [ -f "${OUTPUT_DIR}/query_projection_sweep_policy_summary.csv" ]; then
     column -s, -t "${OUTPUT_DIR}/query_projection_sweep_policy_summary.csv" | head -40
 fi
+
+echo "[summary] projection diagnostic summary"
+if [ -f "${OUTPUT_DIR}/query_projection_diagnostics_by_group.csv" ]; then
+    column -s, -t "${OUTPUT_DIR}/query_projection_diagnostics_by_group.csv" | head -80
+fi
