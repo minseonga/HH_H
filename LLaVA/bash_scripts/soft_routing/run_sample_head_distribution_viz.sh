@@ -87,6 +87,9 @@ python -m eval_scripts.soft_routing.visualize_sample_head_distribution \
     --text-high "${WIDE_GATE_TEXT_HIGH}" \
     --norm-field "${NORM_FIELD}"
 
+echo "[outputs] visualization files"
+find "${OUTPUT_DIR}" -maxdepth 1 \( -name "*.png" -o -name "*.csv" -o -name "metadata.json" \) -print | sort
+
 echo "[summary] per-sample active head distribution"
 if [ -f "${OUTPUT_DIR}/sample_gate_summary.csv" ]; then
     column -s, -t "${OUTPUT_DIR}/sample_gate_summary.csv" | head -30
