@@ -108,6 +108,57 @@ def _record_query_diagnostics(config, layer_idx, query_states, num_heads):
         })
 
 
+def _apply_query_direction_projection(config, layer_idx, query_states, num_heads):
+    if not getattr(config, "query_direction_project", False):
+        return query_states
+    directions = getattr(config, "query_direction_directions", None)
+    if not directions:
+        return query_states
+
+    layer = int(layer_idx) if layer_idx is not None else -1
+    strength = float(getattr(config, "query_direction_strength", 0.0))
+    if strength <= 0.0:
+        return query_states
+    strength = min(max(strength, 0.0), 1.0)
+
+    gate_mode = getattr(config, "query_direction_gate_mode", "threshold")
+    temperature = max(float(getattr(config, "query_direction_temperature", 0.05)), 1e-6)
+    positive_only = bool(getattr(config, "query_direction_positive_only", True))
+    thresholds = getattr(config, "query_direction_thresholds", {})
+    eps = float(getattr(config, "query_direction_eps", 1e-6))
+
+    for head in range(num_heads):
+        key = f"{layer}:{head}"
+        direction = directions.get(key)
+        if direction is None:
+            continue
+        if not isinstance(direction, torch.Tensor):
+            direction = torch.tensor(direction)
+        direction = direction.to(device=query_states.device, dtype=query_states.dtype)
+        direction = direction / torch.clamp(torch.linalg.vector_norm(direction), min=eps)
+
+        q = query_states[:, head, -1, :]
+        raw_coeff = torch.sum(q * direction, dim=-1, keepdim=True)
+        q_norm = q / torch.clamp(torch.linalg.vector_norm(q, dim=-1, keepdim=True), min=eps)
+        norm_score = torch.sum(q_norm * direction, dim=-1, keepdim=True)
+        threshold = float(thresholds.get(key, 0.0))
+
+        if gate_mode == "none":
+            gate = torch.ones_like(raw_coeff)
+        elif gate_mode == "positive":
+            gate = (raw_coeff > 0).to(query_states.dtype)
+        elif gate_mode == "sigmoid":
+            gate = torch.sigmoid((norm_score - threshold) / temperature).to(query_states.dtype)
+        else:
+            gate = (norm_score >= threshold).to(query_states.dtype)
+
+        coeff = raw_coeff
+        if positive_only:
+            coeff = torch.clamp(coeff, min=0.0)
+        query_states[:, head, -1, :] = q - strength * gate * coeff * direction
+    return query_states
+
+
 def _get_unpad_data(attention_mask):
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
     indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
@@ -574,6 +625,7 @@ class LlamaAttention(nn.Module):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
+        query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
@@ -1186,6 +1238,7 @@ class LlamaFlashAttention2(LlamaAttention):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
+        query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
@@ -1392,6 +1445,7 @@ class LlamaSdpaAttention(LlamaAttention):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
+        query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
