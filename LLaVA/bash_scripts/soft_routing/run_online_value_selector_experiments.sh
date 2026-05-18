@@ -18,6 +18,7 @@ ADHH_THRESHOLD="${ADHH_THRESHOLD:-0.4}"
 SOFT_TEMPERATURE="${SOFT_TEMPERATURE:-0.05}"
 TOP_POOL_K="${TOP_POOL_K:-100}"
 FORCE="${FORCE:-0}"
+RUN_BASELINES="${RUN_BASELINES:-0}"
 
 NORM_Q_THRESHOLD="${NORM_Q_THRESHOLD:-75}"
 NORM_Q_LOW="${NORM_Q_LOW:-50}"
@@ -175,8 +176,10 @@ run_eval() {
         --caption_file "$(basename "${CAPTION_FILE_PATH}")"
 }
 
-run_eval "adhh_top20_hard" "adhh" 20
-run_eval "top100_text_hard" "wide_text" 100
+if [ "${RUN_BASELINES}" = "1" ]; then
+    run_eval "adhh_top20_hard" "adhh" 20
+    run_eval "top100_text_hard" "wide_text" 100
+fi
 run_eval "online_value_layer_top1_hard" "hard" 1
 run_eval "online_value_layer_top2_hard" "hard" 2
 run_eval "online_value_layer_top1_continuous" "continuous" 1
