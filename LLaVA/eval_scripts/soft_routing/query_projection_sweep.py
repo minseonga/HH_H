@@ -161,7 +161,12 @@ def flatten_diagnostics(base_row, strength, diagnostics):
             "head_key": head_key,
             "layer": query.get("layer", attention.get("layer")),
             "head": query.get("head", attention.get("head")),
+            "gate_mode": query.get("gate_mode"),
             "gate": query.get("gate"),
+            "positive_only": query.get("positive_only"),
+            "positive_coeff": query.get("positive_coeff"),
+            "effective_coeff": query.get("effective_coeff"),
+            "active_projection": query.get("active_projection"),
             "threshold": query.get("threshold"),
             "raw_score_before": query.get("raw_score_before"),
             "raw_score_after": query.get("raw_score_after"),
@@ -255,6 +260,9 @@ def summarize_hall_vs_grounded(rows, strengths):
 def summarize_diagnostics_by_group(diagnostic_rows):
     metrics = [
         "gate",
+        "positive_coeff",
+        "effective_coeff",
+        "active_projection",
         "raw_score_before",
         "raw_score_after",
         "raw_score_delta",
@@ -276,7 +284,9 @@ def summarize_diagnostics_by_group(diagnostic_rows):
             "label_family": group,
             "strength": strength,
             "n": len(items),
-            "active_rate": mean([1.0 if safe_float(item.get("gate")) > 0.0 else 0.0 for item in items]),
+            "gate_active_rate": mean([1.0 if safe_float(item.get("gate")) > 0.0 else 0.0 for item in items]),
+            "positive_coeff_rate": mean([safe_float(item.get("positive_coeff")) for item in items]),
+            "active_projection_rate": mean([safe_float(item.get("active_projection")) for item in items]),
         }
         for metric in metrics:
             record[f"mean_{metric}"] = mean([safe_float(item.get(metric)) for item in items if item.get(metric) is not None])

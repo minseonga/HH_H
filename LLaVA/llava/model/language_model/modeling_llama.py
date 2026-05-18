@@ -154,9 +154,11 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
         else:
             gate = (norm_score >= threshold).to(query_states.dtype)
 
+        positive_coeff = (raw_coeff > 0).to(query_states.dtype)
         coeff = raw_coeff
         if positive_only:
             coeff = torch.clamp(coeff, min=0.0)
+        active_projection = (torch.abs(gate * coeff) > eps).to(query_states.dtype)
         projected_q = q - strength * gate * coeff * direction
         if record_diagnostics:
             projected_raw_coeff = torch.sum(projected_q * direction, dim=-1, keepdim=True)
@@ -171,7 +173,12 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
                 "head": head,
                 "head_key": key,
                 "strength": strength,
+                "gate_mode": gate_mode,
                 "gate": gate.detach().float().cpu().item(),
+                "positive_only": float(positive_only),
+                "positive_coeff": positive_coeff.detach().float().cpu().item(),
+                "effective_coeff": coeff.detach().float().cpu().item(),
+                "active_projection": active_projection.detach().float().cpu().item(),
                 "threshold": threshold,
                 "raw_score_before": raw_coeff.detach().float().cpu().item(),
                 "raw_score_after": projected_raw_coeff.detach().float().cpu().item(),
