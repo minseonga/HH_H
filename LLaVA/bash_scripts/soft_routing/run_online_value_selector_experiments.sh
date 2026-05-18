@@ -19,6 +19,7 @@ SOFT_TEMPERATURE="${SOFT_TEMPERATURE:-0.05}"
 TOP_POOL_K="${TOP_POOL_K:-100}"
 FORCE="${FORCE:-0}"
 RUN_BASELINES="${RUN_BASELINES:-0}"
+RUN_METHODS="${RUN_METHODS:-online_value_layer_top1_hard online_value_layer_top2_hard online_value_layer_top1_continuous online_value_layer_top2_continuous}"
 
 NORM_Q_THRESHOLD="${NORM_Q_THRESHOLD:-75}"
 NORM_Q_LOW="${NORM_Q_LOW:-50}"
@@ -176,14 +177,38 @@ run_eval() {
         --caption_file "$(basename "${CAPTION_FILE_PATH}")"
 }
 
+should_run() {
+    local tag="$1"
+    for method in ${RUN_METHODS}; do
+        if [ "${method}" = "${tag}" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+maybe_run_eval() {
+    local tag="$1"
+    local mode="$2"
+    local layer_top_k="$3"
+    if should_run "${tag}"; then
+        run_eval "${tag}" "${mode}" "${layer_top_k}"
+    else
+        echo "[skip] ${tag}: not in RUN_METHODS"
+    fi
+}
+
 if [ "${RUN_BASELINES}" = "1" ]; then
-    run_eval "adhh_top20_hard" "adhh" 20
-    run_eval "top100_text_hard" "wide_text" 100
+    RUN_METHODS="adhh_top20_hard top100_text_hard ${RUN_METHODS}"
 fi
-run_eval "online_value_layer_top1_hard" "hard" 1
-run_eval "online_value_layer_top2_hard" "hard" 2
-run_eval "online_value_layer_top1_continuous" "continuous" 1
-run_eval "online_value_layer_top2_continuous" "continuous" 2
+echo "[info] run methods: ${RUN_METHODS}"
+
+maybe_run_eval "adhh_top20_hard" "adhh" 20
+maybe_run_eval "top100_text_hard" "wide_text" 100
+maybe_run_eval "online_value_layer_top1_hard" "hard" 1
+maybe_run_eval "online_value_layer_top2_hard" "hard" 2
+maybe_run_eval "online_value_layer_top1_continuous" "continuous" 1
+maybe_run_eval "online_value_layer_top2_continuous" "continuous" 2
 
 python - <<PY
 import csv
