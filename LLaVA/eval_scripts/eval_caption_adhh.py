@@ -1,7 +1,7 @@
 import os
 import json
 import argparse
-import shortuuid
+import uuid
 from tqdm import tqdm
 
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
@@ -276,7 +276,7 @@ def eval_model(args):
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
         print(question_id, outputs)
 
-        ans_id = shortuuid.uuid()
+        ans_id = uuid.uuid4().hex
         ans_file.write(json.dumps({"question_id": question_id,
                                 "image": image_file,
                                 "prompt": cur_prompt,
