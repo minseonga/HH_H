@@ -28,6 +28,8 @@ NORM_FIELD="${NORM_FIELD:-text_value_norm}"
 
 ONLINE_VALUE_GAMMA="${ONLINE_VALUE_GAMMA:-1.0}"
 ONLINE_VALUE_NORM_SOURCE="${ONLINE_VALUE_NORM_SOURCE:-text_value}"
+ONLINE_VALUE_SOFT_THRESHOLD="${ONLINE_VALUE_SOFT_THRESHOLD:-0.25}"
+ONLINE_VALUE_HARD_THRESHOLD="${ONLINE_VALUE_HARD_THRESHOLD:-0.75}"
 
 BASE_RESULT_PATH="${BASE_RESULT_PATH:-./results/${DATASET}/soft_routing_smoke_n${NUM_SAMPLES}_seed${SEED}_tau${ADHH_THRESHOLD}_T${SOFT_TEMPERATURE}}"
 ATTRIBUTION_RESULT="${ATTRIBUTION_RESULT:-${BASE_RESULT_PATH}/identify_attention_head_val_calib200_full1024/attribution_result.json}"
@@ -163,6 +165,8 @@ run_eval() {
             --online_value_selector_layer_top_k "${layer_top_k}" \
             --online_value_selector_text_tau "${ADHH_THRESHOLD}" \
             --online_value_selector_gamma "${ONLINE_VALUE_GAMMA}" \
+            --online_value_selector_soft_threshold "${ONLINE_VALUE_SOFT_THRESHOLD}" \
+            --online_value_selector_hard_threshold "${ONLINE_VALUE_HARD_THRESHOLD}" \
             --online_value_selector_norm_source "${ONLINE_VALUE_NORM_SOURCE}" \
             --head_norm_thresholds_path "${NORM_THRESHOLDS_PATH}" \
             --attention_head_path "${POOL_PATH}" \
@@ -209,6 +213,7 @@ maybe_run_eval "online_value_layer_top1_hard" "hard" 1
 maybe_run_eval "online_value_layer_top2_hard" "hard" 2
 maybe_run_eval "online_value_layer_top1_continuous" "continuous" 1
 maybe_run_eval "online_value_layer_top2_continuous" "continuous" 2
+maybe_run_eval "online_value_threshold_hybrid" "hybrid" 0
 
 python - <<PY
 import csv

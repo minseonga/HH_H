@@ -830,6 +830,8 @@ class LlamaAttention(nn.Module):
                 gamma = float(getattr(self.config, "online_value_selector_gamma", 1.0))
                 layer_top_k = int(getattr(self.config, "online_value_selector_layer_top_k", 1))
                 require_text_trigger = bool(getattr(self.config, "online_value_selector_require_text_trigger", True))
+                soft_threshold = float(getattr(self.config, "online_value_selector_soft_threshold", 0.25))
+                hard_threshold = float(getattr(self.config, "online_value_selector_hard_threshold", 0.75))
                 default_norm_threshold = float(getattr(self.config, "online_value_selector_norm_threshold", 0.0))
                 default_norm_low = float(getattr(self.config, "online_value_selector_norm_low", default_norm_threshold))
                 default_norm_high = float(getattr(self.config, "online_value_selector_norm_high", max(default_norm_threshold + 1e-6, 1.0)))
@@ -905,6 +907,13 @@ class LlamaAttention(nn.Module):
                         continue
                     if mode == "hard":
                         strength = item["text_gate"] if require_text_trigger else item["norm_gate"]
+                    elif mode == "hybrid":
+                        hard_mask = (item["norm_excess"] >= hard_threshold).to(attn_weights.dtype)
+                        soft_mask = (item["norm_excess"] >= soft_threshold).to(attn_weights.dtype)
+                        soft_strength = gamma * item["norm_excess"] * soft_mask
+                        strength = hard_mask + (1.0 - hard_mask) * soft_strength
+                        if require_text_trigger:
+                            strength = strength * item["text_gate"]
                     else:
                         strength = gamma * item["norm_excess"]
                         if require_text_trigger:

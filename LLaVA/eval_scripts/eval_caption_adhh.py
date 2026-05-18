@@ -238,6 +238,8 @@ def eval_model(args):
             model.config.online_value_selector_gamma = args.online_value_selector_gamma
             model.config.online_value_selector_layer_top_k = args.online_value_selector_layer_top_k
             model.config.online_value_selector_require_text_trigger = not args.online_value_selector_no_text_trigger
+            model.config.online_value_selector_soft_threshold = args.online_value_selector_soft_threshold
+            model.config.online_value_selector_hard_threshold = args.online_value_selector_hard_threshold
             model.config.online_value_selector_norm_threshold = args.online_value_selector_norm_threshold
             model.config.online_value_selector_norm_low = args.online_value_selector_norm_low
             model.config.online_value_selector_norm_high = args.online_value_selector_norm_high
@@ -362,10 +364,12 @@ if __name__ == "__main__":
     parser.add_argument("--wide_gate_norm_low", type=float, default=0.0)
     parser.add_argument("--wide_gate_norm_high", type=float, default=1.0)
     parser.add_argument("--wide_gate_norm_source", type=str, default="text_value", choices=["text_value", "head_output"])
-    parser.add_argument("--online_value_selector_mode", type=str, default="continuous", choices=["hard", "continuous"])
+    parser.add_argument("--online_value_selector_mode", type=str, default="continuous", choices=["hard", "continuous", "hybrid"])
     parser.add_argument("--online_value_selector_layer_top_k", type=int, default=1)
     parser.add_argument("--online_value_selector_text_tau", type=float, default=0.4)
     parser.add_argument("--online_value_selector_gamma", type=float, default=1.0)
+    parser.add_argument("--online_value_selector_soft_threshold", type=float, default=0.25)
+    parser.add_argument("--online_value_selector_hard_threshold", type=float, default=0.75)
     parser.add_argument("--online_value_selector_norm_threshold", type=float, default=0.0)
     parser.add_argument("--online_value_selector_norm_low", type=float, default=0.0)
     parser.add_argument("--online_value_selector_norm_high", type=float, default=1.0)
