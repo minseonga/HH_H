@@ -756,6 +756,72 @@ class LlamaAttention(nn.Module):
                     strength = torch.clamp(strength, min=0.0, max=1.0).to(attn_weights.dtype)
                     text_attention *= (1.0 - strength)
 
+        if getattr(self.config, "wide_gate_deactivate", False):
+            if head_list is not None:
+                text_start_idx = self.config.img_start_pos + self.config.img_length
+                mode = getattr(self.config, "wide_gate_mode", "hard")
+                gate_feature = getattr(self.config, "wide_gate_feature", "text_norm")
+                text_tau = float(getattr(self.config, "wide_gate_text_tau", getattr(self.config, "adhh_threshold", 0.4)))
+                text_high = float(getattr(self.config, "wide_gate_text_high", 0.9))
+                gamma = float(getattr(self.config, "wide_gate_gamma", 1.0))
+                default_norm_threshold = float(getattr(self.config, "wide_gate_norm_threshold", 0.0))
+                default_norm_low = float(getattr(self.config, "wide_gate_norm_low", default_norm_threshold))
+                default_norm_high = float(getattr(self.config, "wide_gate_norm_high", max(default_norm_threshold + 1e-6, 1.0)))
+                norm_source = getattr(self.config, "wide_gate_norm_source", "text_value")
+                norm_thresholds = getattr(self.config, "head_norm_thresholds", {})
+                eps = float(getattr(self.config, "wide_gate_eps", 1e-6))
+                text_den = max(text_high - text_tau, eps)
+
+                for head in head_list:
+                    key = f"{int(self.layer_idx)}:{int(head)}"
+                    head_weights = attn_weights[:, head, -1, :]
+                    head_values = value_states[:, head, :, :]
+                    text_attention = head_weights[:, text_start_idx:]
+                    text_mass = torch.sum(text_attention, dim=-1, keepdim=True)
+
+                    text_value = torch.bmm(
+                        text_attention.float().unsqueeze(1),
+                        head_values[:, text_start_idx:, :].float(),
+                    ).squeeze(1)
+                    if norm_source == "head_output":
+                        norm_value = torch.bmm(
+                            head_weights.float().unsqueeze(1),
+                            head_values.float(),
+                        ).squeeze(1)
+                    else:
+                        norm_value = text_value
+                    norm = torch.linalg.vector_norm(norm_value, dim=-1, keepdim=True)
+
+                    threshold_data = norm_thresholds.get(key, {})
+                    norm_threshold = float(threshold_data.get("threshold", default_norm_threshold))
+                    norm_low = float(threshold_data.get("low", default_norm_low))
+                    norm_high = float(threshold_data.get("high", default_norm_high))
+                    if norm_high <= norm_low:
+                        norm_high = norm_low + eps
+
+                    text_gate = (text_mass >= text_tau).to(attn_weights.dtype)
+                    norm_gate = (norm >= norm_threshold).to(attn_weights.dtype)
+                    if gate_feature == "text":
+                        gate = text_gate
+                    elif gate_feature == "norm":
+                        gate = norm_gate
+                    else:
+                        gate = text_gate * norm_gate
+
+                    if mode == "continuous":
+                        text_excess = torch.clamp((text_mass - text_tau) / text_den, min=0.0, max=1.0)
+                        norm_excess = torch.clamp((norm - norm_low) / (norm_high - norm_low), min=0.0, max=1.0)
+                        if gate_feature == "text":
+                            strength = gamma * text_excess
+                        elif gate_feature == "norm":
+                            strength = gamma * norm_excess
+                        else:
+                            strength = gamma * text_excess * norm_excess
+                    else:
+                        strength = gate
+                    strength = torch.clamp(strength, min=0.0, max=1.0).to(attn_weights.dtype)
+                    text_attention *= (1.0 - strength)
+
         if getattr(self.config, "attribution_soft_deactivate", False):
             if head_list is not None:
                 text_start_idx = self.config.img_start_pos + self.config.img_length

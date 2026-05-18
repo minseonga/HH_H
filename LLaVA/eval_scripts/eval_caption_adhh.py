@@ -144,6 +144,7 @@ def eval_model(args):
         or args.attribution_soft_deactivate
         or args.retention_aware_deactivate
         or args.visual_gate_deactivate
+        or args.wide_gate_deactivate
     ):
         if model_path == 'liuhaotian/llava-v1.5-7b':
             model.config.img_start_pos = 35
@@ -214,6 +215,21 @@ def eval_model(args):
                 with open(args.head_thresholds_path, "r") as f:
                     threshold_data = json.load(f)
                 model.config.head_text_thresholds = threshold_data.get("head_text_thresholds", threshold_data)
+        if args.wide_gate_deactivate:
+            model.config.wide_gate_deactivate = True
+            model.config.wide_gate_mode = args.wide_gate_mode
+            model.config.wide_gate_feature = args.wide_gate_feature
+            model.config.wide_gate_text_tau = args.wide_gate_text_tau
+            model.config.wide_gate_text_high = args.wide_gate_text_high
+            model.config.wide_gate_gamma = args.wide_gate_gamma
+            model.config.wide_gate_norm_threshold = args.wide_gate_norm_threshold
+            model.config.wide_gate_norm_low = args.wide_gate_norm_low
+            model.config.wide_gate_norm_high = args.wide_gate_norm_high
+            model.config.wide_gate_norm_source = args.wide_gate_norm_source
+            if args.head_norm_thresholds_path:
+                with open(args.head_norm_thresholds_path, "r") as f:
+                    threshold_data = json.load(f)
+                model.config.head_norm_thresholds = threshold_data.get("head_norm_thresholds", threshold_data)
 
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
@@ -282,6 +298,7 @@ if __name__ == "__main__":
     parser.add_argument("--attribution_soft_deactivate", action='store_true', default=False)
     parser.add_argument("--retention_aware_deactivate", action='store_true', default=False)
     parser.add_argument("--visual_gate_deactivate", action='store_true', default=False)
+    parser.add_argument("--wide_gate_deactivate", action='store_true', default=False)
     parser.add_argument("--adhh_threshold", type=float, default=0.0)
     parser.add_argument("--attention_head_path", type=str, default="")
     parser.add_argument("--top_k", type=int, default=20)
@@ -319,6 +336,16 @@ if __name__ == "__main__":
     parser.add_argument("--visual_gate_recent_window", type=int, default=16)
     parser.add_argument("--visual_gate_tau_low", type=float, default=0.4)
     parser.add_argument("--visual_gate_tau_high", type=float, default=0.9)
+    parser.add_argument("--wide_gate_mode", type=str, default="hard", choices=["hard", "continuous"])
+    parser.add_argument("--wide_gate_feature", type=str, default="text_norm", choices=["text", "norm", "text_norm"])
+    parser.add_argument("--wide_gate_text_tau", type=float, default=0.4)
+    parser.add_argument("--wide_gate_text_high", type=float, default=0.9)
+    parser.add_argument("--wide_gate_gamma", type=float, default=1.0)
+    parser.add_argument("--wide_gate_norm_threshold", type=float, default=0.0)
+    parser.add_argument("--wide_gate_norm_low", type=float, default=0.0)
+    parser.add_argument("--wide_gate_norm_high", type=float, default=1.0)
+    parser.add_argument("--wide_gate_norm_source", type=str, default="text_value", choices=["text_value", "head_output"])
+    parser.add_argument("--head_norm_thresholds_path", type=str, default="")
 
     args = parser.parse_args()
     if sum([
@@ -328,6 +355,7 @@ if __name__ == "__main__":
         args.attribution_soft_deactivate,
         args.retention_aware_deactivate,
         args.visual_gate_deactivate,
+        args.wide_gate_deactivate,
     ]) > 1:
         raise ValueError("Only one intervention mode can be enabled")
     set_seed(args.seed)
