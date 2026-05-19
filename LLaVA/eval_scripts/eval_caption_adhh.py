@@ -146,6 +146,7 @@ def eval_model(args):
         or args.visual_gate_deactivate
         or args.wide_gate_deactivate
         or args.online_value_selector_deactivate
+        or args.unsupported_component_deactivate
     ):
         if model_path == 'liuhaotian/llava-v1.5-7b':
             model.config.img_start_pos = 35
@@ -248,6 +249,15 @@ def eval_model(args):
                 with open(args.head_norm_thresholds_path, "r") as f:
                     threshold_data = json.load(f)
                 model.config.head_norm_thresholds = threshold_data.get("head_norm_thresholds", threshold_data)
+        if args.unsupported_component_deactivate:
+            model.config.unsupported_component_deactivate = True
+            model.config.unsupported_component_mode = args.unsupported_component_mode
+            model.config.unsupported_component_layer_top_k = args.unsupported_component_layer_top_k
+            model.config.unsupported_component_gamma = args.unsupported_component_gamma
+            model.config.unsupported_component_soft_threshold = args.unsupported_component_soft_threshold
+            model.config.unsupported_component_hard_threshold = args.unsupported_component_hard_threshold
+            model.config.unsupported_component_risk_feature = args.unsupported_component_risk_feature
+            model.config.unsupported_component_all_heads = args.unsupported_component_all_heads
 
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
@@ -318,6 +328,7 @@ if __name__ == "__main__":
     parser.add_argument("--visual_gate_deactivate", action='store_true', default=False)
     parser.add_argument("--wide_gate_deactivate", action='store_true', default=False)
     parser.add_argument("--online_value_selector_deactivate", action='store_true', default=False)
+    parser.add_argument("--unsupported_component_deactivate", action='store_true', default=False)
     parser.add_argument("--adhh_threshold", type=float, default=0.0)
     parser.add_argument("--attention_head_path", type=str, default="")
     parser.add_argument("--top_k", type=int, default=20)
@@ -375,6 +386,25 @@ if __name__ == "__main__":
     parser.add_argument("--online_value_selector_norm_high", type=float, default=1.0)
     parser.add_argument("--online_value_selector_norm_source", type=str, default="text_value", choices=["text_value", "head_output"])
     parser.add_argument("--online_value_selector_no_text_trigger", action="store_true", default=False)
+    parser.add_argument("--unsupported_component_mode", type=str, default="continuous", choices=["hard", "continuous", "hybrid"])
+    parser.add_argument("--unsupported_component_layer_top_k", type=int, default=1)
+    parser.add_argument("--unsupported_component_gamma", type=float, default=0.5)
+    parser.add_argument("--unsupported_component_soft_threshold", type=float, default=0.25)
+    parser.add_argument("--unsupported_component_hard_threshold", type=float, default=0.75)
+    parser.add_argument(
+        "--unsupported_component_risk_feature",
+        type=str,
+        default="unsupported_norm_x_low_anchor",
+        choices=[
+            "unsupported_norm",
+            "unsupported_total_ratio",
+            "unsupported_norm_x_low_anchor",
+            "unsupported_total_ratio_x_low_anchor",
+            "unsupported_norm_x_low_visual",
+            "unsupported_norm_x_low_anchor_x_low_visual",
+        ],
+    )
+    parser.add_argument("--unsupported_component_all_heads", action="store_true", default=False)
     parser.add_argument("--head_norm_thresholds_path", type=str, default="")
 
     args = parser.parse_args()
@@ -387,6 +417,7 @@ if __name__ == "__main__":
         args.visual_gate_deactivate,
         args.wide_gate_deactivate,
         args.online_value_selector_deactivate,
+        args.unsupported_component_deactivate,
     ]) > 1:
         raise ValueError("Only one intervention mode can be enabled")
     set_seed(args.seed)

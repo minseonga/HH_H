@@ -349,6 +349,138 @@ def _apply_head_output_direction_projection(config, layer_idx, head_outputs, num
     return head_outputs
 
 
+def _apply_unsupported_component_suppression(
+    config,
+    layer_idx,
+    attn_weights,
+    value_states,
+    head_outputs,
+    num_heads,
+    head_list,
+):
+    if not getattr(config, "unsupported_component_deactivate", False):
+        return head_outputs
+    if attn_weights is None or value_states is None:
+        return head_outputs
+
+    img_start = getattr(config, "img_start_pos", None)
+    img_length = getattr(config, "img_length", None)
+    if img_start is None or img_length is None:
+        return head_outputs
+
+    kv_seq_len = value_states.shape[-2]
+    img_start = int(img_start)
+    img_end = min(img_start + int(img_length), kv_seq_len)
+    text_start = img_end
+    if img_start < 0 or img_start >= img_end or text_start >= kv_seq_len:
+        return head_outputs
+
+    if getattr(config, "unsupported_component_all_heads", False):
+        candidate_heads = list(range(num_heads))
+    elif head_list is not None:
+        candidate_heads = [int(head) for head in head_list]
+    else:
+        return head_outputs
+    candidate_heads = [head for head in candidate_heads if 0 <= head < num_heads]
+    if not candidate_heads:
+        return head_outputs
+
+    device = head_outputs.device
+    eps = float(getattr(config, "unsupported_component_eps", 1e-6))
+    gamma = float(getattr(config, "unsupported_component_gamma", 0.5))
+    gamma = min(max(gamma, 0.0), 1.0)
+    if gamma <= 0.0:
+        return head_outputs
+
+    head_index = torch.tensor(candidate_heads, device=device, dtype=torch.long)
+    selected_weights = attn_weights.index_select(1, head_index)
+    selected_values = value_states.index_select(1, head_index)
+    text_attention = selected_weights[:, :, -1, text_start:]
+    img_attention = selected_weights[:, :, -1, img_start:img_end]
+    text_values = selected_values[:, :, text_start:, :]
+    img_values = selected_values[:, :, img_start:img_end, :]
+
+    text_value = torch.einsum("bht,bhtd->bhd", text_attention.float(), text_values.float())
+    img_value = torch.einsum("bhi,bhid->bhd", img_attention.float(), img_values.float())
+    text_norm = torch.linalg.vector_norm(text_value, dim=-1, keepdim=True)
+    img_norm = torch.linalg.vector_norm(img_value, dim=-1, keepdim=True)
+    img_unit = img_value / torch.clamp(img_norm, min=eps)
+    parallel_coeff = torch.sum(text_value * img_unit, dim=-1, keepdim=True)
+    supported_value = torch.clamp(parallel_coeff, min=0.0) * img_unit
+    unsupported_value = text_value - supported_value
+    unsupported_norm = torch.linalg.vector_norm(unsupported_value, dim=-1, keepdim=True)
+    total_norm = text_norm + img_norm + eps
+    unsupported_total_ratio = unsupported_norm / total_norm
+    cosine = torch.sum(text_value * img_value, dim=-1, keepdim=True) / torch.clamp(text_norm * img_norm, min=eps)
+    low_anchor = 1.0 - torch.clamp(cosine, min=0.0, max=1.0)
+    visual_value_ratio = img_norm / total_norm
+    low_visual = 1.0 - torch.clamp(visual_value_ratio, min=0.0, max=1.0)
+
+    risk_feature = getattr(config, "unsupported_component_risk_feature", "unsupported_norm_x_low_anchor")
+    if risk_feature == "unsupported_total_ratio":
+        risk = unsupported_total_ratio
+    elif risk_feature == "unsupported_total_ratio_x_low_anchor":
+        risk = unsupported_total_ratio * low_anchor
+    elif risk_feature == "unsupported_norm_x_low_visual":
+        risk = unsupported_norm * low_visual
+    elif risk_feature == "unsupported_norm_x_low_anchor_x_low_visual":
+        risk = unsupported_norm * low_anchor * low_visual
+    elif risk_feature == "unsupported_norm":
+        risk = unsupported_norm
+    else:
+        risk = unsupported_norm * low_anchor
+
+    risk_scores = risk.detach().float().mean(dim=0).squeeze(-1)
+    finite = torch.isfinite(risk_scores)
+    if not bool(finite.any()):
+        return head_outputs
+
+    layer_top_k = int(getattr(config, "unsupported_component_layer_top_k", 1))
+    valid_indices = torch.nonzero(finite, as_tuple=False).flatten()
+    valid_scores = risk_scores[valid_indices]
+    if layer_top_k > 0 and valid_indices.numel() > layer_top_k:
+        _, order = torch.topk(valid_scores, k=layer_top_k, largest=True)
+        selected_indices = valid_indices[order]
+    else:
+        selected_indices = valid_indices
+
+    score_low = torch.min(valid_scores)
+    score_high = torch.max(valid_scores)
+    score_den = score_high - score_low
+    mode = getattr(config, "unsupported_component_mode", "continuous")
+    soft_threshold = float(getattr(config, "unsupported_component_soft_threshold", 0.25))
+    hard_threshold = float(getattr(config, "unsupported_component_hard_threshold", 0.75))
+
+    for idx_tensor in selected_indices:
+        idx = int(idx_tensor.detach().cpu().item())
+        score = risk_scores[idx]
+        if score_den.detach().float().cpu().item() <= eps:
+            normalized = torch.tensor(1.0 if valid_indices.numel() == 1 else 0.0, device=device)
+        else:
+            normalized = torch.clamp((score - score_low) / torch.clamp(score_den, min=eps), min=0.0, max=1.0)
+
+        if mode == "hard":
+            strength = gamma if normalized.detach().float().cpu().item() >= hard_threshold else 0.0
+        elif mode == "hybrid":
+            value = normalized.detach().float().cpu().item()
+            if value >= hard_threshold:
+                strength = gamma
+            elif value >= soft_threshold:
+                strength = gamma * value
+            else:
+                strength = 0.0
+        else:
+            strength = gamma * normalized.detach().float().cpu().item()
+        strength = min(max(float(strength), 0.0), 1.0)
+        if strength <= 0.0:
+            continue
+        head = candidate_heads[idx]
+        projected_output = head_outputs[:, head, -1, :].float() - strength * unsupported_value[:, idx, :]
+        head_outputs[:, head, -1, :] = projected_output.to(head_outputs.dtype)
+
+    return head_outputs
+
+
 def _apply_residual_direction_projection(config, layer_idx, hidden_states):
     if not getattr(config, "residual_direction_project", False):
         return hidden_states
@@ -1550,6 +1682,15 @@ class LlamaAttention(nn.Module):
         attn_output = torch.matmul(attn_weights, value_states)
         _record_head_output_diagnostics(self.config, self.layer_idx, attn_output, self.num_heads)
         attn_output = _apply_head_output_direction_projection(self.config, self.layer_idx, attn_output, self.num_heads)
+        attn_output = _apply_unsupported_component_suppression(
+            self.config,
+            self.layer_idx,
+            attn_weights,
+            value_states,
+            attn_output,
+            self.num_heads,
+            head_list,
+        )
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
@@ -1706,6 +1847,35 @@ class LlamaFlashAttention2(LlamaAttention):
             attn_output_heads,
             self.num_heads,
         )
+        if getattr(self.config, "unsupported_component_deactivate", False):
+            component_query = query_states.transpose(1, 2)
+            component_key = key_states.transpose(1, 2)
+            component_value = value_states.transpose(1, 2)
+            if component_key.shape[1] != self.num_heads:
+                component_key = repeat_kv(component_key, self.num_key_value_groups)
+                component_value = repeat_kv(component_value, self.num_key_value_groups)
+            component_scores = torch.matmul(component_query, component_key.transpose(2, 3)) / math.sqrt(self.head_dim)
+            if attention_mask is not None and attention_mask.dim() == 2:
+                component_scores = component_scores.masked_fill(
+                    attention_mask[:, None, None, :].to(torch.bool) == 0,
+                    torch.finfo(component_scores.dtype).min,
+                )
+            if q_len > 1 and component_scores.shape[-2] == component_scores.shape[-1]:
+                causal_mask = torch.triu(
+                    torch.ones(q_len, q_len, dtype=torch.bool, device=component_scores.device),
+                    diagonal=1,
+                )
+                component_scores = component_scores.masked_fill(causal_mask[None, None, :, :], torch.finfo(component_scores.dtype).min)
+            component_weights = nn.functional.softmax(component_scores, dim=-1, dtype=torch.float32).to(component_query.dtype)
+            attn_output_heads = _apply_unsupported_component_suppression(
+                self.config,
+                self.layer_idx,
+                component_weights,
+                component_value,
+                attn_output_heads,
+                self.num_heads,
+                head_list,
+            )
         attn_output = attn_output_heads.transpose(1, 2).contiguous()
 
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
@@ -1919,6 +2089,20 @@ class LlamaSdpaAttention(LlamaAttention):
         )
         _record_head_output_diagnostics(self.config, self.layer_idx, attn_output, self.num_heads)
         attn_output = _apply_head_output_direction_projection(self.config, self.layer_idx, attn_output, self.num_heads)
+        if getattr(self.config, "unsupported_component_deactivate", False):
+            component_scores = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+            if attention_mask is not None:
+                component_scores = component_scores + attention_mask
+            component_weights = nn.functional.softmax(component_scores, dim=-1, dtype=torch.float32).to(query_states.dtype)
+            attn_output = _apply_unsupported_component_suppression(
+                self.config,
+                self.layer_idx,
+                component_weights,
+                value_states,
+                attn_output,
+                self.num_heads,
+                head_list,
+            )
 
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
