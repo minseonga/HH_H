@@ -1471,6 +1471,9 @@ class LlamaAttention(nn.Module):
                         question_value_norm = torch.linalg.vector_norm(question_value).detach().float().cpu().item()
                         output_value_norm = torch.linalg.vector_norm(output_value).detach().float().cpu().item()
                         recent_value_norm = torch.linalg.vector_norm(recent_value).detach().float().cpu().item()
+                        text_img_value_dot = torch.sum(text_value.float() * img_value.float()).detach().float().cpu().item()
+                        text_img_value_cosine = text_img_value_dot / (text_value_norm * img_value_norm + 1e-6)
+                        text_img_value_abs_cosine = abs(text_img_value_cosine)
                         visual_mass_ratio = img_mass / (img_mass + text_mass + 1e-6)
                         visual_value_ratio = img_value_norm / (img_value_norm + text_value_norm + 1e-6)
                         recent_output_ratio = recent_mass / (text_mass + 1e-6)
@@ -1492,6 +1495,10 @@ class LlamaAttention(nn.Module):
                             "text_ratio_img_entropy": float((text_mass / (text_mass + img_mass + 1e-6)) * img_entropy_norm),
                             "text_value_norm": text_value_norm,
                             "img_value_norm": img_value_norm,
+                            "text_img_value_dot": float(text_img_value_dot),
+                            "text_img_value_cosine": float(text_img_value_cosine),
+                            "text_img_value_abs_cosine": float(text_img_value_abs_cosine),
+                            "text_img_value_orthogonality": float(1.0 - text_img_value_abs_cosine),
                             "visual_value_ratio": float(visual_value_ratio),
                             "recent_output_ratio": float(recent_output_ratio),
                             "removed_text_value_norm": text_value_norm,
