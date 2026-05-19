@@ -108,6 +108,44 @@ def _record_query_diagnostics(config, layer_idx, query_states, num_heads):
         })
 
 
+def _record_head_output_diagnostics(config, layer_idx, head_outputs, num_heads):
+    if not getattr(config, "record_head_output_diagnostics", False):
+        return
+    records = getattr(config, "head_output_diagnostics", None)
+    if records is None:
+        return
+    layer = int(layer_idx) if layer_idx is not None else -1
+    min_layer = getattr(config, "head_output_record_min_layer", None)
+    max_layer = getattr(config, "head_output_record_max_layer", None)
+    if min_layer is not None and layer < int(min_layer):
+        return
+    if max_layer is not None and layer > int(max_layer):
+        return
+
+    if getattr(config, "head_output_record_all_heads", False):
+        diag_heads = list(range(num_heads))
+    else:
+        diag_heads = getattr(config, "head_output_record_heads", None)
+        if diag_heads is None:
+            return
+
+    batch_idx = int(getattr(config, "head_output_record_batch_index", 0))
+    output_last = head_outputs[:, :, -1, :].detach().float().cpu()
+    if batch_idx < 0 or batch_idx >= output_last.shape[0]:
+        return
+    output_last = output_last[batch_idx]
+    for head in diag_heads:
+        head = int(head)
+        if head < 0 or head >= num_heads:
+            continue
+        records.append({
+            "layer": layer,
+            "head": head,
+            "head_key": f"{layer}:{head}",
+            "head_output": output_last[head].clone(),
+        })
+
+
 def _apply_query_direction_projection(config, layer_idx, query_states, num_heads):
     if not getattr(config, "query_direction_project", False):
         return query_states
@@ -192,6 +230,97 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
             })
         query_states[:, head, -1, :] = projected_q
     return query_states
+
+
+def _apply_head_output_direction_projection(config, layer_idx, head_outputs, num_heads):
+    if not getattr(config, "head_output_direction_project", False):
+        return head_outputs
+    directions = getattr(config, "head_output_direction_directions", None)
+    if not directions:
+        return head_outputs
+
+    layer = int(layer_idx) if layer_idx is not None else -1
+    strength = float(getattr(config, "head_output_direction_strength", 0.0))
+    if strength <= 0.0:
+        return head_outputs
+    strength = min(max(strength, 0.0), 1.0)
+
+    gate_mode = getattr(config, "head_output_direction_gate_mode", "threshold")
+    temperature = max(float(getattr(config, "head_output_direction_temperature", 0.05)), 1e-6)
+    positive_only = bool(getattr(config, "head_output_direction_positive_only", True))
+    thresholds = getattr(config, "head_output_direction_thresholds", {})
+    records = getattr(config, "head_output_projection_diagnostics", None)
+    record_diagnostics = bool(getattr(config, "record_head_output_projection_diagnostics", False) and records is not None)
+    eps = float(getattr(config, "head_output_direction_eps", 1e-6))
+
+    for head in range(num_heads):
+        key = f"{layer}:{head}"
+        direction = directions.get(key)
+        if direction is None:
+            continue
+        if not isinstance(direction, torch.Tensor):
+            direction = torch.tensor(direction)
+        direction = direction.to(device=head_outputs.device, dtype=head_outputs.dtype)
+        direction = direction / torch.clamp(torch.linalg.vector_norm(direction), min=eps)
+
+        output = head_outputs[:, head, -1, :]
+        raw_coeff = torch.sum(output * direction, dim=-1, keepdim=True)
+        output_normed = output / torch.clamp(torch.linalg.vector_norm(output, dim=-1, keepdim=True), min=eps)
+        norm_score = torch.sum(output_normed * direction, dim=-1, keepdim=True)
+        threshold = float(thresholds.get(key, 0.0))
+
+        if gate_mode == "none":
+            gate = torch.ones_like(raw_coeff)
+        elif gate_mode == "positive":
+            gate = (raw_coeff > 0).to(head_outputs.dtype)
+        elif gate_mode == "sigmoid":
+            gate = torch.sigmoid((norm_score - threshold) / temperature).to(head_outputs.dtype)
+        else:
+            gate = (norm_score >= threshold).to(head_outputs.dtype)
+
+        positive_coeff = (raw_coeff > 0).to(head_outputs.dtype)
+        coeff = raw_coeff
+        if positive_only:
+            coeff = torch.clamp(coeff, min=0.0)
+        active_projection = (torch.abs(gate * coeff) > eps).to(head_outputs.dtype)
+        projected_output = output - strength * gate * coeff * direction
+        if record_diagnostics:
+            projected_raw_coeff = torch.sum(projected_output * direction, dim=-1, keepdim=True)
+            projected_output_normed = projected_output / torch.clamp(
+                torch.linalg.vector_norm(projected_output, dim=-1, keepdim=True),
+                min=eps,
+            )
+            projected_norm_score = torch.sum(projected_output_normed * direction, dim=-1, keepdim=True)
+            output_delta = projected_output - output
+            output_delta_norm = torch.linalg.vector_norm(output_delta, dim=-1, keepdim=True)
+            output_norm = torch.linalg.vector_norm(output, dim=-1, keepdim=True)
+            records.append({
+                "kind": "head_output_projection",
+                "layer": layer,
+                "head": head,
+                "head_key": key,
+                "strength": strength,
+                "gate_mode": gate_mode,
+                "gate": gate.detach().float().cpu().item(),
+                "positive_only": float(positive_only),
+                "positive_coeff": positive_coeff.detach().float().cpu().item(),
+                "effective_coeff": coeff.detach().float().cpu().item(),
+                "active_projection": active_projection.detach().float().cpu().item(),
+                "threshold": threshold,
+                "raw_score_before": raw_coeff.detach().float().cpu().item(),
+                "raw_score_after": projected_raw_coeff.detach().float().cpu().item(),
+                "raw_score_delta": (raw_coeff - projected_raw_coeff).detach().float().cpu().item(),
+                "normalized_score_before": norm_score.detach().float().cpu().item(),
+                "normalized_score_after": projected_norm_score.detach().float().cpu().item(),
+                "normalized_score_delta": (norm_score - projected_norm_score).detach().float().cpu().item(),
+                "head_output_delta_norm": output_delta_norm.detach().float().cpu().item(),
+                "head_output_norm": output_norm.detach().float().cpu().item(),
+                "relative_head_output_delta": (
+                    output_delta_norm / torch.clamp(output_norm, min=eps)
+                ).detach().float().cpu().item(),
+            })
+        head_outputs[:, head, -1, :] = projected_output
+    return head_outputs
 
 
 def _record_query_attention_projection_diagnostics(
@@ -1275,6 +1404,8 @@ class LlamaAttention(nn.Module):
 
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         attn_output = torch.matmul(attn_weights, value_states)
+        _record_head_output_diagnostics(self.config, self.layer_idx, attn_output, self.num_heads)
+        attn_output = _apply_head_output_direction_projection(self.config, self.layer_idx, attn_output, self.num_heads)
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
@@ -1423,6 +1554,15 @@ class LlamaFlashAttention2(LlamaAttention):
         attn_output = self._flash_attention_forward(
             query_states, key_states, value_states, attention_mask, q_len, dropout=dropout_rate
         )
+        attn_output_heads = attn_output.transpose(1, 2).contiguous()
+        _record_head_output_diagnostics(self.config, self.layer_idx, attn_output_heads, self.num_heads)
+        attn_output_heads = _apply_head_output_direction_projection(
+            self.config,
+            self.layer_idx,
+            attn_output_heads,
+            self.num_heads,
+        )
+        attn_output = attn_output_heads.transpose(1, 2).contiguous()
 
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
         attn_output = self.o_proj(attn_output)
@@ -1633,6 +1773,8 @@ class LlamaSdpaAttention(LlamaAttention):
             # The q_len > 1 is necessary to match with AttentionMaskConverter.to_causal_4d that does not create a causal mask in case q_len == 1.
             is_causal=self.is_causal and attention_mask is None and q_len > 1,
         )
+        _record_head_output_diagnostics(self.config, self.layer_idx, attn_output, self.num_heads)
+        attn_output = _apply_head_output_direction_projection(self.config, self.layer_idx, attn_output, self.num_heads)
 
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)

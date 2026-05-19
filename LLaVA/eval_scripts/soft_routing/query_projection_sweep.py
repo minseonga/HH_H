@@ -96,17 +96,34 @@ def load_direction_rows(calibration_npz, top_k, min_auc):
     return rows, direction_dict, threshold_dict
 
 
-def set_projection_config(model, directions, thresholds, strength, gate_mode, temperature, record_diagnostics=True):
-    model.config.query_direction_project = bool(strength > 0.0)
-    model.config.query_direction_directions = directions
-    model.config.query_direction_thresholds = thresholds
-    model.config.query_direction_strength = float(strength)
-    model.config.query_direction_gate_mode = gate_mode
-    model.config.query_direction_temperature = float(temperature)
-    model.config.query_direction_positive_only = True
+def set_projection_config(model, surface, directions, thresholds, strength, gate_mode, temperature, record_diagnostics=True):
     active_diagnostics = bool(record_diagnostics and strength > 0.0)
-    model.config.record_query_projection_diagnostics = active_diagnostics
-    model.config.query_projection_diagnostics = [] if active_diagnostics else None
+    if surface == "head_output":
+        model.config.head_output_direction_project = bool(strength > 0.0)
+        model.config.head_output_direction_directions = directions
+        model.config.head_output_direction_thresholds = thresholds
+        model.config.head_output_direction_strength = float(strength)
+        model.config.head_output_direction_gate_mode = gate_mode
+        model.config.head_output_direction_temperature = float(temperature)
+        model.config.head_output_direction_positive_only = True
+        model.config.record_head_output_projection_diagnostics = active_diagnostics
+        model.config.head_output_projection_diagnostics = [] if active_diagnostics else None
+        model.config.query_direction_project = False
+        model.config.record_query_projection_diagnostics = False
+        model.config.query_projection_diagnostics = None
+    else:
+        model.config.query_direction_project = bool(strength > 0.0)
+        model.config.query_direction_directions = directions
+        model.config.query_direction_thresholds = thresholds
+        model.config.query_direction_strength = float(strength)
+        model.config.query_direction_gate_mode = gate_mode
+        model.config.query_direction_temperature = float(temperature)
+        model.config.query_direction_positive_only = True
+        model.config.record_query_projection_diagnostics = active_diagnostics
+        model.config.query_projection_diagnostics = [] if active_diagnostics else None
+        model.config.head_output_direction_project = False
+        model.config.record_head_output_projection_diagnostics = False
+        model.config.head_output_projection_diagnostics = None
 
 
 def clear_projection_config(model):
@@ -116,6 +133,12 @@ def clear_projection_config(model):
     model.config.query_direction_strength = 0.0
     model.config.record_query_projection_diagnostics = False
     model.config.query_projection_diagnostics = None
+    model.config.head_output_direction_project = False
+    model.config.head_output_direction_directions = {}
+    model.config.head_output_direction_thresholds = {}
+    model.config.head_output_direction_strength = 0.0
+    model.config.record_head_output_projection_diagnostics = False
+    model.config.head_output_projection_diagnostics = None
 
 
 def mean_metric(records, key):
@@ -124,9 +147,9 @@ def mean_metric(records, key):
 
 
 def diagnostic_summary(diagnostics):
-    query_records = [record for record in diagnostics if record.get("kind") == "query_projection"]
+    query_records = [record for record in diagnostics if record.get("kind") in {"query_projection", "head_output_projection"}]
     attention_records = [record for record in diagnostics if record.get("kind") == "attention_projection"]
-    active_query_records = [record for record in query_records if float(record.get("gate", 0.0)) > 0.0]
+    active_query_records = [record for record in query_records if float(record.get("active_projection", 0.0)) > 0.0]
     return {
         "projection_head_count": len(query_records),
         "active_projection_head_count": len(active_query_records),
@@ -139,6 +162,8 @@ def diagnostic_summary(diagnostics):
         "mean_normalized_score_delta": mean_metric(query_records, "normalized_score_delta"),
         "mean_relative_q_delta": mean_metric(query_records, "relative_q_delta"),
         "max_relative_q_delta": max([float(record.get("relative_q_delta", 0.0)) for record in query_records], default=None),
+        "mean_relative_head_output_delta": mean_metric(query_records, "relative_head_output_delta"),
+        "max_relative_head_output_delta": max([float(record.get("relative_head_output_delta", 0.0)) for record in query_records], default=None),
         "mean_attention_logit_delta_norm": mean_metric(attention_records, "attention_logit_delta_norm"),
         "mean_relative_attention_logit_delta": mean_metric(attention_records, "relative_attention_logit_delta"),
         "mean_attention_kl": mean_metric(attention_records, "attention_kl"),
@@ -153,11 +178,12 @@ def flatten_diagnostics(base_row, strength, diagnostics):
         by_head[key][record.get("kind", "unknown")] = record
     rows = []
     for head_key, records in sorted(by_head.items()):
-        query = records.get("query_projection", {})
+        query = records.get("query_projection", records.get("head_output_projection", {}))
         attention = records.get("attention_projection", {})
         rows.append({
             **base_row,
             "strength": strength,
+            "projection_kind": query.get("kind"),
             "head_key": head_key,
             "layer": query.get("layer", attention.get("layer")),
             "head": query.get("head", attention.get("head")),
@@ -177,6 +203,9 @@ def flatten_diagnostics(base_row, strength, diagnostics):
             "q_delta_norm": query.get("q_delta_norm"),
             "q_norm": query.get("q_norm"),
             "relative_q_delta": query.get("relative_q_delta"),
+            "head_output_delta_norm": query.get("head_output_delta_norm"),
+            "head_output_norm": query.get("head_output_norm"),
+            "relative_head_output_delta": query.get("relative_head_output_delta"),
             "attention_logit_delta_norm": attention.get("attention_logit_delta_norm"),
             "relative_attention_logit_delta": attention.get("relative_attention_logit_delta"),
             "attention_kl": attention.get("attention_kl"),
@@ -185,10 +214,10 @@ def flatten_diagnostics(base_row, strength, diagnostics):
     return rows
 
 
-def run_projection_sweep(model, tokenizer, prompt_ids, prefix_ids, image_tensor, image_size, target_token_id, strengths, directions, thresholds, gate_mode, temperature):
+def run_projection_sweep(model, tokenizer, prompt_ids, prefix_ids, image_tensor, image_size, target_token_id, strengths, directions, thresholds, gate_mode, temperature, surface):
     outputs = {}
     for strength in strengths:
-        set_projection_config(model, directions, thresholds, strength, gate_mode, temperature)
+        set_projection_config(model, surface, directions, thresholds, strength, gate_mode, temperature)
         outputs[strength] = one_step(
             model,
             tokenizer,
@@ -200,7 +229,11 @@ def run_projection_sweep(model, tokenizer, prompt_ids, prefix_ids, image_tensor,
             "none",
             record=False,
         )
-        outputs[strength]["projection_diagnostics"] = list(getattr(model.config, "query_projection_diagnostics", []) or [])
+        if surface == "head_output":
+            diagnostics = getattr(model.config, "head_output_projection_diagnostics", [])
+        else:
+            diagnostics = getattr(model.config, "query_projection_diagnostics", [])
+        outputs[strength]["projection_diagnostics"] = list(diagnostics or [])
     clear_projection_config(model)
     return outputs
 
@@ -270,6 +303,7 @@ def summarize_diagnostics_by_group(diagnostic_rows):
         "normalized_score_after",
         "normalized_score_delta",
         "relative_q_delta",
+        "relative_head_output_delta",
         "attention_logit_delta_norm",
         "relative_attention_logit_delta",
         "attention_kl",
@@ -321,6 +355,7 @@ def main():
     parser.add_argument("--adhh-threshold", type=float, default=0.4)
     parser.add_argument("--soft-gamma", type=float, default=0.75)
     parser.add_argument("--soft-temperature", type=float, default=0.05)
+    parser.add_argument("--surface", choices=["query", "head_output"], default="query")
     parser.add_argument("--projection-strengths", default="0,0.25,0.5,0.75,1.0")
     parser.add_argument("--direction-top-k", type=int, default=10)
     parser.add_argument("--min-direction-auroc", type=float, default=0.65)
@@ -389,6 +424,7 @@ def main():
                 thresholds,
                 args.gate_mode,
                 args.query_direction_temperature,
+                args.surface,
             )
             original = outputs[0.0]
             base_diagnostic_row = {
@@ -396,6 +432,7 @@ def main():
                 "image": row["image"],
                 "label": row["label"],
                 "label_family": label_family(row["label"]),
+                "surface": args.surface,
                 "object_node": row["object_node"],
                 "object_word": row["object_word"],
                 "target_token": tokenizer.decode([target_token_id]),
@@ -418,6 +455,7 @@ def main():
                 "original_entropy": original["entropy"],
                 "original_next_token": original["next_token"],
                 "num_query_directions": len(selected_direction_rows),
+                "surface": args.surface,
                 "gate_mode": args.gate_mode,
             }
             for strength in strengths:
@@ -451,6 +489,7 @@ def main():
         "label_counts": dict(Counter(row["label"] for row in output_rows)),
         "label_family_counts": dict(Counter(row["label_family"] for row in output_rows)),
         "projection_strengths": strengths,
+        "surface": args.surface,
         "direction_top_k": args.direction_top_k,
         "min_direction_auroc": args.min_direction_auroc,
         "gate_mode": args.gate_mode,

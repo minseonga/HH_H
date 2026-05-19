@@ -98,13 +98,24 @@ def collect_query_vectors(args, tokenizer, model, image_processor, selected):
     step_ids = []
     step_rows = []
 
-    model.config.record_query_diagnostics = True
-    model.config.query_record_all_heads = True
-    model.config.query_record_min_layer = args.min_layer
-    model.config.query_record_max_layer = args.max_layer
-    model.config.query_record_batch_index = 0
+    if args.surface == "head_output":
+        vector_key = "head_output"
+        diagnostics_attr = "head_output_diagnostics"
+        model.config.record_head_output_diagnostics = True
+        model.config.head_output_record_all_heads = True
+        model.config.head_output_record_min_layer = args.min_layer
+        model.config.head_output_record_max_layer = args.max_layer
+        model.config.head_output_record_batch_index = 0
+    else:
+        vector_key = "query"
+        diagnostics_attr = "query_diagnostics"
+        model.config.record_query_diagnostics = True
+        model.config.query_record_all_heads = True
+        model.config.query_record_min_layer = args.min_layer
+        model.config.query_record_max_layer = args.max_layer
+        model.config.query_record_batch_index = 0
 
-    for step_id, row in enumerate(tqdm(selected, desc="query steps")):
+    for step_id, row in enumerate(tqdm(selected, desc=f"{args.surface} steps")):
         prompt_ids, image_tensor, image_size = build_prompt_inputs(
             row,
             args.image_folder,
@@ -118,7 +129,7 @@ def collect_query_vectors(args, tokenizer, model, image_processor, selected):
         prefix_ids = row["probe_caption_ids"][:row["target_token_pos"]]
         target_token_id = int(row["target_token_id"])
 
-        model.config.query_diagnostics = []
+        setattr(model.config, diagnostics_attr, [])
         one_step(
             model,
             tokenizer,
@@ -131,7 +142,7 @@ def collect_query_vectors(args, tokenizer, model, image_processor, selected):
             record=False,
         )
 
-        records = list(getattr(model.config, "query_diagnostics", []) or [])
+        records = list(getattr(model.config, diagnostics_attr, []) or [])
         family = label_family(row["label"])
         binary_label = 1 if family == "hallucinated" else 0
         step_rows.append({
@@ -147,20 +158,27 @@ def collect_query_vectors(args, tokenizer, model, image_processor, selected):
             "target_token": tokenizer.decode([target_token_id]),
             "target_token_id": target_token_id,
             "target_token_pos": int(row["target_token_pos"]),
-            "num_query_records": len(records),
+            "surface": args.surface,
+            "num_vector_records": len(records),
+            "num_query_records": len(records) if args.surface == "query" else 0,
+            "num_head_output_records": len(records) if args.surface == "head_output" else 0,
         })
 
         for record in records:
-            query = record["query"]
-            if isinstance(query, torch.Tensor):
-                query = query.numpy()
-            vectors.append(np.asarray(query, dtype=np.float32))
+            vector = record[vector_key]
+            if isinstance(vector, torch.Tensor):
+                vector = vector.numpy()
+            vectors.append(np.asarray(vector, dtype=np.float32))
             layers.append(int(record["layer"]))
             heads.append(int(record["head"]))
             step_ids.append(step_id)
 
-    model.config.record_query_diagnostics = False
-    model.config.query_diagnostics = None
+    if args.surface == "head_output":
+        model.config.record_head_output_diagnostics = False
+        model.config.head_output_diagnostics = None
+    else:
+        model.config.record_query_diagnostics = False
+        model.config.query_diagnostics = None
     return {
         "vectors": np.stack(vectors, axis=0) if vectors else np.zeros((0, 0), dtype=np.float32),
         "layers": np.asarray(layers, dtype=np.int32),
@@ -237,6 +255,7 @@ def calibrate_directions(query_data, step_rows, args):
                 "layer": int(layer),
                 "head": int(head),
                 "head_key": f"{int(layer)}:{int(head)}",
+                "surface": args.surface,
                 "query_normalization": args.query_normalization,
                 "n_train": int(train.sum()),
                 "n_train_positive": int(train_pos.sum()),
@@ -339,6 +358,7 @@ def main():
     parser.add_argument("--soft-temperature", type=float, default=0.05)
     parser.add_argument("--min-layer", type=int, default=13)
     parser.add_argument("--max-layer", type=int, default=31)
+    parser.add_argument("--surface", choices=["query", "head_output"], default="query")
     parser.add_argument("--query-normalization", choices=["none", "l2"], default="l2")
     parser.add_argument("--test-fraction", type=float, default=0.3)
     parser.add_argument("--seed", type=int, default=42)
@@ -377,7 +397,7 @@ def main():
     if args.save_query_vectors:
         np.savez_compressed(
             os.path.join(args.output_dir, "query_vectors.npz"),
-            vectors=query_data["vectors"].astype(np.float32),
+        vectors=query_data["vectors"].astype(np.float32),
             layers=query_data["layers"],
             heads=query_data["heads"],
             step_ids=query_data["step_ids"],
@@ -385,8 +405,10 @@ def main():
 
     summary = {
         "num_steps": len(step_rows),
+        "num_vectors": int(query_data["vectors"].shape[0]),
         "num_query_vectors": int(query_data["vectors"].shape[0]),
         "head_dim": int(query_data["vectors"].shape[1]) if query_data["vectors"].ndim == 2 and query_data["vectors"].shape[0] else 0,
+        "surface": args.surface,
         "label_counts": dict(Counter(row["label"] for row in step_rows)),
         "label_family_counts": dict(Counter(row["label_family"] for row in step_rows)),
         "min_layer": args.min_layer,
