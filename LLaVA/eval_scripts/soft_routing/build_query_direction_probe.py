@@ -98,7 +98,14 @@ def collect_query_vectors(args, tokenizer, model, image_processor, selected):
     step_ids = []
     step_rows = []
 
-    if args.surface == "head_output":
+    if args.surface == "residual":
+        vector_key = "residual"
+        diagnostics_attr = "residual_diagnostics"
+        model.config.record_residual_diagnostics = True
+        model.config.residual_record_min_layer = args.min_layer
+        model.config.residual_record_max_layer = args.max_layer
+        model.config.residual_record_batch_index = 0
+    elif args.surface == "head_output":
         vector_key = "head_output"
         diagnostics_attr = "head_output_diagnostics"
         model.config.record_head_output_diagnostics = True
@@ -162,6 +169,7 @@ def collect_query_vectors(args, tokenizer, model, image_processor, selected):
             "num_vector_records": len(records),
             "num_query_records": len(records) if args.surface == "query" else 0,
             "num_head_output_records": len(records) if args.surface == "head_output" else 0,
+            "num_residual_records": len(records) if args.surface == "residual" else 0,
         })
 
         for record in records:
@@ -173,7 +181,10 @@ def collect_query_vectors(args, tokenizer, model, image_processor, selected):
             heads.append(int(record["head"]))
             step_ids.append(step_id)
 
-    if args.surface == "head_output":
+    if args.surface == "residual":
+        model.config.record_residual_diagnostics = False
+        model.config.residual_diagnostics = None
+    elif args.surface == "head_output":
         model.config.record_head_output_diagnostics = False
         model.config.head_output_diagnostics = None
     else:
@@ -358,7 +369,7 @@ def main():
     parser.add_argument("--soft-temperature", type=float, default=0.05)
     parser.add_argument("--min-layer", type=int, default=13)
     parser.add_argument("--max-layer", type=int, default=31)
-    parser.add_argument("--surface", choices=["query", "head_output"], default="query")
+    parser.add_argument("--surface", choices=["query", "head_output", "residual"], default="query")
     parser.add_argument("--query-normalization", choices=["none", "l2"], default="l2")
     parser.add_argument("--test-fraction", type=float, default=0.3)
     parser.add_argument("--seed", type=int, default=42)

@@ -146,6 +146,32 @@ def _record_head_output_diagnostics(config, layer_idx, head_outputs, num_heads):
         })
 
 
+def _record_residual_diagnostics(config, layer_idx, hidden_states):
+    if not getattr(config, "record_residual_diagnostics", False):
+        return
+    records = getattr(config, "residual_diagnostics", None)
+    if records is None:
+        return
+    layer = int(layer_idx) if layer_idx is not None else -1
+    min_layer = getattr(config, "residual_record_min_layer", None)
+    max_layer = getattr(config, "residual_record_max_layer", None)
+    if min_layer is not None and layer < int(min_layer):
+        return
+    if max_layer is not None and layer > int(max_layer):
+        return
+
+    batch_idx = int(getattr(config, "residual_record_batch_index", 0))
+    residual_last = hidden_states[:, -1, :].detach().float().cpu()
+    if batch_idx < 0 or batch_idx >= residual_last.shape[0]:
+        return
+    records.append({
+        "layer": layer,
+        "head": 0,
+        "head_key": f"{layer}:0",
+        "residual": residual_last[batch_idx].clone(),
+    })
+
+
 def _apply_query_direction_projection(config, layer_idx, query_states, num_heads):
     if not getattr(config, "query_direction_project", False):
         return query_states
@@ -155,9 +181,9 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
 
     layer = int(layer_idx) if layer_idx is not None else -1
     strength = float(getattr(config, "query_direction_strength", 0.0))
-    if strength <= 0.0:
+    if abs(strength) <= 0.0:
         return query_states
-    strength = min(max(strength, 0.0), 1.0)
+    strength = min(max(strength, -1.0), 1.0)
 
     gate_mode = getattr(config, "query_direction_gate_mode", "threshold")
     temperature = max(float(getattr(config, "query_direction_temperature", 0.05)), 1e-6)
@@ -241,9 +267,9 @@ def _apply_head_output_direction_projection(config, layer_idx, head_outputs, num
 
     layer = int(layer_idx) if layer_idx is not None else -1
     strength = float(getattr(config, "head_output_direction_strength", 0.0))
-    if strength <= 0.0:
+    if abs(strength) <= 0.0:
         return head_outputs
-    strength = min(max(strength, 0.0), 1.0)
+    strength = min(max(strength, -1.0), 1.0)
 
     gate_mode = getattr(config, "head_output_direction_gate_mode", "threshold")
     temperature = max(float(getattr(config, "head_output_direction_temperature", 0.05)), 1e-6)
@@ -321,6 +347,97 @@ def _apply_head_output_direction_projection(config, layer_idx, head_outputs, num
             })
         head_outputs[:, head, -1, :] = projected_output
     return head_outputs
+
+
+def _apply_residual_direction_projection(config, layer_idx, hidden_states):
+    if not getattr(config, "residual_direction_project", False):
+        return hidden_states
+    directions = getattr(config, "residual_direction_directions", None)
+    if not directions:
+        return hidden_states
+
+    layer = int(layer_idx) if layer_idx is not None else -1
+    key = f"{layer}:0"
+    direction = directions.get(key)
+    if direction is None:
+        return hidden_states
+
+    strength = float(getattr(config, "residual_direction_strength", 0.0))
+    if abs(strength) <= 0.0:
+        return hidden_states
+    strength = min(max(strength, -1.0), 1.0)
+
+    gate_mode = getattr(config, "residual_direction_gate_mode", "threshold")
+    temperature = max(float(getattr(config, "residual_direction_temperature", 0.05)), 1e-6)
+    positive_only = bool(getattr(config, "residual_direction_positive_only", True))
+    thresholds = getattr(config, "residual_direction_thresholds", {})
+    records = getattr(config, "residual_projection_diagnostics", None)
+    record_diagnostics = bool(getattr(config, "record_residual_projection_diagnostics", False) and records is not None)
+    eps = float(getattr(config, "residual_direction_eps", 1e-6))
+
+    if not isinstance(direction, torch.Tensor):
+        direction = torch.tensor(direction)
+    direction = direction.to(device=hidden_states.device, dtype=hidden_states.dtype)
+    direction = direction / torch.clamp(torch.linalg.vector_norm(direction), min=eps)
+
+    residual = hidden_states[:, -1, :]
+    raw_coeff = torch.sum(residual * direction, dim=-1, keepdim=True)
+    residual_normed = residual / torch.clamp(torch.linalg.vector_norm(residual, dim=-1, keepdim=True), min=eps)
+    norm_score = torch.sum(residual_normed * direction, dim=-1, keepdim=True)
+    threshold = float(thresholds.get(key, 0.0))
+
+    if gate_mode == "none":
+        gate = torch.ones_like(raw_coeff)
+    elif gate_mode == "positive":
+        gate = (raw_coeff > 0).to(hidden_states.dtype)
+    elif gate_mode == "sigmoid":
+        gate = torch.sigmoid((norm_score - threshold) / temperature).to(hidden_states.dtype)
+    else:
+        gate = (norm_score >= threshold).to(hidden_states.dtype)
+
+    positive_coeff = (raw_coeff > 0).to(hidden_states.dtype)
+    coeff = raw_coeff
+    if positive_only:
+        coeff = torch.clamp(coeff, min=0.0)
+    active_projection = (torch.abs(gate * coeff) > eps).to(hidden_states.dtype)
+    projected_residual = residual - strength * gate * coeff * direction
+    if record_diagnostics:
+        projected_raw_coeff = torch.sum(projected_residual * direction, dim=-1, keepdim=True)
+        projected_residual_normed = projected_residual / torch.clamp(
+            torch.linalg.vector_norm(projected_residual, dim=-1, keepdim=True),
+            min=eps,
+        )
+        projected_norm_score = torch.sum(projected_residual_normed * direction, dim=-1, keepdim=True)
+        residual_delta = projected_residual - residual
+        residual_delta_norm = torch.linalg.vector_norm(residual_delta, dim=-1, keepdim=True)
+        residual_norm = torch.linalg.vector_norm(residual, dim=-1, keepdim=True)
+        records.append({
+            "kind": "residual_projection",
+            "layer": layer,
+            "head": 0,
+            "head_key": key,
+            "strength": strength,
+            "gate_mode": gate_mode,
+            "gate": gate.detach().float().cpu().item(),
+            "positive_only": float(positive_only),
+            "positive_coeff": positive_coeff.detach().float().cpu().item(),
+            "effective_coeff": coeff.detach().float().cpu().item(),
+            "active_projection": active_projection.detach().float().cpu().item(),
+            "threshold": threshold,
+            "raw_score_before": raw_coeff.detach().float().cpu().item(),
+            "raw_score_after": projected_raw_coeff.detach().float().cpu().item(),
+            "raw_score_delta": (raw_coeff - projected_raw_coeff).detach().float().cpu().item(),
+            "normalized_score_before": norm_score.detach().float().cpu().item(),
+            "normalized_score_after": projected_norm_score.detach().float().cpu().item(),
+            "normalized_score_delta": (norm_score - projected_norm_score).detach().float().cpu().item(),
+            "residual_delta_norm": residual_delta_norm.detach().float().cpu().item(),
+            "residual_norm": residual_norm.detach().float().cpu().item(),
+            "relative_residual_delta": (
+                residual_delta_norm / torch.clamp(residual_norm, min=eps)
+            ).detach().float().cpu().item(),
+        })
+    hidden_states[:, -1, :] = projected_residual
+    return hidden_states
 
 
 def _record_query_attention_projection_diagnostics(
@@ -1833,6 +1950,9 @@ class LlamaDecoderLayer(nn.Module):
             warnings.warn(
                 "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
             )
+
+        _record_residual_diagnostics(self.config, self.layer_idx, hidden_states)
+        hidden_states = _apply_residual_direction_projection(self.config, self.layer_idx, hidden_states)
 
         residual = hidden_states
 
