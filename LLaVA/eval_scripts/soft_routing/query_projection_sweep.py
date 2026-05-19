@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from llava.mm_utils import get_model_name_from_path
@@ -16,8 +17,8 @@ from eval_scripts.soft_routing.analyze_object_retention_steps import (
     configure_model,
     kl_divergence,
     load_sentences,
-    one_step,
     select_rows,
+    set_mode,
 )
 
 
@@ -260,11 +261,47 @@ def flatten_diagnostics(base_row, strength, diagnostics):
     return rows
 
 
+def one_step_preserve_projection(model, tokenizer, prompt_ids, prefix_ids, image_tensor, image_size, target_token_id):
+    prefix_tensor = torch.tensor(prefix_ids, device=prompt_ids.device, dtype=prompt_ids.dtype).unsqueeze(0)
+    step_input = torch.cat([prompt_ids, prefix_tensor], dim=1) if prefix_ids else prompt_ids
+    with torch.inference_mode():
+        output = model.generate(
+            step_input,
+            images=image_tensor,
+            image_sizes=[image_size],
+            do_sample=False,
+            temperature=0,
+            top_p=None,
+            num_beams=1,
+            max_new_tokens=1,
+            use_cache=True,
+            output_scores=True,
+            return_dict_in_generate=True,
+        )
+    score = output["scores"][0][0].detach().float()
+    log_probs = F.log_softmax(score, dim=-1)
+    probs = log_probs.exp()
+    entropy = float(-(probs * log_probs).sum().item())
+    target_logprob = float(log_probs[int(target_token_id)].item())
+    sorted_ids = torch.argsort(score, descending=True)
+    target_rank = int((sorted_ids == int(target_token_id)).nonzero(as_tuple=False)[0].item() + 1)
+    next_token_id = int(torch.argmax(score).item())
+    return {
+        "score": score,
+        "entropy": entropy,
+        "target_logprob": target_logprob,
+        "target_rank": target_rank,
+        "next_token_id": next_token_id,
+        "next_token": tokenizer.decode([next_token_id]),
+    }
+
+
 def run_projection_sweep(model, tokenizer, prompt_ids, prefix_ids, image_tensor, image_size, target_token_id, strengths, directions, thresholds, gate_mode, temperature, surface):
     outputs = {}
     for strength in strengths:
+        set_mode(model, "none", record=False)
         set_projection_config(model, surface, directions, thresholds, strength, gate_mode, temperature)
-        outputs[strength] = one_step(
+        outputs[strength] = one_step_preserve_projection(
             model,
             tokenizer,
             prompt_ids,
@@ -272,8 +309,6 @@ def run_projection_sweep(model, tokenizer, prompt_ids, prefix_ids, image_tensor,
             image_tensor,
             image_size,
             target_token_id,
-            "none",
-            record=False,
         )
         if surface == "residual":
             diagnostics = getattr(model.config, "residual_projection_diagnostics", [])
