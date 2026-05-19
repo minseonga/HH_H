@@ -63,3 +63,8 @@ echo "[summary] case1 rho protection sweep"
 if [ -f "${OUTPUT_DIR}/case1_alignment_threshold_sweep.csv" ]; then
     column -s, -t "${OUTPUT_DIR}/case1_alignment_threshold_sweep.csv" | head -120
 fi
+
+echo "[summary] visual feature suppression-utility contrast"
+if [ -f "${OUTPUT_DIR}/visual_feature_suppression_utility_contrast.csv" ]; then
+    column -s, -t "${OUTPUT_DIR}/visual_feature_suppression_utility_contrast.csv" | head -120
+fi

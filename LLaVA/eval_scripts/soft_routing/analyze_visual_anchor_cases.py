@@ -55,6 +55,18 @@ def load_rows(path):
             "causal_effect",
         ]:
             row[key] = safe_float(row.get(key, 0.0))
+        anchor_support = max(row["text_img_value_cosine"], 0.0)
+        low_anchor = max(0.0, 1.0 - anchor_support)
+        row["anchor_support"] = anchor_support
+        row["low_anchor"] = low_anchor
+        row["unsupported_norm_x_low_anchor"] = row["unsupported_text_value_norm"] * low_anchor
+        row["unsupported_total_ratio_x_low_anchor"] = row["unsupported_total_value_ratio"] * low_anchor
+        row["supported_minus_unsupported_norm"] = (
+            row["supported_text_value_norm"] - row["unsupported_text_value_norm"]
+        )
+        row["unsupported_over_supported_norm"] = (
+            row["unsupported_text_value_norm"] / max(row["supported_text_value_norm"], 1e-6)
+        )
     return rows
 
 
@@ -248,10 +260,16 @@ def build_threshold_sweep(rows, adhh_threshold, utility_threshold, parallel_valu
 ALIGNMENT_FEATURES = [
     "text_img_value_cosine",
     "text_img_value_abs_cosine",
+    "anchor_support",
+    "low_anchor",
     "supported_text_value_norm",
     "unsupported_text_value_norm",
     "unsupported_text_value_ratio",
     "unsupported_total_value_ratio",
+    "unsupported_norm_x_low_anchor",
+    "unsupported_total_ratio_x_low_anchor",
+    "supported_minus_unsupported_norm",
+    "unsupported_over_supported_norm",
     "text_value_norm",
     "img_value_norm",
     "visual_value_ratio",
@@ -391,6 +409,51 @@ def build_case1_rho_threshold_sweep(rows, rho_values):
     return output
 
 
+def build_visual_feature_utility_contrast(rows):
+    output = []
+    groups = get_group_rows(rows)
+    for group, group_rows in groups.items():
+        if not group_rows:
+            continue
+        positive_rows = [row for row in group_rows if row["should_suppress"]]
+        negative_rows = [row for row in group_rows if row["safe_to_keep"]]
+        labels = [1 if row["should_suppress"] else 0 for row in group_rows]
+        for feature in ALIGNMENT_FEATURES:
+            scores = [safe_float(row.get(feature, 0.0)) for row in group_rows]
+            auc = high_score_auc(labels, scores)
+            output.append({
+                "group": group,
+                "feature": feature,
+                "n": len(group_rows),
+                "n_should_suppress": len(positive_rows),
+                "n_safe_to_keep": len(negative_rows),
+                "mean_should_suppress": mean_value(positive_rows, feature),
+                "mean_safe_to_keep": mean_value(negative_rows, feature),
+                "gap_should_minus_safe": (
+                    mean_value(positive_rows, feature) - mean_value(negative_rows, feature)
+                    if positive_rows and negative_rows else None
+                ),
+                "p50_should_suppress": percentile_value(positive_rows, feature, 50),
+                "p50_safe_to_keep": percentile_value(negative_rows, feature, 50),
+                "auroc_high_predicts_should_suppress": auc,
+                "auroc_abs": max(auc, 1.0 - auc) if auc is not None else None,
+                "direction": (
+                    "high_predicts_should_suppress"
+                    if auc is not None and auc >= 0.5 else
+                    "low_predicts_should_suppress"
+                    if auc is not None else None
+                ),
+            })
+    output.sort(
+        key=lambda row: (
+            row["group"] != "all",
+            -(row["auroc_abs"] if row["auroc_abs"] is not None else -1.0),
+            row["feature"],
+        )
+    )
+    return output
+
+
 def build_examples(rows, adhh_threshold, utility_threshold, parallel_cos, orth_abs_cos, max_examples):
     summary_rows = build_case_summary(rows, adhh_threshold, utility_threshold, parallel_cos, orth_abs_cos)
     case_names = {
@@ -495,6 +558,7 @@ def main():
         rows,
         parse_float_list(args.case1_rho_sweep),
     )
+    utility_contrast = build_visual_feature_utility_contrast(rows)
 
     write_csv(os.path.join(args.output_dir, "visual_anchor_case_summary.csv"), summary)
     write_csv(os.path.join(args.output_dir, "visual_anchor_case_threshold_sweep.csv"), sweep)
@@ -510,6 +574,10 @@ def main():
     write_csv(
         os.path.join(args.output_dir, "case1_alignment_threshold_sweep.csv"),
         alignment_rho_sweep,
+    )
+    write_csv(
+        os.path.join(args.output_dir, "visual_feature_suppression_utility_contrast.csv"),
+        utility_contrast,
     )
 
     config = {
@@ -542,6 +610,10 @@ def main():
             "unsupported_text_value_norm",
             "unsupported_total_value_ratio",
         }:
+            print(row)
+    print("visual feature suppression-utility contrast:")
+    for row in utility_contrast:
+        if row["group"] == "all":
             print(row)
 
 
