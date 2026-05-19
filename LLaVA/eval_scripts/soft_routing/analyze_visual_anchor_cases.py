@@ -47,6 +47,10 @@ def load_rows(path):
             "text_img_value_cosine",
             "text_img_value_abs_cosine",
             "text_img_value_orthogonality",
+            "supported_text_value_norm",
+            "unsupported_text_value_norm",
+            "unsupported_text_value_ratio",
+            "unsupported_total_value_ratio",
             "suppression_utility",
             "causal_effect",
         ]:
@@ -103,6 +107,10 @@ def summarize_case(name, rows, mask, group, base_masks):
         "mean_visual_value_ratio": mean_value(selected, "visual_value_ratio"),
         "mean_text_img_value_cosine": mean_value(selected, "text_img_value_cosine"),
         "mean_text_img_value_abs_cosine": mean_value(selected, "text_img_value_abs_cosine"),
+        "mean_supported_text_value_norm": mean_value(selected, "supported_text_value_norm"),
+        "mean_unsupported_text_value_norm": mean_value(selected, "unsupported_text_value_norm"),
+        "mean_unsupported_text_value_ratio": mean_value(selected, "unsupported_text_value_ratio"),
+        "mean_unsupported_total_value_ratio": mean_value(selected, "unsupported_total_value_ratio"),
     }
     for key, count in base_counts.items():
         output[f"n_{key}"] = count
@@ -226,6 +234,10 @@ def build_examples(rows, adhh_threshold, utility_threshold, parallel_cos, orth_a
             "visual_value_ratio": row.get("visual_value_ratio"),
             "text_img_value_cosine": row.get("text_img_value_cosine"),
             "text_img_value_abs_cosine": row.get("text_img_value_abs_cosine"),
+            "supported_text_value_norm": row.get("supported_text_value_norm"),
+            "unsupported_text_value_norm": row.get("unsupported_text_value_norm"),
+            "unsupported_text_value_ratio": row.get("unsupported_text_value_ratio"),
+            "unsupported_total_value_ratio": row.get("unsupported_total_value_ratio"),
             "suppression_utility": row.get("suppression_utility"),
             "causal_effect": row.get("causal_effect"),
             "target_logprob_original": row.get("target_logprob_original"),

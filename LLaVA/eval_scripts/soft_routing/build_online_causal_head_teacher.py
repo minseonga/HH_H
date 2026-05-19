@@ -34,6 +34,10 @@ FEATURES = [
     "text_img_value_cosine",
     "text_img_value_abs_cosine",
     "text_img_value_orthogonality",
+    "supported_text_value_norm",
+    "unsupported_text_value_norm",
+    "unsupported_text_value_ratio",
+    "unsupported_total_value_ratio",
     "visual_mass_ratio",
     "visual_value_ratio",
     "question_attention",
@@ -58,6 +62,9 @@ SELECTOR_FEATURES = [
     "text_img_value_cosine",
     "text_img_value_abs_cosine",
     "text_img_value_orthogonality",
+    "unsupported_text_value_norm",
+    "unsupported_text_value_ratio",
+    "unsupported_total_value_ratio",
     "recent_output_ratio",
     "img_value_norm",
     "layer_norm_text_mass",
@@ -247,6 +254,20 @@ def add_minmax(records, feature, output_key):
 
 
 def select_candidate_records(records, policy, max_heads, text_tau):
+    def add_unique(output, candidates):
+        seen = {record["head_key"] for record in output}
+        for record in candidates:
+            if max_heads > 0 and len(output) >= max_heads:
+                break
+            if record["head_key"] in seen:
+                continue
+            output.append(record)
+            seen.add(record["head_key"])
+        return output
+
+    if policy == "all":
+        selected = sorted(records, key=lambda record: record["text_mass"], reverse=True)
+        return selected if max_heads <= 0 else selected[:max_heads]
     if policy == "text_triggered":
         selected = [record for record in records if record["text_mass"] >= text_tau]
         return sorted(selected, key=lambda record: record["text_mass"], reverse=True)[:max_heads]
@@ -261,6 +282,50 @@ def select_candidate_records(records, policy, max_heads, text_tau):
         for record in sorted(records, key=lambda item: item["text_value_norm"], reverse=True)[:max_heads]:
             selected[record["head_key"]] = record
         return sorted(selected.values(), key=lambda record: record["text_mass"] * record["text_value_norm"], reverse=True)
+    if policy == "balanced_orthogonal":
+        balanced = [record for record in records if record["text_mass"] < text_tau]
+        selected = sorted(
+            balanced,
+            key=lambda record: (
+                record.get("unsupported_text_value_norm", 0.0),
+                -record.get("text_img_value_abs_cosine", 1.0),
+                record.get("text_value_norm", 0.0),
+            ),
+            reverse=True,
+        )
+        return selected[:max_heads]
+    if policy == "anchor_mixed":
+        if max_heads <= 0:
+            max_heads = len(records)
+        text_quota = max(1, max_heads // 3)
+        balanced_quota = max(1, max_heads // 3)
+        selected = []
+        add_unique(
+            selected,
+            sorted(records, key=lambda record: record["text_mass"], reverse=True)[:text_quota],
+        )
+        balanced = [record for record in records if record["text_mass"] < text_tau]
+        add_unique(
+            selected,
+            sorted(
+                balanced,
+                key=lambda record: (
+                    record.get("unsupported_text_value_norm", 0.0),
+                    -record.get("text_img_value_abs_cosine", 1.0),
+                    record.get("text_value_norm", 0.0),
+                ),
+                reverse=True,
+            )[:balanced_quota],
+        )
+        add_unique(
+            selected,
+            sorted(records, key=lambda record: record.get("unsupported_text_value_norm", 0.0), reverse=True),
+        )
+        add_unique(
+            selected,
+            sorted(records, key=lambda record: record["text_value_norm"], reverse=True),
+        )
+        return selected[:max_heads]
     raise ValueError(f"Unknown candidate_policy={policy}")
 
 
@@ -376,7 +441,19 @@ def main():
     parser.add_argument("--conv-mode", default="vicuna_v1")
     parser.add_argument("--max-per-label", type=int, default=20)
     parser.add_argument("--hallucinated-source", type=str, default="both", choices=["soft", "hard", "both"])
-    parser.add_argument("--candidate-policy", default="text_topk", choices=["text_triggered", "text_topk", "norm_topk", "text_norm_union"])
+    parser.add_argument(
+        "--candidate-policy",
+        default="text_topk",
+        choices=[
+            "text_triggered",
+            "text_topk",
+            "norm_topk",
+            "text_norm_union",
+            "all",
+            "balanced_orthogonal",
+            "anchor_mixed",
+        ],
+    )
     parser.add_argument("--candidate-max-heads", type=int, default=32)
     parser.add_argument("--candidate-text-tau", type=float, default=0.4)
     parser.add_argument("--ablation-threshold", type=float, default=0.0)
