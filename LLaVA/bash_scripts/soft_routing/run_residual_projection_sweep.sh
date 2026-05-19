@@ -80,7 +80,7 @@ CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.query_proje
     --soft-gamma "${SOFT_GAMMA}" \
     --soft-temperature "${SOFT_TEMPERATURE}" \
     --surface residual \
-    --projection-strengths "${PROJECTION_STRENGTHS}" \
+    --projection-strengths="${PROJECTION_STRENGTHS}" \
     --direction-top-k "${DIRECTION_TOP_K}" \
     --min-direction-auroc "${MIN_DIRECTION_AUROC}" \
     --gate-mode "${GATE_MODE}" \
