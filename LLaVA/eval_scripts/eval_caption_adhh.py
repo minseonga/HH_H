@@ -257,6 +257,9 @@ def eval_model(args):
             model.config.unsupported_component_soft_threshold = args.unsupported_component_soft_threshold
             model.config.unsupported_component_hard_threshold = args.unsupported_component_hard_threshold
             model.config.unsupported_component_risk_feature = args.unsupported_component_risk_feature
+            model.config.unsupported_component_score_norm = args.unsupported_component_score_norm
+            model.config.unsupported_component_score_low = args.unsupported_component_score_low
+            model.config.unsupported_component_score_high = args.unsupported_component_score_high
             model.config.unsupported_component_all_heads = args.unsupported_component_all_heads
             model.config.record_unsupported_component_diagnostics = args.record_unsupported_component_diagnostics
             model.config.unsupported_component_diagnostics_max_records = args.unsupported_component_diagnostics_max_records
@@ -422,6 +425,14 @@ if __name__ == "__main__":
     parser.add_argument("--unsupported_component_gamma", type=float, default=0.5)
     parser.add_argument("--unsupported_component_soft_threshold", type=float, default=0.25)
     parser.add_argument("--unsupported_component_hard_threshold", type=float, default=0.75)
+    parser.add_argument(
+        "--unsupported_component_score_norm",
+        type=str,
+        default="candidate_minmax",
+        choices=["candidate_minmax", "absolute"],
+    )
+    parser.add_argument("--unsupported_component_score_low", type=float, default=0.0)
+    parser.add_argument("--unsupported_component_score_high", type=float, default=1.0)
     parser.add_argument(
         "--unsupported_component_risk_feature",
         type=str,

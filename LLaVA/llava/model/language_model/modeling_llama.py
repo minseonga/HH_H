@@ -495,6 +495,9 @@ def _apply_unsupported_component_suppression(
     score_low = torch.min(valid_scores)
     score_high = torch.max(valid_scores)
     score_den = score_high - score_low
+    score_norm_mode = getattr(config, "unsupported_component_score_norm", "candidate_minmax")
+    absolute_score_low = float(getattr(config, "unsupported_component_score_low", 0.0))
+    absolute_score_high = float(getattr(config, "unsupported_component_score_high", 1.0))
     mode = getattr(config, "unsupported_component_mode", "continuous")
     soft_threshold = float(getattr(config, "unsupported_component_soft_threshold", 0.25))
     hard_threshold = float(getattr(config, "unsupported_component_hard_threshold", 0.75))
@@ -507,10 +510,18 @@ def _apply_unsupported_component_suppression(
         idx = int(idx_tensor.detach().cpu().item())
         score = risk_scores[idx]
         selected_scores.append(score.detach().float().cpu().item())
-        if score_den.detach().float().cpu().item() <= eps:
-            normalized = torch.tensor(1.0 if valid_indices.numel() == 1 else 0.0, device=device)
+        if score_norm_mode == "absolute":
+            absolute_den = max(absolute_score_high - absolute_score_low, eps)
+            normalized = torch.clamp(
+                (score - absolute_score_low) / absolute_den,
+                min=0.0,
+                max=1.0,
+            )
         else:
-            normalized = torch.clamp((score - score_low) / torch.clamp(score_den, min=eps), min=0.0, max=1.0)
+            if score_den.detach().float().cpu().item() <= eps:
+                normalized = torch.tensor(1.0 if valid_indices.numel() == 1 else 0.0, device=device)
+            else:
+                normalized = torch.clamp((score - score_low) / torch.clamp(score_den, min=eps), min=0.0, max=1.0)
 
         if mode == "hard":
             strength = gamma if normalized.detach().float().cpu().item() >= hard_threshold else 0.0
@@ -537,11 +548,14 @@ def _apply_unsupported_component_suppression(
                     "head": int(candidate_heads[idx]),
                     "head_key": f"{int(layer_idx) if layer_idx is not None else -1}:{int(candidate_heads[idx])}",
                     "risk_feature": risk_feature,
+                    "score_norm": score_norm_mode,
                     "mode": mode,
                     "gamma": gamma,
                     "score": score.detach().float().cpu().item(),
                     "score_low": score_low.detach().float().cpu().item(),
                     "score_high": score_high.detach().float().cpu().item(),
+                    "absolute_score_low": absolute_score_low,
+                    "absolute_score_high": absolute_score_high,
                     "normalized_score": normalized.detach().float().cpu().item(),
                     "strength": 0.0,
                     "active": False,
@@ -570,11 +584,14 @@ def _apply_unsupported_component_suppression(
                 "head": int(head),
                 "head_key": f"{int(layer_idx) if layer_idx is not None else -1}:{int(head)}",
                 "risk_feature": risk_feature,
+                "score_norm": score_norm_mode,
                 "mode": mode,
                 "gamma": gamma,
                 "score": score.detach().float().cpu().item(),
                 "score_low": score_low.detach().float().cpu().item(),
                 "score_high": score_high.detach().float().cpu().item(),
+                "absolute_score_low": absolute_score_low,
+                "absolute_score_high": absolute_score_high,
                 "normalized_score": normalized.detach().float().cpu().item(),
                 "strength": float(strength),
                 "active": True,
@@ -599,11 +616,14 @@ def _apply_unsupported_component_suppression(
         "selected_n": int(selected_indices.numel()),
         "active_n": int(active_n),
         "risk_feature": risk_feature,
+        "score_norm": score_norm_mode,
         "mode": mode,
         "gamma": gamma,
         "layer_top_k": layer_top_k,
         "score_low": score_low.detach().float().cpu().item(),
         "score_high": score_high.detach().float().cpu().item(),
+        "absolute_score_low": absolute_score_low,
+        "absolute_score_high": absolute_score_high,
         "mean_selected_score": float(sum(selected_scores) / len(selected_scores)) if selected_scores else 0.0,
         "mean_strength": float(sum(selected_strengths) / len(selected_strengths)) if selected_strengths else 0.0,
         "mean_relative_head_output_delta": (
