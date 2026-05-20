@@ -25,6 +25,8 @@ UNSUPPORTED_COMPONENT_RISK_FEATURE="${UNSUPPORTED_COMPONENT_RISK_FEATURE:-unsupp
 UNSUPPORTED_COMPONENT_SOFT_THRESHOLD="${UNSUPPORTED_COMPONENT_SOFT_THRESHOLD:-0.25}"
 UNSUPPORTED_COMPONENT_HARD_THRESHOLD="${UNSUPPORTED_COMPONENT_HARD_THRESHOLD:-0.75}"
 UNSUPPORTED_COMPONENT_ALL_HEADS="${UNSUPPORTED_COMPONENT_ALL_HEADS:-0}"
+UNSUPPORTED_COMPONENT_HEAD_PATH="${UNSUPPORTED_COMPONENT_HEAD_PATH:-}"
+UNSUPPORTED_COMPONENT_HEAD_TOP_K="${UNSUPPORTED_COMPONENT_HEAD_TOP_K:-${TOP_POOL_K}}"
 
 BASE_RESULT_PATH="${BASE_RESULT_PATH:-./results/${DATASET}/soft_routing_smoke_n${NUM_SAMPLES}_seed${SEED}_tau${ADHH_THRESHOLD}_T${SOFT_TEMPERATURE}}"
 ATTRIBUTION_RESULT="${ATTRIBUTION_RESULT:-${BASE_RESULT_PATH}/identify_attention_head_val_calib200_full1024/attribution_result.json}"
@@ -34,28 +36,48 @@ fi
 
 POOL_DIR="${POOL_DIR:-${BASE_RESULT_PATH}/contrastive_candidate_pools}"
 POOL_PATH="${POOL_PATH:-${POOL_DIR}/contrastive_top${TOP_POOL_K}.json}"
-OUTPUT_DIR="${OUTPUT_DIR:-${BASE_RESULT_PATH}/online_unsupported_component_top${TOP_POOL_K}_${UNSUPPORTED_COMPONENT_RISK_FEATURE}_g${UNSUPPORTED_COMPONENT_GAMMA}}"
+if [ -n "${UNSUPPORTED_COMPONENT_HEAD_PATH}" ]; then
+    HEAD_PATH="${UNSUPPORTED_COMPONENT_HEAD_PATH}"
+    HEAD_TOP_K="${UNSUPPORTED_COMPONENT_HEAD_TOP_K}"
+    HEAD_TAG="$(basename "${HEAD_PATH}" .json)"
+    OUTPUT_DIR="${OUTPUT_DIR:-${BASE_RESULT_PATH}/online_unsupported_component_${HEAD_TAG}_${UNSUPPORTED_COMPONENT_RISK_FEATURE}_g${UNSUPPORTED_COMPONENT_GAMMA}}"
+else
+    HEAD_PATH="${POOL_PATH}"
+    HEAD_TOP_K="${TOP_POOL_K}"
+    OUTPUT_DIR="${OUTPUT_DIR:-${BASE_RESULT_PATH}/online_unsupported_component_top${TOP_POOL_K}_${UNSUPPORTED_COMPONENT_RISK_FEATURE}_g${UNSUPPORTED_COMPONENT_GAMMA}}"
+fi
 LOG_DIR="${LOG_DIR:-./logs/soft_routing}"
 
 mkdir -p "${POOL_DIR}" "${OUTPUT_DIR}" "${LOG_DIR}"
 
-if [ ! -f "${ATTRIBUTION_RESULT}" ]; then
+if [ -z "${UNSUPPORTED_COMPONENT_HEAD_PATH}" ] && [ ! -f "${ATTRIBUTION_RESULT}" ]; then
     echo "[error] missing attribution result: ${ATTRIBUTION_RESULT}" >&2
     exit 1
 fi
 
-echo "[info] attribution result: ${ATTRIBUTION_RESULT}"
+if [ -f "${ATTRIBUTION_RESULT}" ]; then
+    echo "[info] attribution result: ${ATTRIBUTION_RESULT}"
+else
+    echo "[info] attribution result: ${ATTRIBUTION_RESULT} (not required for custom head path)"
+fi
 echo "[info] candidate pool: ${POOL_PATH}"
+echo "[info] active head path: ${HEAD_PATH}"
+echo "[info] active head top-k: ${HEAD_TOP_K}"
 echo "[info] output dir: ${OUTPUT_DIR}"
 echo "[info] risk feature: ${UNSUPPORTED_COMPONENT_RISK_FEATURE}"
 echo "[info] gamma: ${UNSUPPORTED_COMPONENT_GAMMA}"
 echo "[info] all heads: ${UNSUPPORTED_COMPONENT_ALL_HEADS}"
 
-if [ "${FORCE}" = "1" ] || [ ! -f "${POOL_PATH}" ]; then
+if [ -z "${UNSUPPORTED_COMPONENT_HEAD_PATH}" ] && { [ "${FORCE}" = "1" ] || [ ! -f "${POOL_PATH}" ]; }; then
     python -m eval_scripts.soft_routing.build_contrastive_candidate_pool \
         --attribution-result "${ATTRIBUTION_RESULT}" \
         --output-path "${POOL_PATH}" \
         --top-k "${TOP_POOL_K}"
+elif [ -n "${UNSUPPORTED_COMPONENT_HEAD_PATH}" ]; then
+    if [ ! -f "${HEAD_PATH}" ]; then
+        echo "[error] missing custom head path: ${HEAD_PATH}" >&2
+        exit 1
+    fi
 else
     echo "[skip] candidate pool exists: ${POOL_PATH}"
 fi
@@ -99,9 +121,9 @@ run_eval() {
         --unsupported_component_hard_threshold "${UNSUPPORTED_COMPONENT_HARD_THRESHOLD}" \
         --unsupported_component_risk_feature "${UNSUPPORTED_COMPONENT_RISK_FEATURE}" \
         "${all_head_args[@]}" \
-        --attention_head_path "${POOL_PATH}" \
+        --attention_head_path "${HEAD_PATH}" \
         --head_prior_mode uniform \
-        --top_k "${TOP_POOL_K}" \
+        --top_k "${HEAD_TOP_K}" \
         2>&1 | tee "${LOG_DIR}/online_unsupported_${tag}.log"
 
     python eval_scripts/eval_utils/eval_chair.py \
