@@ -159,6 +159,51 @@ def write_matrix_csv(path, matrix):
     write_csv(path, rows)
 
 
+def finite_minmax_normalize(matrix):
+    output = np.full_like(matrix, np.nan, dtype=float)
+    finite = np.isfinite(matrix)
+    if not bool(finite.any()):
+        return output
+    values = matrix[finite]
+    low = float(np.min(values))
+    high = float(np.max(values))
+    den = high - low
+    output[finite] = 0.0 if den <= 1e-12 else (matrix[finite] - low) / den
+    return output
+
+
+def positive_minmax_normalize(matrix):
+    positive = np.where(np.isfinite(matrix), np.maximum(matrix, 0.0), np.nan)
+    return finite_minmax_normalize(positive)
+
+
+def write_overlap_summary(path, unsupported, contrast, overlap):
+    rows = []
+    unsupported_norm = finite_minmax_normalize(unsupported)
+    contrast_norm = positive_minmax_normalize(contrast)
+    for layer in range(overlap.shape[0]):
+        for head in range(overlap.shape[1]):
+            value = overlap[layer, head]
+            if not np.isfinite(value):
+                continue
+            rows.append({
+                "layer": layer,
+                "head": head,
+                "head_key": f"{layer}:{head}",
+                "unsupported_text_value_norm": float(unsupported[layer, head])
+                if np.isfinite(unsupported[layer, head]) else None,
+                "should_suppress_minus_safe_unsupported_text_value_norm": float(contrast[layer, head])
+                if np.isfinite(contrast[layer, head]) else None,
+                "unsupported_norm01": float(unsupported_norm[layer, head])
+                if np.isfinite(unsupported_norm[layer, head]) else None,
+                "positive_contrast_norm01": float(contrast_norm[layer, head])
+                if np.isfinite(contrast_norm[layer, head]) else None,
+                "overlap_score": float(value),
+            })
+    rows.sort(key=lambda row: row["overlap_score"], reverse=True)
+    write_csv(path, rows)
+
+
 def save_heatmap(path, matrix, title, cmap="viridis", center_zero=False):
     masked = np.ma.masked_invalid(matrix)
     height = max(5.0, min(12.0, matrix.shape[0] * 0.35))
@@ -229,6 +274,17 @@ def contrast_matrix(rows_a, rows_b, n_layers, n_heads, feature):
     return mat_a - mat_b
 
 
+def build_unsupported_positive_overlap(rows, n_layers, n_heads):
+    unsupported, _ = aggregate_matrix(rows, n_layers, n_heads, "unsupported_text_value_norm")
+    pos_rows = [row for row in rows if row.get("should_suppress")]
+    safe_rows = [row for row in rows if not row.get("should_suppress")]
+    contrast = contrast_matrix(pos_rows, safe_rows, n_layers, n_heads, "unsupported_text_value_norm")
+    unsupported_norm = finite_minmax_normalize(unsupported)
+    contrast_norm = positive_minmax_normalize(contrast)
+    overlap = unsupported_norm * contrast_norm
+    return unsupported, contrast, overlap
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-jsonl", required=True)
@@ -289,6 +345,19 @@ def main():
                 contrast_matrix(pos_rows, safe_rows, n_layers, n_heads, "unsupported_text_value_norm"),
                 True,
             ))
+            unsupported, contrast, overlap = build_unsupported_positive_overlap(rows, n_layers, n_heads)
+            matrix_specs.append((
+                "overlap",
+                "unsupported_x_positive_utility_contrast",
+                overlap,
+                False,
+            ))
+            write_overlap_summary(
+                os.path.join(args.output_dir, "unsupported_positive_overlap_summary.csv"),
+                unsupported,
+                contrast,
+                overlap,
+            )
 
     manifest = []
     for group, feature, matrix, center_zero in matrix_specs:
@@ -325,6 +394,19 @@ def main():
     with open(os.path.join(args.output_dir, "summary.json"), "w") as f:
         json.dump(config, f, indent=2)
     print(json.dumps(config, indent=2))
+    overlap_path = os.path.join(args.output_dir, "unsupported_positive_overlap_summary.csv")
+    if os.path.exists(overlap_path):
+        print("top heads by unsupported-positive overlap:")
+        with open(overlap_path, "r", newline="") as f:
+            for idx, row in enumerate(csv.DictReader(f)):
+                if idx >= 20:
+                    break
+                print(
+                    row["head_key"],
+                    row["overlap_score"],
+                    row["unsupported_text_value_norm"],
+                    row["should_suppress_minus_safe_unsupported_text_value_norm"],
+                )
     print("top heads by mean unsupported_text_value_norm:")
     for row in sorted(
         [row for row in summary_rows if row["group"] == "all"],
