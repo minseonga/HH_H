@@ -149,6 +149,8 @@ def write_csv(path, rows):
 def method_name(path, base_dir):
     rel = os.path.relpath(path, base_dir)
     parts = rel.split(os.sep)
+    if len(parts) >= 3 and parts[-3].startswith("online_unsupported"):
+        return f"{parts[-3]}__{parts[-2]}"
     if len(parts) >= 2:
         return parts[-2]
     return os.path.basename(os.path.dirname(path))
@@ -174,6 +176,7 @@ def main():
             os.path.join(args.base_dir, "hard_tau0.4", "captions_eval_results.json"),
             os.path.join(args.base_dir, "wide_pool_gate_top100_normq75", "*", "captions_eval_results.json"),
             os.path.join(args.base_dir, "online_value_selector_top100_normq75", "*", "captions_eval_results.json"),
+            os.path.join(args.base_dir, "online_unsupported*", "*", "captions_eval_results.json"),
         ]
         for pattern in default_patterns:
             paths.extend(glob.glob(pattern, recursive=True))
