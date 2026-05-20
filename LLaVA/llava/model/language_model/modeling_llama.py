@@ -363,9 +363,35 @@ def _apply_unsupported_component_suppression(
     if attn_weights is None or value_states is None:
         return head_outputs
 
+    records = getattr(config, "unsupported_component_diagnostics", None)
+    record_diagnostics = bool(
+        getattr(config, "record_unsupported_component_diagnostics", False)
+        and records is not None
+    )
+    call_index = int(getattr(config, "unsupported_component_call_index", 0))
+    if record_diagnostics:
+        config.unsupported_component_call_index = call_index + 1
+
+    def append_diagnostic(record):
+        if not record_diagnostics:
+            return
+        max_records = int(getattr(config, "unsupported_component_diagnostics_max_records", 0))
+        if max_records > 0 and len(records) >= max_records:
+            return
+        num_layers = int(getattr(config, "num_hidden_layers", 0) or 0)
+        record.setdefault("record_type", "layer_summary")
+        record.setdefault("layer", int(layer_idx) if layer_idx is not None else -1)
+        record.setdefault("call_index", call_index)
+        record.setdefault("step_index", call_index // num_layers if num_layers > 0 else call_index)
+        record.setdefault("phase", "prefill" if int(head_outputs.shape[-2]) > 1 else "decode")
+        record.setdefault("q_len", int(head_outputs.shape[-2]))
+        record.setdefault("kv_seq_len", int(value_states.shape[-2]))
+        records.append(record)
+
     img_start = getattr(config, "img_start_pos", None)
     img_length = getattr(config, "img_length", None)
     if img_start is None or img_length is None:
+        append_diagnostic({"status": "missing_image_span"})
         return head_outputs
 
     kv_seq_len = value_states.shape[-2]
@@ -373,6 +399,12 @@ def _apply_unsupported_component_suppression(
     img_end = min(img_start + int(img_length), kv_seq_len)
     text_start = img_end
     if img_start < 0 or img_start >= img_end or text_start >= kv_seq_len:
+        append_diagnostic({
+            "status": "invalid_image_or_text_span",
+            "img_start": img_start,
+            "img_end": int(img_end),
+            "text_start": int(text_start),
+        })
         return head_outputs
 
     if getattr(config, "unsupported_component_all_heads", False):
@@ -380,9 +412,11 @@ def _apply_unsupported_component_suppression(
     elif head_list is not None:
         candidate_heads = [int(head) for head in head_list]
     else:
+        append_diagnostic({"status": "missing_head_list", "candidate_n": 0})
         return head_outputs
     candidate_heads = [head for head in candidate_heads if 0 <= head < num_heads]
     if not candidate_heads:
+        append_diagnostic({"status": "empty_candidates", "candidate_n": 0})
         return head_outputs
 
     device = head_outputs.device
@@ -390,6 +424,11 @@ def _apply_unsupported_component_suppression(
     gamma = float(getattr(config, "unsupported_component_gamma", 0.5))
     gamma = min(max(gamma, 0.0), 1.0)
     if gamma <= 0.0:
+        append_diagnostic({
+            "status": "zero_gamma",
+            "candidate_n": len(candidate_heads),
+            "gamma": gamma,
+        })
         return head_outputs
 
     head_index = torch.tensor(candidate_heads, device=device, dtype=torch.long)
@@ -433,6 +472,12 @@ def _apply_unsupported_component_suppression(
     risk_scores = risk.detach().float().mean(dim=0).squeeze(-1)
     finite = torch.isfinite(risk_scores)
     if not bool(finite.any()):
+        append_diagnostic({
+            "status": "no_finite_scores",
+            "candidate_n": len(candidate_heads),
+            "gamma": gamma,
+            "risk_feature": risk_feature,
+        })
         return head_outputs
 
     layer_top_k = int(getattr(config, "unsupported_component_layer_top_k", 1))
@@ -443,6 +488,9 @@ def _apply_unsupported_component_suppression(
         selected_indices = valid_indices[order]
     else:
         selected_indices = valid_indices
+    if selected_indices.numel() > 1:
+        _, selected_order = torch.sort(risk_scores[selected_indices], descending=True)
+        selected_indices = selected_indices[selected_order]
 
     score_low = torch.min(valid_scores)
     score_high = torch.max(valid_scores)
@@ -450,10 +498,15 @@ def _apply_unsupported_component_suppression(
     mode = getattr(config, "unsupported_component_mode", "continuous")
     soft_threshold = float(getattr(config, "unsupported_component_soft_threshold", 0.25))
     hard_threshold = float(getattr(config, "unsupported_component_hard_threshold", 0.75))
+    active_n = 0
+    selected_strengths = []
+    selected_relative_deltas = []
+    selected_scores = []
 
-    for idx_tensor in selected_indices:
+    for rank, idx_tensor in enumerate(selected_indices):
         idx = int(idx_tensor.detach().cpu().item())
         score = risk_scores[idx]
+        selected_scores.append(score.detach().float().cpu().item())
         if score_den.detach().float().cpu().item() <= eps:
             normalized = torch.tensor(1.0 if valid_indices.numel() == 1 else 0.0, device=device)
         else:
@@ -473,10 +526,91 @@ def _apply_unsupported_component_suppression(
             strength = gamma * normalized.detach().float().cpu().item()
         strength = min(max(float(strength), 0.0), 1.0)
         if strength <= 0.0:
+            if record_diagnostics:
+                append_diagnostic({
+                    "record_type": "selected_head",
+                    "status": "selected_inactive",
+                    "candidate_n": len(candidate_heads),
+                    "valid_n": int(valid_indices.numel()),
+                    "selected_n": int(selected_indices.numel()),
+                    "rank": int(rank),
+                    "head": int(candidate_heads[idx]),
+                    "head_key": f"{int(layer_idx) if layer_idx is not None else -1}:{int(candidate_heads[idx])}",
+                    "risk_feature": risk_feature,
+                    "mode": mode,
+                    "gamma": gamma,
+                    "score": score.detach().float().cpu().item(),
+                    "score_low": score_low.detach().float().cpu().item(),
+                    "score_high": score_high.detach().float().cpu().item(),
+                    "normalized_score": normalized.detach().float().cpu().item(),
+                    "strength": 0.0,
+                    "active": False,
+                })
             continue
         head = candidate_heads[idx]
+        head_output = head_outputs[:, head, -1, :].float()
+        head_output_norm = torch.linalg.vector_norm(head_output, dim=-1).detach().float().mean()
+        delta_norm = (float(strength) * torch.linalg.vector_norm(
+            unsupported_value[:, idx, :], dim=-1
+        )).detach().float().mean()
+        relative_delta = delta_norm / torch.clamp(head_output_norm, min=eps)
         projected_output = head_outputs[:, head, -1, :].float() - strength * unsupported_value[:, idx, :]
         head_outputs[:, head, -1, :] = projected_output.to(head_outputs.dtype)
+        active_n += 1
+        selected_strengths.append(float(strength))
+        selected_relative_deltas.append(relative_delta.detach().float().cpu().item())
+        if record_diagnostics:
+            append_diagnostic({
+                "record_type": "selected_head",
+                "status": "active",
+                "candidate_n": len(candidate_heads),
+                "valid_n": int(valid_indices.numel()),
+                "selected_n": int(selected_indices.numel()),
+                "rank": int(rank),
+                "head": int(head),
+                "head_key": f"{int(layer_idx) if layer_idx is not None else -1}:{int(head)}",
+                "risk_feature": risk_feature,
+                "mode": mode,
+                "gamma": gamma,
+                "score": score.detach().float().cpu().item(),
+                "score_low": score_low.detach().float().cpu().item(),
+                "score_high": score_high.detach().float().cpu().item(),
+                "normalized_score": normalized.detach().float().cpu().item(),
+                "strength": float(strength),
+                "active": True,
+                "text_mass": torch.sum(text_attention[:, idx, :], dim=-1).detach().float().mean().cpu().item(),
+                "img_mass": torch.sum(img_attention[:, idx, :], dim=-1).detach().float().mean().cpu().item(),
+                "text_value_norm": text_norm[:, idx, :].detach().float().mean().cpu().item(),
+                "img_value_norm": img_norm[:, idx, :].detach().float().mean().cpu().item(),
+                "unsupported_text_value_norm": unsupported_norm[:, idx, :].detach().float().mean().cpu().item(),
+                "unsupported_total_value_ratio": unsupported_total_ratio[:, idx, :].detach().float().mean().cpu().item(),
+                "text_img_value_cosine": cosine[:, idx, :].detach().float().mean().cpu().item(),
+                "low_anchor": low_anchor[:, idx, :].detach().float().mean().cpu().item(),
+                "visual_value_ratio": visual_value_ratio[:, idx, :].detach().float().mean().cpu().item(),
+                "head_output_norm": head_output_norm.cpu().item(),
+                "delta_norm": delta_norm.cpu().item(),
+                "relative_head_output_delta": relative_delta.detach().float().cpu().item(),
+            })
+
+    append_diagnostic({
+        "status": "ok",
+        "candidate_n": len(candidate_heads),
+        "valid_n": int(valid_indices.numel()),
+        "selected_n": int(selected_indices.numel()),
+        "active_n": int(active_n),
+        "risk_feature": risk_feature,
+        "mode": mode,
+        "gamma": gamma,
+        "layer_top_k": layer_top_k,
+        "score_low": score_low.detach().float().cpu().item(),
+        "score_high": score_high.detach().float().cpu().item(),
+        "mean_selected_score": float(sum(selected_scores) / len(selected_scores)) if selected_scores else 0.0,
+        "mean_strength": float(sum(selected_strengths) / len(selected_strengths)) if selected_strengths else 0.0,
+        "mean_relative_head_output_delta": (
+            float(sum(selected_relative_deltas) / len(selected_relative_deltas))
+            if selected_relative_deltas else 0.0
+        ),
+    })
 
     return head_outputs
 

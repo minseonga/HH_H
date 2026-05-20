@@ -258,6 +258,22 @@ def eval_model(args):
             model.config.unsupported_component_hard_threshold = args.unsupported_component_hard_threshold
             model.config.unsupported_component_risk_feature = args.unsupported_component_risk_feature
             model.config.unsupported_component_all_heads = args.unsupported_component_all_heads
+            model.config.record_unsupported_component_diagnostics = args.record_unsupported_component_diagnostics
+            model.config.unsupported_component_diagnostics_max_records = args.unsupported_component_diagnostics_max_records
+
+    unsupported_diag_file = None
+    if args.record_unsupported_component_diagnostics:
+        unsupported_diag_path = args.unsupported_component_diagnostics_file
+        if not unsupported_diag_path:
+            unsupported_diag_path = os.path.join(
+                os.path.dirname(answers_file),
+                "unsupported_component_diagnostics.jsonl",
+            )
+        unsupported_diag_dir = os.path.dirname(unsupported_diag_path)
+        if unsupported_diag_dir:
+            os.makedirs(unsupported_diag_dir, exist_ok=True)
+        unsupported_diag_file = open(unsupported_diag_path, "w")
+        print(f"[info] unsupported component diagnostics: {unsupported_diag_path}")
 
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
@@ -266,6 +282,9 @@ def eval_model(args):
         cur_prompt = line["text"]
         image_file = line["image"]
 
+        if args.record_unsupported_component_diagnostics:
+            model.config.unsupported_component_diagnostics = []
+            model.config.unsupported_component_call_index = 0
 
         input_ids = input_ids.to(device='cuda', non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True)
@@ -297,6 +316,18 @@ def eval_model(args):
                                 "model_id": model_name,
                                 "metadata": {}}) + "\n")
         ans_file.flush()
+
+        if unsupported_diag_file is not None:
+            for record in getattr(model.config, "unsupported_component_diagnostics", []):
+                record = dict(record)
+                record["question_id"] = question_id
+                record["image"] = image_file
+                record["caption"] = outputs
+                unsupported_diag_file.write(json.dumps(record) + "\n")
+            unsupported_diag_file.flush()
+
+    if unsupported_diag_file is not None:
+        unsupported_diag_file.close()
 
 
 
@@ -405,6 +436,9 @@ if __name__ == "__main__":
         ],
     )
     parser.add_argument("--unsupported_component_all_heads", action="store_true", default=False)
+    parser.add_argument("--record_unsupported_component_diagnostics", action="store_true", default=False)
+    parser.add_argument("--unsupported_component_diagnostics_file", type=str, default="")
+    parser.add_argument("--unsupported_component_diagnostics_max_records", type=int, default=0)
     parser.add_argument("--head_norm_thresholds_path", type=str, default="")
 
     args = parser.parse_args()

@@ -27,6 +27,8 @@ UNSUPPORTED_COMPONENT_HARD_THRESHOLD="${UNSUPPORTED_COMPONENT_HARD_THRESHOLD:-0.
 UNSUPPORTED_COMPONENT_ALL_HEADS="${UNSUPPORTED_COMPONENT_ALL_HEADS:-0}"
 UNSUPPORTED_COMPONENT_HEAD_PATH="${UNSUPPORTED_COMPONENT_HEAD_PATH:-}"
 UNSUPPORTED_COMPONENT_HEAD_TOP_K="${UNSUPPORTED_COMPONENT_HEAD_TOP_K:-${TOP_POOL_K}}"
+RECORD_UNSUPPORTED_COMPONENT_DIAGNOSTICS="${RECORD_UNSUPPORTED_COMPONENT_DIAGNOSTICS:-0}"
+UNSUPPORTED_COMPONENT_DIAGNOSTICS_MAX_RECORDS="${UNSUPPORTED_COMPONENT_DIAGNOSTICS_MAX_RECORDS:-0}"
 
 BASE_RESULT_PATH="${BASE_RESULT_PATH:-./results/${DATASET}/soft_routing_smoke_n${NUM_SAMPLES}_seed${SEED}_tau${ADHH_THRESHOLD}_T${SOFT_TEMPERATURE}}"
 ATTRIBUTION_RESULT="${ATTRIBUTION_RESULT:-${BASE_RESULT_PATH}/identify_attention_head_val_calib200_full1024/attribution_result.json}"
@@ -67,6 +69,7 @@ echo "[info] output dir: ${OUTPUT_DIR}"
 echo "[info] risk feature: ${UNSUPPORTED_COMPONENT_RISK_FEATURE}"
 echo "[info] gamma: ${UNSUPPORTED_COMPONENT_GAMMA}"
 echo "[info] all heads: ${UNSUPPORTED_COMPONENT_ALL_HEADS}"
+echo "[info] record unsupported diagnostics: ${RECORD_UNSUPPORTED_COMPONENT_DIAGNOSTICS}"
 
 if [ -z "${UNSUPPORTED_COMPONENT_HEAD_PATH}" ] && { [ "${FORCE}" = "1" ] || [ ! -f "${POOL_PATH}" ]; }; then
     python -m eval_scripts.soft_routing.build_contrastive_candidate_pool \
@@ -85,6 +88,14 @@ fi
 all_head_args=()
 if [ "${UNSUPPORTED_COMPONENT_ALL_HEADS}" = "1" ]; then
     all_head_args=(--unsupported_component_all_heads)
+fi
+
+diagnostic_args=()
+if [ "${RECORD_UNSUPPORTED_COMPONENT_DIAGNOSTICS}" = "1" ]; then
+    diagnostic_args=(
+        --record_unsupported_component_diagnostics
+        --unsupported_component_diagnostics_max_records "${UNSUPPORTED_COMPONENT_DIAGNOSTICS_MAX_RECORDS}"
+    )
 fi
 
 run_eval() {
@@ -121,6 +132,7 @@ run_eval() {
         --unsupported_component_hard_threshold "${UNSUPPORTED_COMPONENT_HARD_THRESHOLD}" \
         --unsupported_component_risk_feature "${UNSUPPORTED_COMPONENT_RISK_FEATURE}" \
         "${all_head_args[@]}" \
+        "${diagnostic_args[@]}" \
         --attention_head_path "${HEAD_PATH}" \
         --head_prior_mode uniform \
         --top_k "${HEAD_TOP_K}" \
@@ -130,6 +142,13 @@ run_eval() {
         --annotation-dir "${ANNOTATION_DIR}" \
         --answers-file "${answers_file}" \
         --caption_file "$(basename "${CAPTION_FILE_PATH}")"
+
+    local diagnostics_file="${result_dir}/unsupported_component_diagnostics.jsonl"
+    if [ "${RECORD_UNSUPPORTED_COMPONENT_DIAGNOSTICS}" = "1" ] && [ -f "${diagnostics_file}" ]; then
+        python -m eval_scripts.soft_routing.analyze_unsupported_component_diagnostics \
+            --diagnostics-jsonl "${diagnostics_file}" \
+            --output-dir "${result_dir}/unsupported_component_diagnostic_summary"
+    fi
 }
 
 should_run() {
