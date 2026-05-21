@@ -30,6 +30,24 @@ def get_chunk(lst, n, k):
     chunks = split_list(lst, n)
     return chunks[k]
 
+def parse_int_ranges(spec):
+    values = []
+    if not spec:
+        return values
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_text, end_text = part.split("-", 1)
+            start = int(start_text)
+            end = int(end_text)
+            step = 1 if end >= start else -1
+            values.extend(range(start, end + step, step))
+        else:
+            values.append(int(part))
+    return sorted(set(values))
+
 # Custom dataset class
 class CustomDataset(Dataset):
     def __init__(self, questions, image_folder, tokenizer, image_processor, model_config):
@@ -261,6 +279,7 @@ def eval_model(args):
             model.config.unsupported_component_score_low = args.unsupported_component_score_low
             model.config.unsupported_component_score_high = args.unsupported_component_score_high
             model.config.unsupported_component_phase = args.unsupported_component_phase
+            model.config.unsupported_component_layers = parse_int_ranges(args.unsupported_component_layers)
             model.config.unsupported_component_all_heads = args.unsupported_component_all_heads
             model.config.record_unsupported_component_diagnostics = args.record_unsupported_component_diagnostics
             model.config.unsupported_component_diagnostics_max_records = args.unsupported_component_diagnostics_max_records
@@ -440,6 +459,7 @@ if __name__ == "__main__":
         default="all",
         choices=["all", "prefill", "decode"],
     )
+    parser.add_argument("--unsupported_component_layers", type=str, default="")
     parser.add_argument(
         "--unsupported_component_risk_feature",
         type=str,

@@ -405,6 +405,20 @@ def _apply_unsupported_component_suppression(
         })
         return head_outputs
 
+    layer_filter = getattr(config, "unsupported_component_layers", None)
+    if layer_filter:
+        layer = int(layer_idx) if layer_idx is not None else -1
+        if layer not in layer_filter:
+            append_diagnostic({
+                "status": "layer_skipped",
+                "layer_filter": ",".join(str(item) for item in layer_filter),
+                "candidate_n": 0,
+                "valid_n": 0,
+                "selected_n": 0,
+                "active_n": 0,
+            })
+            return head_outputs
+
     img_start = getattr(config, "img_start_pos", None)
     img_length = getattr(config, "img_length", None)
     if img_start is None or img_length is None:
