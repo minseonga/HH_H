@@ -371,6 +371,7 @@ def _apply_unsupported_component_suppression(
     call_index = int(getattr(config, "unsupported_component_call_index", 0))
     if record_diagnostics:
         config.unsupported_component_call_index = call_index + 1
+    current_phase = "prefill" if int(head_outputs.shape[-2]) > 1 else "decode"
 
     def append_diagnostic(record):
         if not record_diagnostics:
@@ -383,10 +384,26 @@ def _apply_unsupported_component_suppression(
         record.setdefault("layer", int(layer_idx) if layer_idx is not None else -1)
         record.setdefault("call_index", call_index)
         record.setdefault("step_index", call_index // num_layers if num_layers > 0 else call_index)
-        record.setdefault("phase", "prefill" if int(head_outputs.shape[-2]) > 1 else "decode")
+        record.setdefault("phase", current_phase)
         record.setdefault("q_len", int(head_outputs.shape[-2]))
         record.setdefault("kv_seq_len", int(value_states.shape[-2]))
         records.append(record)
+
+    phase_mode = getattr(config, "unsupported_component_phase", "all")
+    if phase_mode == "both":
+        phase_mode = "all"
+    if phase_mode not in ("all", "prefill", "decode"):
+        phase_mode = "all"
+    if phase_mode != "all" and current_phase != phase_mode:
+        append_diagnostic({
+            "status": "phase_skipped",
+            "phase_mode": phase_mode,
+            "candidate_n": 0,
+            "valid_n": 0,
+            "selected_n": 0,
+            "active_n": 0,
+        })
+        return head_outputs
 
     img_start = getattr(config, "img_start_pos", None)
     img_length = getattr(config, "img_length", None)

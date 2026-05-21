@@ -260,6 +260,7 @@ def eval_model(args):
             model.config.unsupported_component_score_norm = args.unsupported_component_score_norm
             model.config.unsupported_component_score_low = args.unsupported_component_score_low
             model.config.unsupported_component_score_high = args.unsupported_component_score_high
+            model.config.unsupported_component_phase = args.unsupported_component_phase
             model.config.unsupported_component_all_heads = args.unsupported_component_all_heads
             model.config.record_unsupported_component_diagnostics = args.record_unsupported_component_diagnostics
             model.config.unsupported_component_diagnostics_max_records = args.unsupported_component_diagnostics_max_records
@@ -433,6 +434,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--unsupported_component_score_low", type=float, default=0.0)
     parser.add_argument("--unsupported_component_score_high", type=float, default=1.0)
+    parser.add_argument(
+        "--unsupported_component_phase",
+        type=str,
+        default="all",
+        choices=["all", "prefill", "decode"],
+    )
     parser.add_argument(
         "--unsupported_component_risk_feature",
         type=str,
