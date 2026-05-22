@@ -357,6 +357,7 @@ def _apply_unsupported_component_suppression(
     head_outputs,
     num_heads,
     head_list,
+    o_proj=None,
 ):
     if not getattr(config, "unsupported_component_deactivate", False):
         return head_outputs
@@ -497,6 +498,24 @@ def _apply_unsupported_component_suppression(
         risk = unsupported_norm * low_anchor * low_visual
     elif risk_feature == "unsupported_norm":
         risk = unsupported_norm
+    elif risk_feature == "unsupported_object_logit":
+        object_lm_head = getattr(config, "unsupported_component_object_lm_head", None)
+        if object_lm_head is None or o_proj is None:
+            risk = unsupported_norm
+        else:
+            object_lm_head = object_lm_head.to(device=device, dtype=o_proj.weight.dtype)
+            o_proj_weight = o_proj.weight
+            object_scores = []
+            for local_idx, head in enumerate(candidate_heads):
+                start = int(head) * int(head_outputs.shape[-1])
+                end = start + int(head_outputs.shape[-1])
+                object_head_dirs = torch.matmul(object_lm_head, o_proj_weight[:, start:end])
+                head_logits = torch.matmul(
+                    unsupported_value[:, local_idx, :].to(object_head_dirs.dtype),
+                    object_head_dirs.transpose(0, 1),
+                )
+                object_scores.append(torch.clamp(torch.max(head_logits.float(), dim=-1).values, min=0.0))
+            risk = torch.stack(object_scores, dim=1).unsqueeze(-1)
     else:
         risk = unsupported_norm * low_anchor
 
@@ -1875,6 +1894,7 @@ class LlamaAttention(nn.Module):
             attn_output,
             self.num_heads,
             head_list,
+            self.o_proj,
         )
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
@@ -2060,6 +2080,7 @@ class LlamaFlashAttention2(LlamaAttention):
                 attn_output_heads,
                 self.num_heads,
                 head_list,
+                self.o_proj,
             )
         attn_output = attn_output_heads.transpose(1, 2).contiguous()
 
@@ -2287,6 +2308,7 @@ class LlamaSdpaAttention(LlamaAttention):
                 attn_output,
                 self.num_heads,
                 head_list,
+                self.o_proj,
             )
 
         attn_output = attn_output.transpose(1, 2).contiguous()

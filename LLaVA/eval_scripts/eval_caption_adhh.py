@@ -48,6 +48,30 @@ def parse_int_ranges(spec):
             values.append(int(part))
     return sorted(set(values))
 
+def load_first_subtoken_ids(tokenizer, vocab_path):
+    token_ids = []
+    seen = set()
+    if not vocab_path:
+        return token_ids
+    if not os.path.exists(vocab_path):
+        print(f"[warn] missing object vocab path: {vocab_path}")
+        return token_ids
+    with open(vocab_path) as f:
+        for line in f:
+            for word in line.strip().split(","):
+                word = word.strip()
+                if not word:
+                    continue
+                ids = tokenizer(word, add_special_tokens=False).get("input_ids", [])
+                if not ids:
+                    continue
+                token_id = int(ids[0])
+                if token_id in seen:
+                    continue
+                seen.add(token_id)
+                token_ids.append(token_id)
+    return token_ids
+
 # Custom dataset class
 class CustomDataset(Dataset):
     def __init__(self, questions, image_folder, tokenizer, image_processor, model_config):
@@ -280,6 +304,18 @@ def eval_model(args):
             model.config.unsupported_component_score_high = args.unsupported_component_score_high
             model.config.unsupported_component_phase = args.unsupported_component_phase
             model.config.unsupported_component_layers = parse_int_ranges(args.unsupported_component_layers)
+            if args.unsupported_component_risk_feature == "unsupported_object_logit":
+                object_token_ids = load_first_subtoken_ids(tokenizer, args.unsupported_component_object_vocab_path)
+                if object_token_ids:
+                    lm_head = model.get_output_embeddings().weight
+                    object_token_tensor = torch.tensor(object_token_ids, dtype=torch.long, device=lm_head.device)
+                    model.config.unsupported_component_object_lm_head = lm_head.index_select(0, object_token_tensor).detach()
+                    print(
+                        f"[info] unsupported object-logit vocab tokens: {len(object_token_ids)} "
+                        f"from {args.unsupported_component_object_vocab_path}"
+                    )
+                else:
+                    print("[warn] unsupported_object_logit requested but no object token ids were loaded; falling back to unsupported_norm")
             model.config.unsupported_component_all_heads = args.unsupported_component_all_heads
             model.config.record_unsupported_component_diagnostics = args.record_unsupported_component_diagnostics
             model.config.unsupported_component_diagnostics_max_records = args.unsupported_component_diagnostics_max_records
@@ -471,8 +507,10 @@ if __name__ == "__main__":
             "unsupported_total_ratio_x_low_anchor",
             "unsupported_norm_x_low_visual",
             "unsupported_norm_x_low_anchor_x_low_visual",
+            "unsupported_object_logit",
         ],
     )
+    parser.add_argument("--unsupported_component_object_vocab_path", type=str, default="eval_scripts/eval_utils/data/synonyms.txt")
     parser.add_argument("--unsupported_component_all_heads", action="store_true", default=False)
     parser.add_argument("--record_unsupported_component_diagnostics", action="store_true", default=False)
     parser.add_argument("--unsupported_component_diagnostics_file", type=str, default="")
