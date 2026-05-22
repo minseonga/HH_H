@@ -318,6 +318,7 @@ def eval_model(args):
                     print("[warn] unsupported_object_logit requested but no object token ids were loaded; falling back to unsupported_norm")
             model.config.unsupported_component_all_heads = args.unsupported_component_all_heads
             model.config.record_unsupported_component_diagnostics = args.record_unsupported_component_diagnostics
+            model.config.record_unsupported_component_candidates = args.record_unsupported_component_candidates
             model.config.unsupported_component_diagnostics_max_records = args.unsupported_component_diagnostics_max_records
 
     unsupported_diag_file = None
@@ -381,7 +382,8 @@ def eval_model(args):
                 record = dict(record)
                 record["question_id"] = question_id
                 record["image"] = image_file
-                record["caption"] = outputs
+                if record.get("record_type") != "candidate_head":
+                    record["caption"] = outputs
                 unsupported_diag_file.write(json.dumps(record) + "\n")
             unsupported_diag_file.flush()
 
@@ -513,6 +515,7 @@ if __name__ == "__main__":
     parser.add_argument("--unsupported_component_object_vocab_path", type=str, default="eval_scripts/eval_utils/data/synonyms.txt")
     parser.add_argument("--unsupported_component_all_heads", action="store_true", default=False)
     parser.add_argument("--record_unsupported_component_diagnostics", action="store_true", default=False)
+    parser.add_argument("--record_unsupported_component_candidates", action="store_true", default=False)
     parser.add_argument("--unsupported_component_diagnostics_file", type=str, default="")
     parser.add_argument("--unsupported_component_diagnostics_max_records", type=int, default=0)
     parser.add_argument("--head_norm_thresholds_path", type=str, default="")

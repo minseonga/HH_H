@@ -196,6 +196,7 @@ def main():
     rows = load_jsonl(args.diagnostics_jsonl)
     layer_rows = [row for row in rows if row.get("record_type") == "layer_summary"]
     selected_rows = [row for row in rows if row.get("record_type") == "selected_head"]
+    candidate_rows = [row for row in rows if row.get("record_type") == "candidate_head"]
     active_selected_rows = [row for row in selected_rows if row.get("active")]
     step_rows = summarize_steps(layer_rows)
 
@@ -213,6 +214,7 @@ def main():
         "n_records": len(rows),
         "n_layer_summary_records": len(layer_rows),
         "n_selected_head_records": len(selected_rows),
+        "n_candidate_head_records": len(candidate_rows),
         "n_active_selected_head_records": len(active_selected_rows),
         "n_steps": len(step_rows),
         "outputs": {

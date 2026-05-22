@@ -369,6 +369,10 @@ def _apply_unsupported_component_suppression(
         getattr(config, "record_unsupported_component_diagnostics", False)
         and records is not None
     )
+    record_candidate_features = bool(
+        record_diagnostics
+        and getattr(config, "record_unsupported_component_candidates", False)
+    )
     call_index = int(getattr(config, "unsupported_component_call_index", 0))
     if record_diagnostics:
         config.unsupported_component_call_index = call_index + 1
@@ -455,7 +459,7 @@ def _apply_unsupported_component_suppression(
     eps = float(getattr(config, "unsupported_component_eps", 1e-6))
     gamma = float(getattr(config, "unsupported_component_gamma", 0.5))
     gamma = min(max(gamma, 0.0), 1.0)
-    if gamma <= 0.0:
+    if gamma <= 0.0 and not record_candidate_features:
         append_diagnostic({
             "status": "zero_gamma",
             "candidate_n": len(candidate_heads),
@@ -530,9 +534,60 @@ def _apply_unsupported_component_suppression(
         })
         return head_outputs
 
-    layer_top_k = int(getattr(config, "unsupported_component_layer_top_k", 1))
     valid_indices = torch.nonzero(finite, as_tuple=False).flatten()
     valid_scores = risk_scores[valid_indices]
+    score_low = torch.min(valid_scores)
+    score_high = torch.max(valid_scores)
+    score_den = score_high - score_low
+    score_norm_mode = getattr(config, "unsupported_component_score_norm", "candidate_minmax")
+    absolute_score_low = float(getattr(config, "unsupported_component_score_low", 0.0))
+    absolute_score_high = float(getattr(config, "unsupported_component_score_high", 1.0))
+
+    if record_candidate_features:
+        for local_idx, head in enumerate(candidate_heads):
+            score = risk_scores[local_idx]
+            append_diagnostic({
+                "record_type": "candidate_head",
+                "status": "finite" if bool(finite[local_idx].detach().cpu().item()) else "nonfinite",
+                "candidate_n": len(candidate_heads),
+                "valid_n": int(valid_indices.numel()),
+                "head": int(head),
+                "head_key": f"{int(layer_idx) if layer_idx is not None else -1}:{int(head)}",
+                "risk_feature": risk_feature,
+                "score_norm": score_norm_mode,
+                "gamma": gamma,
+                "score": score.detach().float().cpu().item(),
+                "score_low": score_low.detach().float().cpu().item(),
+                "score_high": score_high.detach().float().cpu().item(),
+                "absolute_score_low": absolute_score_low,
+                "absolute_score_high": absolute_score_high,
+                "text_mass": torch.sum(text_attention[:, local_idx, :], dim=-1).detach().float().mean().cpu().item(),
+                "img_mass": torch.sum(img_attention[:, local_idx, :], dim=-1).detach().float().mean().cpu().item(),
+                "text_value_norm": text_norm[:, local_idx, :].detach().float().mean().cpu().item(),
+                "img_value_norm": img_norm[:, local_idx, :].detach().float().mean().cpu().item(),
+                "unsupported_text_value_norm": unsupported_norm[:, local_idx, :].detach().float().mean().cpu().item(),
+                "unsupported_total_value_ratio": unsupported_total_ratio[:, local_idx, :].detach().float().mean().cpu().item(),
+                "text_img_value_cosine": cosine[:, local_idx, :].detach().float().mean().cpu().item(),
+                "low_anchor": low_anchor[:, local_idx, :].detach().float().mean().cpu().item(),
+                "visual_value_ratio": visual_value_ratio[:, local_idx, :].detach().float().mean().cpu().item(),
+            })
+
+    if gamma <= 0.0:
+        append_diagnostic({
+            "status": "zero_gamma_features_recorded",
+            "candidate_n": len(candidate_heads),
+            "valid_n": int(valid_indices.numel()),
+            "selected_n": 0,
+            "active_n": 0,
+            "risk_feature": risk_feature,
+            "score_norm": score_norm_mode,
+            "gamma": gamma,
+            "score_low": score_low.detach().float().cpu().item(),
+            "score_high": score_high.detach().float().cpu().item(),
+        })
+        return head_outputs
+
+    layer_top_k = int(getattr(config, "unsupported_component_layer_top_k", 1))
     if layer_top_k > 0 and valid_indices.numel() > layer_top_k:
         _, order = torch.topk(valid_scores, k=layer_top_k, largest=True)
         selected_indices = valid_indices[order]
@@ -542,12 +597,6 @@ def _apply_unsupported_component_suppression(
         _, selected_order = torch.sort(risk_scores[selected_indices], descending=True)
         selected_indices = selected_indices[selected_order]
 
-    score_low = torch.min(valid_scores)
-    score_high = torch.max(valid_scores)
-    score_den = score_high - score_low
-    score_norm_mode = getattr(config, "unsupported_component_score_norm", "candidate_minmax")
-    absolute_score_low = float(getattr(config, "unsupported_component_score_low", 0.0))
-    absolute_score_high = float(getattr(config, "unsupported_component_score_high", 1.0))
     mode = getattr(config, "unsupported_component_mode", "continuous")
     soft_threshold = float(getattr(config, "unsupported_component_soft_threshold", 0.25))
     hard_threshold = float(getattr(config, "unsupported_component_hard_threshold", 0.75))
