@@ -15,14 +15,29 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     answers = []
-    for line in open(args.answers_file):
-        ans = json.loads(line)
-        answer = {
-             "caption": ans['text'],
-             "image_id": ans['question_id'],
-             "image": ans['image'],
-        }
-        answers.append(answer)
+    skipped_blank = 0
+    with open(args.answers_file) as f:
+        for line_number, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                skipped_blank += 1
+                continue
+            try:
+                ans = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Malformed JSON in {args.answers_file} at line {line_number}: {line[:120]!r}"
+                ) from exc
+            answer = {
+                 "caption": ans['text'],
+                 "image_id": ans['question_id'],
+                 "image": ans['image'],
+            }
+            answers.append(answer)
+    if skipped_blank:
+        print(f"[warn] skipped {skipped_blank} blank lines in {args.answers_file}")
+    if not answers:
+        raise ValueError(f"No valid answers found in {args.answers_file}")
 
     imids = [answer['image_id'] for answer in answers]
 
