@@ -21,6 +21,7 @@ FORCE="${FORCE:-0}"
 RUN_METHODS="${RUN_METHODS:-online_unsupported_layer_top1_continuous online_unsupported_layer_top2_continuous}"
 
 UNSUPPORTED_COMPONENT_GAMMA="${UNSUPPORTED_COMPONENT_GAMMA:-0.5}"
+UNSUPPORTED_COMPONENT_ACTION="${UNSUPPORTED_COMPONENT_ACTION:-suppress_unsupported}"
 UNSUPPORTED_COMPONENT_RISK_FEATURE="${UNSUPPORTED_COMPONENT_RISK_FEATURE:-unsupported_norm_x_low_anchor}"
 UNSUPPORTED_COMPONENT_SOFT_THRESHOLD="${UNSUPPORTED_COMPONENT_SOFT_THRESHOLD:-0.25}"
 UNSUPPORTED_COMPONENT_HARD_THRESHOLD="${UNSUPPORTED_COMPONENT_HARD_THRESHOLD:-0.75}"
@@ -75,6 +76,7 @@ echo "[info] active head top-k: ${HEAD_TOP_K}"
 echo "[info] output dir: ${OUTPUT_DIR}"
 echo "[info] risk feature: ${UNSUPPORTED_COMPONENT_RISK_FEATURE}"
 echo "[info] gamma: ${UNSUPPORTED_COMPONENT_GAMMA}"
+echo "[info] action: ${UNSUPPORTED_COMPONENT_ACTION}"
 echo "[info] score norm: ${UNSUPPORTED_COMPONENT_SCORE_NORM}"
 echo "[info] score low/high: ${UNSUPPORTED_COMPONENT_SCORE_LOW}/${UNSUPPORTED_COMPONENT_SCORE_HIGH}"
 echo "[info] phase: ${UNSUPPORTED_COMPONENT_PHASE}"
@@ -144,6 +146,7 @@ run_eval() {
         --unsupported_component_mode "${mode}" \
         --unsupported_component_layer_top_k "${layer_top_k}" \
         --unsupported_component_gamma "${UNSUPPORTED_COMPONENT_GAMMA}" \
+        --unsupported_component_action "${UNSUPPORTED_COMPONENT_ACTION}" \
         --unsupported_component_soft_threshold "${UNSUPPORTED_COMPONENT_SOFT_THRESHOLD}" \
         --unsupported_component_hard_threshold "${UNSUPPORTED_COMPONENT_HARD_THRESHOLD}" \
         --unsupported_component_score_norm "${UNSUPPORTED_COMPONENT_SCORE_NORM}" \

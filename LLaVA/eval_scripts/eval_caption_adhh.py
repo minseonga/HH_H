@@ -296,6 +296,7 @@ def eval_model(args):
             model.config.unsupported_component_mode = args.unsupported_component_mode
             model.config.unsupported_component_layer_top_k = args.unsupported_component_layer_top_k
             model.config.unsupported_component_gamma = args.unsupported_component_gamma
+            model.config.unsupported_component_action = args.unsupported_component_action
             model.config.unsupported_component_soft_threshold = args.unsupported_component_soft_threshold
             model.config.unsupported_component_hard_threshold = args.unsupported_component_hard_threshold
             model.config.unsupported_component_risk_feature = args.unsupported_component_risk_feature
@@ -481,6 +482,12 @@ if __name__ == "__main__":
     parser.add_argument("--unsupported_component_mode", type=str, default="continuous", choices=["hard", "continuous", "hybrid"])
     parser.add_argument("--unsupported_component_layer_top_k", type=int, default=1)
     parser.add_argument("--unsupported_component_gamma", type=float, default=0.5)
+    parser.add_argument(
+        "--unsupported_component_action",
+        type=str,
+        default="suppress_unsupported",
+        choices=["suppress_unsupported", "boost_image", "boost_image_matched"],
+    )
     parser.add_argument("--unsupported_component_soft_threshold", type=float, default=0.25)
     parser.add_argument("--unsupported_component_hard_threshold", type=float, default=0.75)
     parser.add_argument(

@@ -459,11 +459,15 @@ def _apply_unsupported_component_suppression(
     eps = float(getattr(config, "unsupported_component_eps", 1e-6))
     gamma = float(getattr(config, "unsupported_component_gamma", 0.5))
     gamma = min(max(gamma, 0.0), 1.0)
+    action = getattr(config, "unsupported_component_action", "suppress_unsupported")
+    if action not in ("suppress_unsupported", "boost_image", "boost_image_matched"):
+        action = "suppress_unsupported"
     if gamma <= 0.0 and not record_candidate_features:
         append_diagnostic({
             "status": "zero_gamma",
             "candidate_n": len(candidate_heads),
             "gamma": gamma,
+            "action": action,
         })
         return head_outputs
 
@@ -556,6 +560,7 @@ def _apply_unsupported_component_suppression(
                 "risk_feature": risk_feature,
                 "score_norm": score_norm_mode,
                 "gamma": gamma,
+                "action": action,
                 "score": score.detach().float().cpu().item(),
                 "score_low": score_low.detach().float().cpu().item(),
                 "score_high": score_high.detach().float().cpu().item(),
@@ -582,6 +587,7 @@ def _apply_unsupported_component_suppression(
             "risk_feature": risk_feature,
             "score_norm": score_norm_mode,
             "gamma": gamma,
+            "action": action,
             "score_low": score_low.detach().float().cpu().item(),
             "score_high": score_high.detach().float().cpu().item(),
         })
@@ -650,6 +656,7 @@ def _apply_unsupported_component_suppression(
                     "score_norm": score_norm_mode,
                     "mode": mode,
                     "gamma": gamma,
+                    "action": action,
                     "score": score.detach().float().cpu().item(),
                     "score_low": score_low.detach().float().cpu().item(),
                     "score_high": score_high.detach().float().cpu().item(),
@@ -663,11 +670,15 @@ def _apply_unsupported_component_suppression(
         head = candidate_heads[idx]
         head_output = head_outputs[:, head, -1, :].float()
         head_output_norm = torch.linalg.vector_norm(head_output, dim=-1).detach().float().mean()
-        delta_norm = (float(strength) * torch.linalg.vector_norm(
-            unsupported_value[:, idx, :], dim=-1
-        )).detach().float().mean()
+        if action == "boost_image":
+            delta_value = img_value[:, idx, :]
+        elif action == "boost_image_matched":
+            delta_value = img_unit[:, idx, :] * unsupported_norm[:, idx, :]
+        else:
+            delta_value = -unsupported_value[:, idx, :]
+        delta_norm = (float(strength) * torch.linalg.vector_norm(delta_value, dim=-1)).detach().float().mean()
         relative_delta = delta_norm / torch.clamp(head_output_norm, min=eps)
-        projected_output = head_outputs[:, head, -1, :].float() - strength * unsupported_value[:, idx, :]
+        projected_output = head_outputs[:, head, -1, :].float() + strength * delta_value
         head_outputs[:, head, -1, :] = projected_output.to(head_outputs.dtype)
         active_n += 1
         selected_strengths.append(float(strength))
@@ -686,6 +697,7 @@ def _apply_unsupported_component_suppression(
                 "score_norm": score_norm_mode,
                 "mode": mode,
                 "gamma": gamma,
+                "action": action,
                 "score": score.detach().float().cpu().item(),
                 "score_low": score_low.detach().float().cpu().item(),
                 "score_high": score_high.detach().float().cpu().item(),
@@ -718,6 +730,7 @@ def _apply_unsupported_component_suppression(
         "score_norm": score_norm_mode,
         "mode": mode,
         "gamma": gamma,
+        "action": action,
         "layer_top_k": layer_top_k,
         "score_low": score_low.detach().float().cpu().item(),
         "score_high": score_high.detach().float().cpu().item(),
