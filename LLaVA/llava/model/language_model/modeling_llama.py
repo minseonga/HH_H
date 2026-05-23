@@ -679,6 +679,11 @@ def _apply_unsupported_component_suppression(
                 min=0.0,
                 max=1.0,
             )
+        elif score_norm_mode == "candidate_max":
+            if score_high.detach().float().cpu().item() <= eps:
+                normalized = torch.tensor(0.0, device=device)
+            else:
+                normalized = torch.clamp(score / torch.clamp(score_high, min=eps), min=0.0, max=1.0)
         else:
             if score_den.detach().float().cpu().item() <= eps:
                 normalized = torch.tensor(1.0 if valid_indices.numel() == 1 else 0.0, device=device)

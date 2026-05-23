@@ -501,7 +501,7 @@ if __name__ == "__main__":
         "--unsupported_component_score_norm",
         type=str,
         default="candidate_minmax",
-        choices=["candidate_minmax", "absolute", "identity"],
+        choices=["candidate_minmax", "candidate_max", "absolute", "identity"],
     )
     parser.add_argument("--unsupported_component_score_low", type=float, default=0.0)
     parser.add_argument("--unsupported_component_score_high", type=float, default=1.0)
