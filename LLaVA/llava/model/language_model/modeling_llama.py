@@ -460,7 +460,13 @@ def _apply_unsupported_component_suppression(
     gamma = float(getattr(config, "unsupported_component_gamma", 0.5))
     gamma = min(max(gamma, 0.0), 1.0)
     action = getattr(config, "unsupported_component_action", "suppress_unsupported")
-    if action not in ("suppress_unsupported", "boost_image", "boost_image_matched", "boost_image_geomean"):
+    if action not in (
+        "suppress_unsupported",
+        "boost_image",
+        "boost_image_matched",
+        "boost_image_geomean",
+        "scale_head_output",
+    ):
         action = "suppress_unsupported"
     if gamma <= 0.0 and not record_candidate_features:
         append_diagnostic({
@@ -472,6 +478,8 @@ def _apply_unsupported_component_suppression(
         return head_outputs
 
     head_index = torch.tensor(candidate_heads, device=device, dtype=torch.long)
+    candidate_head_output = head_outputs.index_select(1, head_index)[:, :, -1, :].float()
+    candidate_head_output_norm = torch.linalg.vector_norm(candidate_head_output, dim=-1, keepdim=True)
     selected_weights = attn_weights.index_select(1, head_index)
     selected_values = value_states.index_select(1, head_index)
     text_attention = selected_weights[:, :, -1, text_start:]
@@ -494,6 +502,11 @@ def _apply_unsupported_component_suppression(
     low_anchor = 1.0 - torch.clamp(cosine, min=0.0, max=1.0)
     visual_value_ratio = img_norm / total_norm
     low_visual = 1.0 - torch.clamp(visual_value_ratio, min=0.0, max=1.0)
+    unsupported_head_ratio = torch.clamp(
+        unsupported_norm / torch.clamp(candidate_head_output_norm, min=eps),
+        min=0.0,
+        max=1.0,
+    )
 
     risk_feature = getattr(config, "unsupported_component_risk_feature", "unsupported_norm_x_low_anchor")
     if risk_feature == "unsupported_total_ratio":
@@ -506,6 +519,10 @@ def _apply_unsupported_component_suppression(
         risk = unsupported_norm * low_anchor * low_visual
     elif risk_feature == "unsupported_norm":
         risk = unsupported_norm
+    elif risk_feature == "unsupported_head_ratio":
+        risk = unsupported_head_ratio
+    elif risk_feature == "unsupported_head_ratio_x_low_visual":
+        risk = unsupported_head_ratio * low_visual
     elif risk_feature == "unsupported_object_logit":
         object_lm_head = getattr(config, "unsupported_component_object_lm_head", None)
         if object_lm_head is None or o_proj is None:
@@ -571,6 +588,8 @@ def _apply_unsupported_component_suppression(
                 "text_value_norm": text_norm[:, local_idx, :].detach().float().mean().cpu().item(),
                 "img_value_norm": img_norm[:, local_idx, :].detach().float().mean().cpu().item(),
                 "unsupported_text_value_norm": unsupported_norm[:, local_idx, :].detach().float().mean().cpu().item(),
+                "head_output_norm": candidate_head_output_norm[:, local_idx, :].detach().float().mean().cpu().item(),
+                "unsupported_head_output_ratio": unsupported_head_ratio[:, local_idx, :].detach().float().mean().cpu().item(),
                 "unsupported_total_value_ratio": unsupported_total_ratio[:, local_idx, :].detach().float().mean().cpu().item(),
                 "text_img_value_cosine": cosine[:, local_idx, :].detach().float().mean().cpu().item(),
                 "low_anchor": low_anchor[:, local_idx, :].detach().float().mean().cpu().item(),
@@ -615,7 +634,9 @@ def _apply_unsupported_component_suppression(
         idx = int(idx_tensor.detach().cpu().item())
         score = risk_scores[idx]
         selected_scores.append(score.detach().float().cpu().item())
-        if score_norm_mode == "absolute":
+        if score_norm_mode == "identity":
+            normalized = torch.clamp(score, min=0.0, max=1.0)
+        elif score_norm_mode == "absolute":
             absolute_den = max(absolute_score_high - absolute_score_low, eps)
             normalized = torch.clamp(
                 (score - absolute_score_low) / absolute_den,
@@ -677,6 +698,8 @@ def _apply_unsupported_component_suppression(
             delta_value = img_unit[:, idx, :] * geomean_norm
         elif action == "boost_image_matched":
             delta_value = img_unit[:, idx, :] * unsupported_norm[:, idx, :]
+        elif action == "scale_head_output":
+            delta_value = -head_output
         else:
             delta_value = -unsupported_value[:, idx, :]
         delta_norm = (float(strength) * torch.linalg.vector_norm(delta_value, dim=-1)).detach().float().mean()
@@ -714,6 +737,7 @@ def _apply_unsupported_component_suppression(
                 "text_value_norm": text_norm[:, idx, :].detach().float().mean().cpu().item(),
                 "img_value_norm": img_norm[:, idx, :].detach().float().mean().cpu().item(),
                 "unsupported_text_value_norm": unsupported_norm[:, idx, :].detach().float().mean().cpu().item(),
+                "unsupported_head_output_ratio": unsupported_head_ratio[:, idx, :].detach().float().mean().cpu().item(),
                 "unsupported_total_value_ratio": unsupported_total_ratio[:, idx, :].detach().float().mean().cpu().item(),
                 "text_img_value_cosine": cosine[:, idx, :].detach().float().mean().cpu().item(),
                 "low_anchor": low_anchor[:, idx, :].detach().float().mean().cpu().item(),

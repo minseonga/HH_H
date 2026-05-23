@@ -201,6 +201,7 @@ echo "[info] run methods: ${RUN_METHODS}"
 
 maybe_run_eval "online_unsupported_layer_top1_continuous" "continuous" 1
 maybe_run_eval "online_unsupported_layer_top2_continuous" "continuous" 2
+maybe_run_eval "online_unsupported_layer_all_continuous" "continuous" 0
 maybe_run_eval "online_unsupported_layer_top1_hybrid" "hybrid" 1
 maybe_run_eval "online_unsupported_layer_top2_hybrid" "hybrid" 2
 

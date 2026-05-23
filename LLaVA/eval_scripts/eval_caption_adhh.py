@@ -486,7 +486,13 @@ if __name__ == "__main__":
         "--unsupported_component_action",
         type=str,
         default="suppress_unsupported",
-        choices=["suppress_unsupported", "boost_image", "boost_image_geomean", "boost_image_matched"],
+        choices=[
+            "suppress_unsupported",
+            "boost_image",
+            "boost_image_geomean",
+            "boost_image_matched",
+            "scale_head_output",
+        ],
     )
     parser.add_argument("--unsupported_component_soft_threshold", type=float, default=0.25)
     parser.add_argument("--unsupported_component_hard_threshold", type=float, default=0.75)
@@ -494,7 +500,7 @@ if __name__ == "__main__":
         "--unsupported_component_score_norm",
         type=str,
         default="candidate_minmax",
-        choices=["candidate_minmax", "absolute"],
+        choices=["candidate_minmax", "absolute", "identity"],
     )
     parser.add_argument("--unsupported_component_score_low", type=float, default=0.0)
     parser.add_argument("--unsupported_component_score_high", type=float, default=1.0)
@@ -516,6 +522,8 @@ if __name__ == "__main__":
             "unsupported_total_ratio_x_low_anchor",
             "unsupported_norm_x_low_visual",
             "unsupported_norm_x_low_anchor_x_low_visual",
+            "unsupported_head_ratio",
+            "unsupported_head_ratio_x_low_visual",
             "unsupported_object_logit",
         ],
     )
