@@ -486,7 +486,7 @@ if __name__ == "__main__":
         "--unsupported_component_action",
         type=str,
         default="suppress_unsupported",
-        choices=["suppress_unsupported", "boost_image", "boost_image_matched"],
+        choices=["suppress_unsupported", "boost_image", "boost_image_geomean", "boost_image_matched"],
     )
     parser.add_argument("--unsupported_component_soft_threshold", type=float, default=0.25)
     parser.add_argument("--unsupported_component_hard_threshold", type=float, default=0.75)

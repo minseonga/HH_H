@@ -460,7 +460,7 @@ def _apply_unsupported_component_suppression(
     gamma = float(getattr(config, "unsupported_component_gamma", 0.5))
     gamma = min(max(gamma, 0.0), 1.0)
     action = getattr(config, "unsupported_component_action", "suppress_unsupported")
-    if action not in ("suppress_unsupported", "boost_image", "boost_image_matched"):
+    if action not in ("suppress_unsupported", "boost_image", "boost_image_matched", "boost_image_geomean"):
         action = "suppress_unsupported"
     if gamma <= 0.0 and not record_candidate_features:
         append_diagnostic({
@@ -672,6 +672,9 @@ def _apply_unsupported_component_suppression(
         head_output_norm = torch.linalg.vector_norm(head_output, dim=-1).detach().float().mean()
         if action == "boost_image":
             delta_value = img_value[:, idx, :]
+        elif action == "boost_image_geomean":
+            geomean_norm = torch.sqrt(torch.clamp(img_norm[:, idx, :] * unsupported_norm[:, idx, :], min=0.0))
+            delta_value = img_unit[:, idx, :] * geomean_norm
         elif action == "boost_image_matched":
             delta_value = img_unit[:, idx, :] * unsupported_norm[:, idx, :]
         else:
