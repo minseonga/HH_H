@@ -466,6 +466,7 @@ def _apply_unsupported_component_suppression(
         "boost_image_matched",
         "boost_image_geomean",
         "scale_head_output",
+        "scale_text_component",
     ):
         action = "suppress_unsupported"
     if gamma <= 0.0 and not record_candidate_features:
@@ -486,6 +487,7 @@ def _apply_unsupported_component_suppression(
     img_attention = selected_weights[:, :, -1, img_start:img_end]
     text_values = selected_values[:, :, text_start:, :]
     img_values = selected_values[:, :, img_start:img_end, :]
+    text_mass = torch.sum(text_attention, dim=-1, keepdim=True).float()
 
     text_value = torch.einsum("bht,bhtd->bhd", text_attention.float(), text_values.float())
     img_value = torch.einsum("bhi,bhid->bhd", img_attention.float(), img_values.float())
@@ -509,10 +511,32 @@ def _apply_unsupported_component_suppression(
     )
 
     risk_feature = getattr(config, "unsupported_component_risk_feature", "unsupported_norm_x_low_anchor")
+    text_head_agreement = None
+    text_head_disagreement = None
+    text_mass_x_disagreement = None
+    if risk_feature == "text_mass_x_disagreement":
+        if num_heads > 1:
+            all_text_attention = attn_weights[:, :, -1, text_start:]
+            all_text_values = value_states[:, :, text_start:, :]
+            all_text_value = torch.einsum("bht,bhtd->bhd", all_text_attention.float(), all_text_values.float())
+            peer_text_mean = (torch.sum(all_text_value, dim=1, keepdim=True) - text_value) / float(num_heads - 1)
+            peer_norm = torch.linalg.vector_norm(peer_text_mean, dim=-1, keepdim=True)
+            text_head_agreement = torch.sum(text_value * peer_text_mean, dim=-1, keepdim=True) / torch.clamp(
+                text_norm * peer_norm,
+                min=eps,
+            )
+            text_head_agreement = torch.clamp(text_head_agreement, min=0.0, max=1.0)
+        else:
+            text_head_agreement = torch.ones_like(text_mass)
+        text_head_disagreement = 1.0 - text_head_agreement
+        text_mass_x_disagreement = text_mass * text_head_disagreement
+
     if risk_feature == "unsupported_total_ratio":
         risk = unsupported_total_ratio
     elif risk_feature == "unsupported_total_ratio_x_low_anchor":
         risk = unsupported_total_ratio * low_anchor
+    elif risk_feature == "text_mass_x_disagreement":
+        risk = text_mass_x_disagreement
     elif risk_feature == "unsupported_norm_x_low_visual":
         risk = unsupported_norm * low_visual
     elif risk_feature == "unsupported_norm_x_low_anchor_x_low_visual":
@@ -583,7 +607,7 @@ def _apply_unsupported_component_suppression(
                 "score_high": score_high.detach().float().cpu().item(),
                 "absolute_score_low": absolute_score_low,
                 "absolute_score_high": absolute_score_high,
-                "text_mass": torch.sum(text_attention[:, local_idx, :], dim=-1).detach().float().mean().cpu().item(),
+                "text_mass": text_mass[:, local_idx, :].detach().float().mean().cpu().item(),
                 "img_mass": torch.sum(img_attention[:, local_idx, :], dim=-1).detach().float().mean().cpu().item(),
                 "text_value_norm": text_norm[:, local_idx, :].detach().float().mean().cpu().item(),
                 "img_value_norm": img_norm[:, local_idx, :].detach().float().mean().cpu().item(),
@@ -594,6 +618,18 @@ def _apply_unsupported_component_suppression(
                 "text_img_value_cosine": cosine[:, local_idx, :].detach().float().mean().cpu().item(),
                 "low_anchor": low_anchor[:, local_idx, :].detach().float().mean().cpu().item(),
                 "visual_value_ratio": visual_value_ratio[:, local_idx, :].detach().float().mean().cpu().item(),
+                "text_head_agreement": (
+                    text_head_agreement[:, local_idx, :].detach().float().mean().cpu().item()
+                    if text_head_agreement is not None else None
+                ),
+                "text_head_disagreement": (
+                    text_head_disagreement[:, local_idx, :].detach().float().mean().cpu().item()
+                    if text_head_disagreement is not None else None
+                ),
+                "text_mass_x_disagreement": (
+                    text_mass_x_disagreement[:, local_idx, :].detach().float().mean().cpu().item()
+                    if text_mass_x_disagreement is not None else None
+                ),
             })
 
     if gamma <= 0.0:
@@ -700,6 +736,8 @@ def _apply_unsupported_component_suppression(
             delta_value = img_unit[:, idx, :] * unsupported_norm[:, idx, :]
         elif action == "scale_head_output":
             delta_value = -head_output
+        elif action == "scale_text_component":
+            delta_value = -text_value[:, idx, :]
         else:
             delta_value = -unsupported_value[:, idx, :]
         delta_norm = (float(strength) * torch.linalg.vector_norm(delta_value, dim=-1)).detach().float().mean()
@@ -732,7 +770,7 @@ def _apply_unsupported_component_suppression(
                 "normalized_score": normalized.detach().float().cpu().item(),
                 "strength": float(strength),
                 "active": True,
-                "text_mass": torch.sum(text_attention[:, idx, :], dim=-1).detach().float().mean().cpu().item(),
+                "text_mass": text_mass[:, idx, :].detach().float().mean().cpu().item(),
                 "img_mass": torch.sum(img_attention[:, idx, :], dim=-1).detach().float().mean().cpu().item(),
                 "text_value_norm": text_norm[:, idx, :].detach().float().mean().cpu().item(),
                 "img_value_norm": img_norm[:, idx, :].detach().float().mean().cpu().item(),
@@ -742,6 +780,18 @@ def _apply_unsupported_component_suppression(
                 "text_img_value_cosine": cosine[:, idx, :].detach().float().mean().cpu().item(),
                 "low_anchor": low_anchor[:, idx, :].detach().float().mean().cpu().item(),
                 "visual_value_ratio": visual_value_ratio[:, idx, :].detach().float().mean().cpu().item(),
+                "text_head_agreement": (
+                    text_head_agreement[:, idx, :].detach().float().mean().cpu().item()
+                    if text_head_agreement is not None else None
+                ),
+                "text_head_disagreement": (
+                    text_head_disagreement[:, idx, :].detach().float().mean().cpu().item()
+                    if text_head_disagreement is not None else None
+                ),
+                "text_mass_x_disagreement": (
+                    text_mass_x_disagreement[:, idx, :].detach().float().mean().cpu().item()
+                    if text_mass_x_disagreement is not None else None
+                ),
                 "head_output_norm": head_output_norm.cpu().item(),
                 "delta_norm": delta_norm.cpu().item(),
                 "relative_head_output_delta": relative_delta.detach().float().cpu().item(),

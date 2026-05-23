@@ -96,6 +96,9 @@ def selected_feature_row(row):
         "text_value_norm": safe_float(row.get("text_value_norm")),
         "img_mass": safe_float(row.get("img_mass")),
         "text_mass": safe_float(row.get("text_mass")),
+        "text_head_agreement": safe_float(row.get("text_head_agreement")),
+        "text_head_disagreement": safe_float(row.get("text_head_disagreement")),
+        "text_mass_x_disagreement": safe_float(row.get("text_mass_x_disagreement")),
         "visual_value_ratio": safe_float(row.get("visual_value_ratio")),
         "text_img_value_cosine": safe_float(row.get("text_img_value_cosine")),
         "action_over_unsupported_norm": ratio(action_norm, unsupported_norm),
@@ -167,6 +170,9 @@ def summarize_run(label, path, rows):
         "img_over_unsupported_norm",
         "img_mass",
         "text_mass",
+        "text_head_agreement",
+        "text_head_disagreement",
+        "text_mass_x_disagreement",
         "visual_value_ratio",
         "text_img_value_cosine",
     ]
@@ -194,6 +200,9 @@ def summarize_heads(label, active_rows):
         "img_mass",
         "visual_value_ratio",
         "text_mass",
+        "text_head_agreement",
+        "text_head_disagreement",
+        "text_mass_x_disagreement",
     ]
     for head_key, rows in buckets.items():
         if not head_key:

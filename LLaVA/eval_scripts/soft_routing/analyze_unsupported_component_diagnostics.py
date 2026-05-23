@@ -120,6 +120,9 @@ def summarize_selected_heads(rows):
             ),
             "mean_text_value_norm": mean(row.get("text_value_norm", 0) for row in active),
             "mean_text_mass": mean(row.get("text_mass", 0) for row in active),
+            "mean_text_head_agreement": mean(row.get("text_head_agreement", 0) for row in active),
+            "mean_text_head_disagreement": mean(row.get("text_head_disagreement", 0) for row in active),
+            "mean_text_mass_x_disagreement": mean(row.get("text_mass_x_disagreement", 0) for row in active),
             "mean_img_mass": mean(row.get("img_mass", 0) for row in active),
             "mean_text_img_value_cosine": mean(row.get("text_img_value_cosine", 0) for row in active),
         })

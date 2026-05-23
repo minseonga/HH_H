@@ -492,6 +492,7 @@ if __name__ == "__main__":
             "boost_image_geomean",
             "boost_image_matched",
             "scale_head_output",
+            "scale_text_component",
         ],
     )
     parser.add_argument("--unsupported_component_soft_threshold", type=float, default=0.25)
@@ -518,6 +519,7 @@ if __name__ == "__main__":
         choices=[
             "unsupported_norm",
             "unsupported_total_ratio",
+            "text_mass_x_disagreement",
             "unsupported_norm_x_low_anchor",
             "unsupported_total_ratio_x_low_anchor",
             "unsupported_norm_x_low_visual",
