@@ -129,6 +129,7 @@ def summarize_selected_heads(rows):
                 row.get("text_mass_x_object_logit_disagreement", 0) for row in active
             ),
             "mean_img_mass": mean(row.get("img_mass", 0) for row in active),
+            "mean_low_img_mass": mean(row.get("low_img_mass", 0) for row in active),
             "mean_text_img_value_cosine": mean(row.get("text_img_value_cosine", 0) for row in active),
         })
     output.sort(

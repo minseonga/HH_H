@@ -399,7 +399,10 @@ def _apply_unsupported_component_suppression(
         phase_mode = "all"
     if phase_mode not in ("all", "prefill", "decode"):
         phase_mode = "all"
-    if phase_mode != "all" and current_phase != phase_mode:
+    prefill_protect_top_k = int(getattr(config, "unsupported_component_prefill_protect_top_k", 0))
+    needs_prefill_protect = prefill_protect_top_k > 0 and current_phase == "prefill"
+    phase_active = phase_mode == "all" or current_phase == phase_mode
+    if not phase_active and not needs_prefill_protect:
         append_diagnostic({
             "status": "phase_skipped",
             "phase_mode": phase_mode,
@@ -488,6 +491,54 @@ def _apply_unsupported_component_suppression(
     text_values = selected_values[:, :, text_start:, :]
     img_values = selected_values[:, :, img_start:img_end, :]
     text_mass = torch.sum(text_attention, dim=-1, keepdim=True).float()
+    img_mass = torch.sum(img_attention, dim=-1, keepdim=True).float()
+    low_img_mass = 1.0 - torch.clamp(img_mass, min=0.0, max=1.0)
+
+    layer_key = int(layer_idx) if layer_idx is not None else -1
+    protected_heads_by_layer = getattr(config, "unsupported_component_prefill_protect_heads", None)
+    if protected_heads_by_layer is None:
+        protected_heads_by_layer = {}
+        config.unsupported_component_prefill_protect_heads = protected_heads_by_layer
+    protected_heads = set(protected_heads_by_layer.get(layer_key, []))
+
+    if needs_prefill_protect:
+        img_mass_scores = img_mass.detach().float().mean(dim=0).squeeze(-1)
+        protect_n = min(max(prefill_protect_top_k, 0), len(candidate_heads))
+        if protect_n > 0:
+            _, protect_order = torch.topk(img_mass_scores, k=protect_n, largest=True)
+            protected_heads = {int(candidate_heads[int(idx.detach().cpu().item())]) for idx in protect_order}
+        else:
+            protected_heads = set()
+        protected_heads_by_layer[layer_key] = sorted(protected_heads)
+        protected_values = [
+            img_mass_scores[idx].detach().float().cpu().item()
+            for idx, head in enumerate(candidate_heads)
+            if int(head) in protected_heads
+        ]
+        unprotected_values = [
+            img_mass_scores[idx].detach().float().cpu().item()
+            for idx, head in enumerate(candidate_heads)
+            if int(head) not in protected_heads
+        ]
+        append_diagnostic({
+            "status": "prefill_protect_recorded",
+            "candidate_n": len(candidate_heads),
+            "valid_n": len(candidate_heads),
+            "selected_n": 0,
+            "active_n": 0,
+            "phase_mode": phase_mode,
+            "prefill_protect_top_k": int(prefill_protect_top_k),
+            "prefill_protected_n": len(protected_heads),
+            "prefill_protected_heads": ",".join(str(head) for head in sorted(protected_heads)),
+            "mean_prefill_protected_img_mass": (
+                float(sum(protected_values) / len(protected_values)) if protected_values else 0.0
+            ),
+            "mean_prefill_unprotected_img_mass": (
+                float(sum(unprotected_values) / len(unprotected_values)) if unprotected_values else 0.0
+            ),
+        })
+        if not phase_active:
+            return head_outputs
 
     text_value = torch.einsum("bht,bhtd->bhd", text_attention.float(), text_values.float())
     img_value = torch.einsum("bhi,bhid->bhd", img_attention.float(), img_values.float())
@@ -603,6 +654,8 @@ def _apply_unsupported_component_suppression(
         risk = text_mass_x_disagreement
     elif risk_feature == "text_mass_x_object_logit_disagreement":
         risk = text_mass_x_object_logit_disagreement
+    elif risk_feature == "low_img_mass":
+        risk = low_img_mass
     elif risk_feature == "unsupported_norm_x_low_visual":
         risk = unsupported_norm * low_visual
     elif risk_feature == "unsupported_norm_x_low_anchor_x_low_visual":
@@ -636,10 +689,18 @@ def _apply_unsupported_component_suppression(
 
     risk_scores = risk.detach().float().mean(dim=0).squeeze(-1)
     finite = torch.isfinite(risk_scores)
+    if current_phase == "decode" and prefill_protect_top_k > 0 and protected_heads:
+        unprotected = torch.tensor(
+            [int(head) not in protected_heads for head in candidate_heads],
+            device=device,
+            dtype=torch.bool,
+        )
+        finite = finite & unprotected
     if not bool(finite.any()):
         append_diagnostic({
             "status": "no_finite_scores",
             "candidate_n": len(candidate_heads),
+            "prefill_protected_n": len(protected_heads),
             "gamma": gamma,
             "risk_feature": risk_feature,
         })
@@ -675,7 +736,9 @@ def _apply_unsupported_component_suppression(
                 "absolute_score_low": absolute_score_low,
                 "absolute_score_high": absolute_score_high,
                 "text_mass": text_mass[:, local_idx, :].detach().float().mean().cpu().item(),
-                "img_mass": torch.sum(img_attention[:, local_idx, :], dim=-1).detach().float().mean().cpu().item(),
+                "img_mass": img_mass[:, local_idx, :].detach().float().mean().cpu().item(),
+                "low_img_mass": low_img_mass[:, local_idx, :].detach().float().mean().cpu().item(),
+                "prefill_protected": int(head) in protected_heads,
                 "text_value_norm": text_norm[:, local_idx, :].detach().float().mean().cpu().item(),
                 "img_value_norm": img_norm[:, local_idx, :].detach().float().mean().cpu().item(),
                 "unsupported_text_value_norm": unsupported_norm[:, local_idx, :].detach().float().mean().cpu().item(),
@@ -860,7 +923,9 @@ def _apply_unsupported_component_suppression(
                 "strength": float(strength),
                 "active": True,
                 "text_mass": text_mass[:, idx, :].detach().float().mean().cpu().item(),
-                "img_mass": torch.sum(img_attention[:, idx, :], dim=-1).detach().float().mean().cpu().item(),
+                "img_mass": img_mass[:, idx, :].detach().float().mean().cpu().item(),
+                "low_img_mass": low_img_mass[:, idx, :].detach().float().mean().cpu().item(),
+                "prefill_protected": int(head) in protected_heads,
                 "text_value_norm": text_norm[:, idx, :].detach().float().mean().cpu().item(),
                 "img_value_norm": img_norm[:, idx, :].detach().float().mean().cpu().item(),
                 "unsupported_text_value_norm": unsupported_norm[:, idx, :].detach().float().mean().cpu().item(),

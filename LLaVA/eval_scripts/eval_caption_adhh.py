@@ -305,6 +305,7 @@ def eval_model(args):
             model.config.unsupported_component_score_high = args.unsupported_component_score_high
             model.config.unsupported_component_phase = args.unsupported_component_phase
             model.config.unsupported_component_layers = parse_int_ranges(args.unsupported_component_layers)
+            model.config.unsupported_component_prefill_protect_top_k = args.unsupported_component_prefill_protect_top_k
             if args.unsupported_component_risk_feature in (
                 "unsupported_object_logit",
                 "text_mass_x_object_logit_disagreement",
@@ -349,6 +350,8 @@ def eval_model(args):
         if args.record_unsupported_component_diagnostics:
             model.config.unsupported_component_diagnostics = []
             model.config.unsupported_component_call_index = 0
+        if args.unsupported_component_deactivate:
+            model.config.unsupported_component_prefill_protect_heads = {}
 
         input_ids = input_ids.to(device='cuda', non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True)
@@ -522,6 +525,7 @@ if __name__ == "__main__":
         choices=[
             "unsupported_norm",
             "unsupported_total_ratio",
+            "low_img_mass",
             "text_mass_x_disagreement",
             "text_mass_x_max_peer_disagreement",
             "text_mass_x_object_logit_disagreement",
@@ -535,6 +539,7 @@ if __name__ == "__main__":
         ],
     )
     parser.add_argument("--unsupported_component_object_vocab_path", type=str, default="eval_scripts/eval_utils/data/synonyms.txt")
+    parser.add_argument("--unsupported_component_prefill_protect_top_k", type=int, default=0)
     parser.add_argument("--unsupported_component_all_heads", action="store_true", default=False)
     parser.add_argument("--record_unsupported_component_diagnostics", action="store_true", default=False)
     parser.add_argument("--record_unsupported_component_candidates", action="store_true", default=False)
