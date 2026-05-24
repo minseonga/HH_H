@@ -123,6 +123,11 @@ def summarize_selected_heads(rows):
             "mean_text_head_agreement": mean(row.get("text_head_agreement", 0) for row in active),
             "mean_text_head_disagreement": mean(row.get("text_head_disagreement", 0) for row in active),
             "mean_text_mass_x_disagreement": mean(row.get("text_mass_x_disagreement", 0) for row in active),
+            "mean_object_logit_agreement": mean(row.get("object_logit_agreement", 0) for row in active),
+            "mean_object_logit_disagreement": mean(row.get("object_logit_disagreement", 0) for row in active),
+            "mean_text_mass_x_object_logit_disagreement": mean(
+                row.get("text_mass_x_object_logit_disagreement", 0) for row in active
+            ),
             "mean_img_mass": mean(row.get("img_mass", 0) for row in active),
             "mean_text_img_value_cosine": mean(row.get("text_img_value_cosine", 0) for row in active),
         })

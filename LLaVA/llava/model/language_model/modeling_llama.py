@@ -511,14 +511,24 @@ def _apply_unsupported_component_suppression(
     )
 
     risk_feature = getattr(config, "unsupported_component_risk_feature", "unsupported_norm_x_low_anchor")
+    all_text_value = None
     text_head_agreement = None
     text_head_disagreement = None
     text_mass_x_disagreement = None
+    object_logit_agreement = None
+    object_logit_disagreement = None
+    text_mass_x_object_logit_disagreement = None
+    if risk_feature in (
+        "text_mass_x_disagreement",
+        "text_mass_x_max_peer_disagreement",
+        "text_mass_x_object_logit_disagreement",
+    ):
+        all_text_attention = attn_weights[:, :, -1, text_start:]
+        all_text_values = value_states[:, :, text_start:, :]
+        all_text_value = torch.einsum("bht,bhtd->bhd", all_text_attention.float(), all_text_values.float())
+
     if risk_feature == "text_mass_x_disagreement":
         if num_heads > 1:
-            all_text_attention = attn_weights[:, :, -1, text_start:]
-            all_text_values = value_states[:, :, text_start:, :]
-            all_text_value = torch.einsum("bht,bhtd->bhd", all_text_attention.float(), all_text_values.float())
             peer_text_mean = (torch.sum(all_text_value, dim=1, keepdim=True) - text_value) / float(num_heads - 1)
             peer_norm = torch.linalg.vector_norm(peer_text_mean, dim=-1, keepdim=True)
             text_head_agreement = torch.sum(text_value * peer_text_mean, dim=-1, keepdim=True) / torch.clamp(
@@ -530,6 +540,58 @@ def _apply_unsupported_component_suppression(
             text_head_agreement = torch.ones_like(text_mass)
         text_head_disagreement = 1.0 - text_head_agreement
         text_mass_x_disagreement = text_mass * text_head_disagreement
+    elif risk_feature == "text_mass_x_max_peer_disagreement":
+        if num_heads > 1:
+            all_text_norm = torch.linalg.vector_norm(all_text_value, dim=-1, keepdim=True)
+            peer_cosine = torch.einsum("bcd,bhd->bch", text_value, all_text_value) / torch.clamp(
+                text_norm * all_text_norm.transpose(1, 2),
+                min=eps,
+            )
+            self_mask = torch.zeros((len(candidate_heads), num_heads), dtype=torch.bool, device=device)
+            self_mask[torch.arange(len(candidate_heads), device=device), head_index] = True
+            peer_cosine = peer_cosine.masked_fill(self_mask.unsqueeze(0), -1.0)
+            text_head_agreement = torch.clamp(torch.max(peer_cosine, dim=-1, keepdim=True).values, min=0.0, max=1.0)
+        else:
+            text_head_agreement = torch.ones_like(text_mass)
+        text_head_disagreement = 1.0 - text_head_agreement
+        text_mass_x_disagreement = text_mass * text_head_disagreement
+    elif risk_feature == "text_mass_x_object_logit_disagreement":
+        object_lm_head = getattr(config, "unsupported_component_object_lm_head", None)
+        if object_lm_head is not None and o_proj is not None and num_heads > 1:
+            object_lm_head = object_lm_head.to(device=device, dtype=o_proj.weight.dtype)
+            o_proj_weight = o_proj.weight
+            all_object_logits = []
+            for head in range(num_heads):
+                start = int(head) * int(head_outputs.shape[-1])
+                end = start + int(head_outputs.shape[-1])
+                object_head_dirs = torch.matmul(object_lm_head, o_proj_weight[:, start:end])
+                head_logits = torch.matmul(
+                    all_text_value[:, head, :].to(object_head_dirs.dtype),
+                    object_head_dirs.transpose(0, 1),
+                ).float()
+                head_logits = head_logits - torch.mean(head_logits, dim=-1, keepdim=True)
+                all_object_logits.append(head_logits)
+            all_object_logits = torch.stack(all_object_logits, dim=1)
+            candidate_object_logits = all_object_logits.index_select(1, head_index)
+            candidate_object_norm = torch.linalg.vector_norm(candidate_object_logits, dim=-1, keepdim=True)
+            all_object_norm = torch.linalg.vector_norm(all_object_logits, dim=-1, keepdim=True)
+            object_peer_cosine = torch.einsum(
+                "bcv,bhv->bch",
+                candidate_object_logits,
+                all_object_logits,
+            ) / torch.clamp(candidate_object_norm * all_object_norm.transpose(1, 2), min=eps)
+            self_mask = torch.zeros((len(candidate_heads), num_heads), dtype=torch.bool, device=device)
+            self_mask[torch.arange(len(candidate_heads), device=device), head_index] = True
+            object_peer_cosine = object_peer_cosine.masked_fill(self_mask.unsqueeze(0), -1.0)
+            object_logit_agreement = torch.clamp(
+                torch.max(object_peer_cosine, dim=-1, keepdim=True).values,
+                min=0.0,
+                max=1.0,
+            )
+        else:
+            object_logit_agreement = torch.ones_like(text_mass)
+        object_logit_disagreement = 1.0 - object_logit_agreement
+        text_mass_x_object_logit_disagreement = text_mass * object_logit_disagreement
 
     if risk_feature == "unsupported_total_ratio":
         risk = unsupported_total_ratio
@@ -537,6 +599,10 @@ def _apply_unsupported_component_suppression(
         risk = unsupported_total_ratio * low_anchor
     elif risk_feature == "text_mass_x_disagreement":
         risk = text_mass_x_disagreement
+    elif risk_feature == "text_mass_x_max_peer_disagreement":
+        risk = text_mass_x_disagreement
+    elif risk_feature == "text_mass_x_object_logit_disagreement":
+        risk = text_mass_x_object_logit_disagreement
     elif risk_feature == "unsupported_norm_x_low_visual":
         risk = unsupported_norm * low_visual
     elif risk_feature == "unsupported_norm_x_low_anchor_x_low_visual":
@@ -584,6 +650,7 @@ def _apply_unsupported_component_suppression(
     score_low = torch.min(valid_scores)
     score_high = torch.max(valid_scores)
     score_den = score_high - score_low
+    score_sum = torch.sum(torch.clamp(valid_scores, min=0.0))
     score_norm_mode = getattr(config, "unsupported_component_score_norm", "candidate_minmax")
     absolute_score_low = float(getattr(config, "unsupported_component_score_low", 0.0))
     absolute_score_high = float(getattr(config, "unsupported_component_score_high", 1.0))
@@ -629,6 +696,18 @@ def _apply_unsupported_component_suppression(
                 "text_mass_x_disagreement": (
                     text_mass_x_disagreement[:, local_idx, :].detach().float().mean().cpu().item()
                     if text_mass_x_disagreement is not None else None
+                ),
+                "object_logit_agreement": (
+                    object_logit_agreement[:, local_idx, :].detach().float().mean().cpu().item()
+                    if object_logit_agreement is not None else None
+                ),
+                "object_logit_disagreement": (
+                    object_logit_disagreement[:, local_idx, :].detach().float().mean().cpu().item()
+                    if object_logit_disagreement is not None else None
+                ),
+                "text_mass_x_object_logit_disagreement": (
+                    text_mass_x_object_logit_disagreement[:, local_idx, :].detach().float().mean().cpu().item()
+                    if text_mass_x_object_logit_disagreement is not None else None
                 ),
             })
 
@@ -684,6 +763,11 @@ def _apply_unsupported_component_suppression(
                 normalized = torch.tensor(0.0, device=device)
             else:
                 normalized = torch.clamp(score / torch.clamp(score_high, min=eps), min=0.0, max=1.0)
+        elif score_norm_mode == "candidate_sum":
+            if score_sum.detach().float().cpu().item() <= eps:
+                normalized = torch.tensor(0.0, device=device)
+            else:
+                normalized = torch.clamp(score / torch.clamp(score_sum, min=eps), min=0.0, max=1.0)
         else:
             if score_den.detach().float().cpu().item() <= eps:
                 normalized = torch.tensor(1.0 if valid_indices.numel() == 1 else 0.0, device=device)
@@ -796,6 +880,18 @@ def _apply_unsupported_component_suppression(
                 "text_mass_x_disagreement": (
                     text_mass_x_disagreement[:, idx, :].detach().float().mean().cpu().item()
                     if text_mass_x_disagreement is not None else None
+                ),
+                "object_logit_agreement": (
+                    object_logit_agreement[:, idx, :].detach().float().mean().cpu().item()
+                    if object_logit_agreement is not None else None
+                ),
+                "object_logit_disagreement": (
+                    object_logit_disagreement[:, idx, :].detach().float().mean().cpu().item()
+                    if object_logit_disagreement is not None else None
+                ),
+                "text_mass_x_object_logit_disagreement": (
+                    text_mass_x_object_logit_disagreement[:, idx, :].detach().float().mean().cpu().item()
+                    if text_mass_x_object_logit_disagreement is not None else None
                 ),
                 "head_output_norm": head_output_norm.cpu().item(),
                 "delta_norm": delta_norm.cpu().item(),

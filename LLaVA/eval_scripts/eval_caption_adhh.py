@@ -305,7 +305,10 @@ def eval_model(args):
             model.config.unsupported_component_score_high = args.unsupported_component_score_high
             model.config.unsupported_component_phase = args.unsupported_component_phase
             model.config.unsupported_component_layers = parse_int_ranges(args.unsupported_component_layers)
-            if args.unsupported_component_risk_feature == "unsupported_object_logit":
+            if args.unsupported_component_risk_feature in (
+                "unsupported_object_logit",
+                "text_mass_x_object_logit_disagreement",
+            ):
                 object_token_ids = load_first_subtoken_ids(tokenizer, args.unsupported_component_object_vocab_path)
                 if object_token_ids:
                     lm_head = model.get_output_embeddings().weight
@@ -316,7 +319,7 @@ def eval_model(args):
                         f"from {args.unsupported_component_object_vocab_path}"
                     )
                 else:
-                    print("[warn] unsupported_object_logit requested but no object token ids were loaded; falling back to unsupported_norm")
+                    print("[warn] object-logit risk requested but no object token ids were loaded")
             model.config.unsupported_component_all_heads = args.unsupported_component_all_heads
             model.config.record_unsupported_component_diagnostics = args.record_unsupported_component_diagnostics
             model.config.record_unsupported_component_candidates = args.record_unsupported_component_candidates
@@ -501,7 +504,7 @@ if __name__ == "__main__":
         "--unsupported_component_score_norm",
         type=str,
         default="candidate_minmax",
-        choices=["candidate_minmax", "candidate_max", "absolute", "identity"],
+        choices=["candidate_minmax", "candidate_max", "candidate_sum", "absolute", "identity"],
     )
     parser.add_argument("--unsupported_component_score_low", type=float, default=0.0)
     parser.add_argument("--unsupported_component_score_high", type=float, default=1.0)
@@ -520,6 +523,8 @@ if __name__ == "__main__":
             "unsupported_norm",
             "unsupported_total_ratio",
             "text_mass_x_disagreement",
+            "text_mass_x_max_peer_disagreement",
+            "text_mass_x_object_logit_disagreement",
             "unsupported_norm_x_low_anchor",
             "unsupported_total_ratio_x_low_anchor",
             "unsupported_norm_x_low_visual",
