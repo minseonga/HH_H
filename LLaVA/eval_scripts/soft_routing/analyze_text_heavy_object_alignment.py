@@ -143,10 +143,25 @@ def node_pairs(sentence, key):
 
 def object_mentions(sentence):
     mentions = []
-    for word, node_word in node_pairs(sentence, "mscoco_non_hallucinated_words"):
-        mentions.append({"word": word, "node_word": node_word, "label": 0, "label_name": "grounded"})
-    for word, node_word in node_pairs(sentence, "mscoco_hallucinated_words"):
-        mentions.append({"word": word, "node_word": node_word, "label": 1, "label_name": "hallucinated"})
+    nonhall_idxs = sentence.get("non_hallucination_idxs", [])
+    hall_idxs = sentence.get("hallucination_idxs", [])
+    for idx, (word, node_word) in zip(nonhall_idxs, node_pairs(sentence, "mscoco_non_hallucinated_words")):
+        mentions.append({
+            "word": word,
+            "node_word": node_word,
+            "word_idx": safe_int(idx, -1),
+            "label": 0,
+            "label_name": "grounded",
+        })
+    for idx, (word, node_word) in zip(hall_idxs, node_pairs(sentence, "mscoco_hallucinated_words")):
+        mentions.append({
+            "word": word,
+            "node_word": node_word,
+            "word_idx": safe_int(idx, -1),
+            "label": 1,
+            "label_name": "hallucinated",
+        })
+    mentions.sort(key=lambda item: (item.get("word_idx", -1) if item.get("word_idx", -1) >= 0 else 10**9))
     return mentions
 
 
@@ -319,6 +334,7 @@ def mention_feature_rows(sentences, tokenizer, step_rows_by_qid, features, windo
                 "image": sentence.get("image", ""),
                 "word": mention["word"],
                 "node_word": mention["node_word"],
+                "word_idx": mention.get("word_idx", ""),
                 "label": mention["label"],
                 "label_name": mention["label_name"],
                 "token_pos": mention["token_pos"],
@@ -348,6 +364,7 @@ def step_label_rows(sentences, tokenizer, step_rows_by_qid):
                 object_labels[qid][mention["token_pos"]] = {
                     "label": label,
                     "label_name": mention["label_name"],
+                    "word_idx": mention.get("word_idx", ""),
                     "word": mention["word"],
                     "node_word": mention["node_word"],
                 }
@@ -362,6 +379,7 @@ def step_label_rows(sentences, tokenizer, step_rows_by_qid):
                     "is_hallucinated_object_step": 0,
                     "is_grounded_object_step": 0,
                     "object_label": "non_object",
+                    "word_idx": "",
                     "word": "",
                     "node_word": "",
                 })
@@ -371,6 +389,7 @@ def step_label_rows(sentences, tokenizer, step_rows_by_qid):
                     "is_hallucinated_object_step": int(label_info["label"] == 1),
                     "is_grounded_object_step": int(label_info["label"] == 0),
                     "object_label": label_info["label_name"],
+                    "word_idx": label_info.get("word_idx", ""),
                     "word": label_info["word"],
                     "node_word": label_info["node_word"],
                 })
