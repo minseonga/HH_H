@@ -32,6 +32,21 @@ TOKEN_SCORE_FEATURES = [
     "top2_logit",
 ]
 
+LAYER_CONTRASTIVE_FEATURES = [
+    "kl_final_mid",
+    "kl_mid_final",
+    "sym_kl",
+    "js_divergence_norm",
+    "gate",
+    "final_entropy_norm",
+    "low_margin",
+    "final_top1_top2_margin",
+    "mid_top1_top2_margin",
+    "corrected_top1_top2_margin",
+    "final_mid_top1_agree",
+    "final_corrected_top1_agree",
+]
+
 
 def safe_float(value, default=None):
     try:
@@ -485,6 +500,7 @@ def load_step_rows(diagnostics_jsonl, threshold, phase):
 
     raw = defaultdict(lambda: defaultdict(empty_step_agg))
     token_scores = defaultdict(dict)
+    layer_contrastive_scores = defaultdict(dict)
     first_step_by_qid = {}
     for record in iter_jsonl(diagnostics_jsonl):
         if record.get("record_type") != "candidate_head":
@@ -511,13 +527,48 @@ def load_step_rows(diagnostics_jsonl, threshold, phase):
             continue
         token_scores[qid][token_pos] = record
 
+    for record in iter_jsonl(diagnostics_jsonl):
+        if record.get("record_type") != "layer_contrastive":
+            continue
+        if phase != "all" and record.get("phase") != phase:
+            continue
+        qid = str(record.get("question_id"))
+        token_pos = safe_int(record.get("token_pos", record.get("step_index")))
+        if not qid or token_pos is None:
+            continue
+        layer_contrastive_scores[qid][token_pos] = record
+
     by_qid = defaultdict(dict)
     flat_rows = []
-    for qid, steps in raw.items():
+    all_qids = set(raw) | set(token_scores) | set(layer_contrastive_scores)
+    for qid in sorted(all_qids):
+        steps = raw.get(qid, {})
         first = first_step_by_qid.get(qid, 0)
-        for step_index, agg in steps.items():
-            token_pos = int(step_index - first)
-            row = finalize_step_row(qid, token_pos, agg)
+        token_positions = set()
+        for step_index in steps:
+            token_positions.add(int(step_index - first))
+        token_positions.update(token_scores.get(qid, {}).keys())
+        token_positions.update(layer_contrastive_scores.get(qid, {}).keys())
+        for token_pos in sorted(token_positions):
+            step_index = int(token_pos + first)
+            agg = steps.get(step_index)
+            if agg is not None:
+                row = finalize_step_row(qid, token_pos, agg)
+            else:
+                row = {
+                    "question_id": qid,
+                    "token_pos": int(token_pos),
+                    "n_heads": 0,
+                    "text_heavy_count": 0,
+                    "text_heavy_rate": None,
+                    "text_mass_mean": None,
+                    "text_mass_max": None,
+                    "text_mass_p90": None,
+                    "early_text_heavy_rate": None,
+                    "middle_text_heavy_rate": None,
+                    "late_text_heavy_rate": None,
+                    "midlate_text_heavy_rate": None,
+                }
             row["step_index"] = int(step_index)
             row["first_decode_step_index"] = int(first)
             if token_pos in token_scores.get(qid, {}):
@@ -526,6 +577,19 @@ def load_step_rows(diagnostics_jsonl, threshold, phase):
                     row[feature] = safe_float(token_record.get(feature))
                 row["top1_token_id"] = token_record.get("top1_token_id")
                 row["top1_token"] = token_record.get("top1_token", "")
+            if token_pos in layer_contrastive_scores.get(qid, {}):
+                contrastive_record = layer_contrastive_scores[qid][token_pos]
+                for feature in LAYER_CONTRASTIVE_FEATURES:
+                    value = contrastive_record.get(feature)
+                    if isinstance(value, bool):
+                        row[feature] = int(value)
+                    else:
+                        row[feature] = safe_float(value)
+                row["layer_contrastive_layers"] = contrastive_record.get("layers", "")
+                row["layer_contrastive_gate_feature"] = contrastive_record.get("gate_feature", "")
+                row["final_top1_token_id"] = contrastive_record.get("final_top1_token_id")
+                row["mid_top1_token_id"] = contrastive_record.get("mid_top1_token_id")
+                row["corrected_top1_token_id"] = contrastive_record.get("corrected_top1_token_id")
             by_qid[qid][token_pos] = row
             flat_rows.append(row)
     flat_rows.sort(key=lambda item: (str(item["question_id"]), int(item["token_pos"])))
@@ -604,6 +668,18 @@ def main():
         "logit_entropy",
         "top1_top2_margin",
         "negative_top1_top2_margin",
+        "kl_final_mid",
+        "kl_mid_final",
+        "sym_kl",
+        "js_divergence_norm",
+        "gate",
+        "final_entropy_norm",
+        "low_margin",
+        "final_top1_top2_margin",
+        "mid_top1_top2_margin",
+        "corrected_top1_top2_margin",
+        "final_mid_top1_agree",
+        "final_corrected_top1_agree",
     ]
     mention_rows, align_summary = mention_feature_rows(
         sentences,

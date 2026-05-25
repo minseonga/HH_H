@@ -98,6 +98,12 @@ def _maybe_apply_layer_contrastive_logits(config, lm_head, hidden_states, final_
     if hidden_states is None:
         return final_logits
 
+    forward_index = int(getattr(config, "layer_contrastive_forward_index", 0))
+    try:
+        config.layer_contrastive_forward_index = forward_index + 1
+    except Exception:
+        pass
+
     phase_mode = getattr(config, "layer_contrastive_phase", "decode")
     if phase_mode != "all" and phase != phase_mode:
         return final_logits
@@ -147,6 +153,11 @@ def _maybe_apply_layer_contrastive_logits(config, lm_head, hidden_states, final_
             + torch.sum(mid_probs * (mid_log_probs - mixture_log_probs), dim=-1)
         )
         js_norm = torch.clamp(js / math.log(2.0), min=0.0, max=1.0)
+    elif getattr(config, "record_layer_contrastive_diagnostics", False):
+        final_log_probs = torch.log_softmax(final_float, dim=-1)
+        mid_log_probs = torch.log_softmax(mid_float, dim=-1)
+        final_probs = final_log_probs.exp()
+        mid_probs = mid_log_probs.exp()
 
     if gate_feature in ("final_entropy", "js_x_entropy"):
         final_log_probs_for_entropy = torch.log_softmax(final_float, dim=-1)
@@ -200,15 +211,27 @@ def _maybe_apply_layer_contrastive_logits(config, lm_head, hidden_states, final_
                 final_top = torch.topk(final_last, k=2)
                 mid_top = torch.topk(mid_last, k=2)
                 corrected_top = torch.topk(corrected_last, k=2)
+                kl_final_mid = torch.sum(
+                    final_probs[batch_idx, pos] * (final_log_probs[batch_idx, pos] - mid_log_probs[batch_idx, pos])
+                )
+                kl_mid_final = torch.sum(
+                    mid_probs[batch_idx, pos] * (mid_log_probs[batch_idx, pos] - final_log_probs[batch_idx, pos])
+                )
                 record = {
                     "record_type": "layer_contrastive",
                     "phase": phase,
                     "call_index": call_index,
+                    "forward_index": forward_index,
+                    "step_index": forward_index,
+                    "token_pos": forward_index,
                     "position": int(pos),
                     "layers": ",".join(str(layer) for layer in valid_layers),
                     "alpha": alpha,
                     "gate_feature": gate_feature,
                     "gate": float(gate[batch_idx, pos].detach().cpu().item()),
+                    "kl_final_mid": float(kl_final_mid.detach().cpu().item()),
+                    "kl_mid_final": float(kl_mid_final.detach().cpu().item()),
+                    "sym_kl": float((0.5 * (kl_final_mid + kl_mid_final)).detach().cpu().item()),
                     "final_top1_token_id": int(final_top.indices[0].detach().cpu().item()),
                     "mid_top1_token_id": int(mid_top.indices[0].detach().cpu().item()),
                     "corrected_top1_token_id": int(corrected_top.indices[0].detach().cpu().item()),

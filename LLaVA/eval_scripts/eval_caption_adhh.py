@@ -384,6 +384,7 @@ def eval_model(args):
         if args.record_layer_contrastive_diagnostics:
             model.config.layer_contrastive_diagnostics = []
             model.config.layer_contrastive_call_index = 0
+            model.config.layer_contrastive_forward_index = 0
 
         input_ids = input_ids.to(device='cuda', non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True)
