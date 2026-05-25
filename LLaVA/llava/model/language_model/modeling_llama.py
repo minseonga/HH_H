@@ -539,6 +539,145 @@ def _apply_head_output_direction_projection(config, layer_idx, head_outputs, num
     return head_outputs
 
 
+def _compute_query_direction_gate_for_layer(config, layer_idx, query_states, num_heads):
+    if query_states is None:
+        return None
+    directions = getattr(config, "unsupported_component_query_gate_directions", None)
+    if not directions:
+        return None
+
+    layer = int(layer_idx) if layer_idx is not None else -1
+    eps = float(getattr(config, "unsupported_component_query_gate_eps", 1e-6))
+    temperature = max(float(getattr(config, "unsupported_component_query_gate_temperature", 0.05)), eps)
+    mode = getattr(config, "unsupported_component_query_gate_mode", "prefill_hard")
+    thresholds = getattr(config, "unsupported_component_query_gate_thresholds", {})
+
+    gate_values = []
+    score_values = []
+    margin_values = []
+    for head in range(num_heads):
+        key = f"{layer}:{head}"
+        direction = directions.get(key)
+        if direction is None:
+            continue
+        if not isinstance(direction, torch.Tensor):
+            direction = torch.tensor(direction)
+        direction = direction.to(device=query_states.device, dtype=query_states.dtype)
+        direction = direction / torch.clamp(torch.linalg.vector_norm(direction), min=eps)
+        q = query_states[:, head, -1, :]
+        q = q / torch.clamp(torch.linalg.vector_norm(q, dim=-1, keepdim=True), min=eps)
+        score = torch.sum(q * direction, dim=-1, keepdim=True)
+        threshold = float(thresholds.get(key, 0.0))
+        margin = score - threshold
+        if mode.endswith("sigmoid"):
+            gate = torch.sigmoid(margin / temperature).to(query_states.dtype)
+        else:
+            gate = (margin >= 0).to(query_states.dtype)
+        gate_values.append(gate)
+        score_values.append(score)
+        margin_values.append(margin)
+
+    if not gate_values:
+        return None
+
+    gates = torch.stack(gate_values, dim=0)
+    scores = torch.stack(score_values, dim=0)
+    margins = torch.stack(margin_values, dim=0)
+    aggregation = getattr(config, "unsupported_component_query_gate_aggregation", "mean")
+    if aggregation == "max":
+        gate = torch.max(gates, dim=0).values
+    else:
+        gate = torch.mean(gates, dim=0)
+    gate = torch.clamp(gate, min=0.0, max=1.0)
+    return {
+        "gate": gate,
+        "n": int(len(gate_values)),
+        "mean_score": torch.mean(scores),
+        "mean_margin": torch.mean(margins),
+        "max_gate": torch.max(gates),
+    }
+
+
+def _update_unsupported_component_query_gate_state(config, layer_idx, query_states, num_heads, current_phase):
+    mode = getattr(config, "unsupported_component_query_gate_mode", "off")
+    if mode in ("", "off", "none") or not mode.startswith("prefill"):
+        return
+    if current_phase != "prefill":
+        return
+    layer_gate = _compute_query_direction_gate_for_layer(config, layer_idx, query_states, num_heads)
+    if layer_gate is None:
+        return
+
+    state = getattr(config, "unsupported_component_query_gate_state", None)
+    if state is None:
+        state = {}
+        config.unsupported_component_query_gate_state = state
+    gate_value = float(layer_gate["gate"].detach().float().mean().cpu().item())
+    direction_count = int(layer_gate["n"])
+    aggregation = getattr(config, "unsupported_component_query_gate_aggregation", "mean")
+    if aggregation == "max":
+        state["gate"] = max(float(state.get("gate", 0.0)), gate_value)
+    else:
+        state["gate_sum"] = float(state.get("gate_sum", 0.0)) + gate_value * direction_count
+        state["gate_count"] = int(state.get("gate_count", 0)) + direction_count
+        state["gate"] = state["gate_sum"] / max(state["gate_count"], 1)
+    state["direction_count"] = int(state.get("direction_count", 0)) + direction_count
+    state["last_layer"] = int(layer_idx) if layer_idx is not None else -1
+    state["last_gate"] = gate_value
+    state["last_mean_score"] = float(layer_gate["mean_score"].detach().float().cpu().item())
+    state["last_mean_margin"] = float(layer_gate["mean_margin"].detach().float().cpu().item())
+
+
+def _get_unsupported_component_query_gate(config, layer_idx, query_states, num_heads, current_phase):
+    mode = getattr(config, "unsupported_component_query_gate_mode", "off")
+    if mode in ("", "off", "none"):
+        return 1.0, {
+            "query_gate_mode": mode,
+            "query_gate_value": 1.0,
+            "query_gate_ready": False,
+            "query_gate_direction_count": 0,
+        }
+    default_gate = float(getattr(config, "unsupported_component_query_gate_default", 0.0))
+    gate_power = float(getattr(config, "unsupported_component_query_gate_power", 1.0))
+    gate_min = float(getattr(config, "unsupported_component_query_gate_min", 0.0))
+
+    if mode.startswith("prefill"):
+        state = getattr(config, "unsupported_component_query_gate_state", None) or {}
+        gate = float(state.get("gate", default_gate))
+        direction_count = int(state.get("direction_count", 0))
+        ready = direction_count > 0
+        mean_score = state.get("last_mean_score")
+        mean_margin = state.get("last_mean_margin")
+    else:
+        layer_gate = _compute_query_direction_gate_for_layer(config, layer_idx, query_states, num_heads)
+        if layer_gate is None:
+            gate = default_gate
+            direction_count = 0
+            ready = False
+            mean_score = None
+            mean_margin = None
+        else:
+            gate = float(layer_gate["gate"].detach().float().mean().cpu().item())
+            direction_count = int(layer_gate["n"])
+            ready = True
+            mean_score = float(layer_gate["mean_score"].detach().float().cpu().item())
+            mean_margin = float(layer_gate["mean_margin"].detach().float().cpu().item())
+
+    gate = min(max(gate, 0.0), 1.0)
+    if gate < gate_min:
+        gate = 0.0
+    if gate_power != 1.0 and gate > 0.0:
+        gate = min(max(gate ** gate_power, 0.0), 1.0)
+    return gate, {
+        "query_gate_mode": mode,
+        "query_gate_value": gate,
+        "query_gate_ready": ready,
+        "query_gate_direction_count": direction_count,
+        "query_gate_mean_score": mean_score,
+        "query_gate_mean_margin": mean_margin,
+    }
+
+
 def _apply_unsupported_component_suppression(
     config,
     layer_idx,
@@ -548,6 +687,7 @@ def _apply_unsupported_component_suppression(
     num_heads,
     head_list,
     o_proj=None,
+    query_states_for_gate=None,
 ):
     if not getattr(config, "unsupported_component_deactivate", False):
         return head_outputs
@@ -567,6 +707,13 @@ def _apply_unsupported_component_suppression(
     if record_diagnostics:
         config.unsupported_component_call_index = call_index + 1
     current_phase = "prefill" if int(head_outputs.shape[-2]) > 1 else "decode"
+    _update_unsupported_component_query_gate_state(
+        config,
+        layer_idx,
+        query_states_for_gate,
+        num_heads,
+        current_phase,
+    )
 
     def append_diagnostic(record):
         if not record_diagnostics:
@@ -650,8 +797,16 @@ def _apply_unsupported_component_suppression(
 
     device = head_outputs.device
     eps = float(getattr(config, "unsupported_component_eps", 1e-6))
-    gamma = float(getattr(config, "unsupported_component_gamma", 0.5))
-    gamma = min(max(gamma, 0.0), 1.0)
+    base_gamma = float(getattr(config, "unsupported_component_gamma", 0.5))
+    base_gamma = min(max(base_gamma, 0.0), 1.0)
+    query_gate, query_gate_info = _get_unsupported_component_query_gate(
+        config,
+        layer_idx,
+        query_states_for_gate,
+        num_heads,
+        current_phase,
+    )
+    gamma = min(max(base_gamma * query_gate, 0.0), 1.0)
     action = getattr(config, "unsupported_component_action", "suppress_unsupported")
     if action not in (
         "suppress_unsupported",
@@ -667,8 +822,10 @@ def _apply_unsupported_component_suppression(
         append_diagnostic({
             "status": "zero_gamma",
             "candidate_n": len(candidate_heads),
+            "base_gamma": base_gamma,
             "gamma": gamma,
             "action": action,
+            **query_gate_info,
         })
         return head_outputs
 
@@ -1005,8 +1162,10 @@ def _apply_unsupported_component_suppression(
                 "head_key": f"{int(layer_idx) if layer_idx is not None else -1}:{int(head)}",
                 "risk_feature": risk_feature,
                 "score_norm": score_norm_mode,
+                "base_gamma": base_gamma,
                 "gamma": gamma,
                 "action": action,
+                **query_gate_info,
                 "score": score.detach().float().cpu().item(),
                 "score_low": score_low.detach().float().cpu().item(),
                 "score_high": score_high.detach().float().cpu().item(),
@@ -1091,8 +1250,10 @@ def _apply_unsupported_component_suppression(
             "active_n": 0,
             "risk_feature": risk_feature,
             "score_norm": score_norm_mode,
+            "base_gamma": base_gamma,
             "gamma": gamma,
             "action": action,
+            **query_gate_info,
             "score_low": score_low.detach().float().cpu().item(),
             "score_high": score_high.detach().float().cpu().item(),
             "sink_top_k": int(sink_index_sorted.numel()),
@@ -1177,8 +1338,10 @@ def _apply_unsupported_component_suppression(
                     "risk_feature": risk_feature,
                     "score_norm": score_norm_mode,
                     "mode": mode,
+                    "base_gamma": base_gamma,
                     "gamma": gamma,
                     "action": action,
+                    **query_gate_info,
                     "score": score.detach().float().cpu().item(),
                     "score_low": score_low.detach().float().cpu().item(),
                     "score_high": score_high.detach().float().cpu().item(),
@@ -1238,8 +1401,10 @@ def _apply_unsupported_component_suppression(
                 "risk_feature": risk_feature,
                 "score_norm": score_norm_mode,
                 "mode": mode,
+                "base_gamma": base_gamma,
                 "gamma": gamma,
                 "action": action,
+                **query_gate_info,
                 "delta_budget": float(getattr(config, "unsupported_component_delta_budget", 0.0)),
                 "unsupported_weight": float(getattr(config, "unsupported_component_unsupported_weight", 1.0)),
                 "image_weight": float(getattr(config, "unsupported_component_image_weight", 1.0)),
@@ -1332,8 +1497,10 @@ def _apply_unsupported_component_suppression(
         "risk_feature": risk_feature,
         "score_norm": score_norm_mode,
         "mode": mode,
+        "base_gamma": base_gamma,
         "gamma": gamma,
         "action": action,
+        **query_gate_info,
         "delta_budget": float(getattr(config, "unsupported_component_delta_budget", 0.0)),
         "unsupported_weight": float(getattr(config, "unsupported_component_unsupported_weight", 1.0)),
         "image_weight": float(getattr(config, "unsupported_component_image_weight", 1.0)),
@@ -1982,6 +2149,11 @@ class LlamaAttention(nn.Module):
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        query_states_for_unsupported_gate = (
+            query_states.clone()
+            if getattr(self.config, "unsupported_component_query_gate_mode", "off") not in ("", "off", "none")
+            else None
+        )
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
@@ -2568,6 +2740,7 @@ class LlamaAttention(nn.Module):
             self.num_heads,
             head_list,
             self.o_proj,
+            query_states_for_unsupported_gate,
         )
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
@@ -2647,6 +2820,11 @@ class LlamaFlashAttention2(LlamaAttention):
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        query_states_for_unsupported_gate = (
+            query_states.clone()
+            if getattr(self.config, "unsupported_component_query_gate_mode", "off") not in ("", "off", "none")
+            else None
+        )
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
@@ -2754,6 +2932,7 @@ class LlamaFlashAttention2(LlamaAttention):
                 self.num_heads,
                 head_list,
                 self.o_proj,
+                query_states_for_unsupported_gate,
             )
         attn_output = attn_output_heads.transpose(1, 2).contiguous()
 
@@ -2906,6 +3085,11 @@ class LlamaSdpaAttention(LlamaAttention):
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        query_states_for_unsupported_gate = (
+            query_states.clone()
+            if getattr(self.config, "unsupported_component_query_gate_mode", "off") not in ("", "off", "none")
+            else None
+        )
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
@@ -2982,6 +3166,7 @@ class LlamaSdpaAttention(LlamaAttention):
                 self.num_heads,
                 head_list,
                 self.o_proj,
+                query_states_for_unsupported_gate,
             )
 
         attn_output = attn_output.transpose(1, 2).contiguous()

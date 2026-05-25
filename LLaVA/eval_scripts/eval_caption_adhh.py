@@ -16,6 +16,7 @@ from torch.utils.data import Dataset, DataLoader
 import math
 import shutil
 import random
+import numpy as np
 from PIL import Image
 from transformers import set_seed
 from pycocotools.coco import COCO
@@ -71,6 +72,41 @@ def load_first_subtoken_ids(tokenizer, vocab_path):
                 seen.add(token_id)
                 token_ids.append(token_id)
     return token_ids
+
+
+def load_query_direction_gate(calibration_npz, top_k=0, min_auroc=0.0):
+    data = np.load(calibration_npz)
+    layers = data["layers"].astype(int)
+    heads = data["heads"].astype(int)
+    directions = data["directions"].astype(np.float32)
+    thresholds = data["threshold_midpoint"].astype(np.float32)
+    test_auroc = data["test_auroc"].astype(np.float32)
+
+    candidates = []
+    for idx, auc in enumerate(test_auroc.tolist()):
+        if float(auc) < float(min_auroc):
+            continue
+        candidates.append((float(auc), idx))
+    candidates.sort(reverse=True)
+    if top_k > 0:
+        candidates = candidates[:top_k]
+
+    direction_dict = {}
+    threshold_dict = {}
+    rows = []
+    for rank, (_, idx) in enumerate(candidates, start=1):
+        layer = int(layers[idx])
+        head = int(heads[idx])
+        key = f"{layer}:{head}"
+        direction_dict[key] = torch.from_numpy(directions[idx].copy())
+        threshold_dict[key] = float(thresholds[idx])
+        rows.append({
+            "rank": rank,
+            "head_key": key,
+            "test_auroc": float(test_auroc[idx]),
+            "threshold": float(thresholds[idx]),
+        })
+    return direction_dict, threshold_dict, rows
 
 
 def _top2_margin(logits):
@@ -436,6 +472,36 @@ def eval_model(args):
             model.config.record_unsupported_component_diagnostics = args.record_unsupported_component_diagnostics
             model.config.record_unsupported_component_candidates = args.record_unsupported_component_candidates
             model.config.unsupported_component_diagnostics_max_records = args.unsupported_component_diagnostics_max_records
+            model.config.unsupported_component_query_gate_mode = args.unsupported_component_query_gate_mode
+            model.config.unsupported_component_query_gate_aggregation = args.unsupported_component_query_gate_aggregation
+            model.config.unsupported_component_query_gate_temperature = args.unsupported_component_query_gate_temperature
+            model.config.unsupported_component_query_gate_default = args.unsupported_component_query_gate_default
+            model.config.unsupported_component_query_gate_min = args.unsupported_component_query_gate_min
+            model.config.unsupported_component_query_gate_power = args.unsupported_component_query_gate_power
+            model.config.unsupported_component_query_gate_state = {}
+            if args.unsupported_component_query_gate_calibration:
+                if not os.path.exists(args.unsupported_component_query_gate_calibration):
+                    raise FileNotFoundError(args.unsupported_component_query_gate_calibration)
+                directions, thresholds, direction_rows = load_query_direction_gate(
+                    args.unsupported_component_query_gate_calibration,
+                    top_k=args.unsupported_component_query_gate_top_k,
+                    min_auroc=args.unsupported_component_query_gate_min_auroc,
+                )
+                model.config.unsupported_component_query_gate_directions = directions
+                model.config.unsupported_component_query_gate_thresholds = thresholds
+                print(
+                    f"[info] unsupported query gate directions: {len(directions)} "
+                    f"from {args.unsupported_component_query_gate_calibration}"
+                )
+                for row in direction_rows[:10]:
+                    print(
+                        "[info] query gate direction "
+                        f"rank={row['rank']} head={row['head_key']} "
+                        f"auc={row['test_auroc']:.4f} threshold={row['threshold']:.4f}"
+                    )
+            else:
+                model.config.unsupported_component_query_gate_directions = {}
+                model.config.unsupported_component_query_gate_thresholds = {}
 
     unsupported_diag_file = None
     if args.record_unsupported_component_diagnostics:
@@ -477,6 +543,7 @@ def eval_model(args):
             model.config.unsupported_component_call_index = 0
         if args.unsupported_component_deactivate:
             model.config.unsupported_component_prefill_protect_heads = {}
+            model.config.unsupported_component_query_gate_state = {}
         if args.record_layer_contrastive_diagnostics:
             model.config.layer_contrastive_diagnostics = []
             model.config.layer_contrastive_call_index = 0
@@ -751,6 +818,25 @@ if __name__ == "__main__":
     parser.add_argument("--unsupported_component_sink_top_k", type=int, default=0)
     parser.add_argument("--unsupported_component_sink_offsets", type=str, default="")
     parser.add_argument("--unsupported_component_all_heads", action="store_true", default=False)
+    parser.add_argument("--unsupported_component_query_gate_calibration", type=str, default="")
+    parser.add_argument("--unsupported_component_query_gate_top_k", type=int, default=0)
+    parser.add_argument("--unsupported_component_query_gate_min_auroc", type=float, default=0.65)
+    parser.add_argument(
+        "--unsupported_component_query_gate_mode",
+        type=str,
+        default="off",
+        choices=["off", "prefill_hard", "prefill_sigmoid", "decode_hard", "decode_sigmoid"],
+    )
+    parser.add_argument(
+        "--unsupported_component_query_gate_aggregation",
+        type=str,
+        default="mean",
+        choices=["mean", "max"],
+    )
+    parser.add_argument("--unsupported_component_query_gate_temperature", type=float, default=0.05)
+    parser.add_argument("--unsupported_component_query_gate_default", type=float, default=0.0)
+    parser.add_argument("--unsupported_component_query_gate_min", type=float, default=0.0)
+    parser.add_argument("--unsupported_component_query_gate_power", type=float, default=1.0)
     parser.add_argument("--record_unsupported_component_diagnostics", action="store_true", default=False)
     parser.add_argument("--record_unsupported_component_candidates", action="store_true", default=False)
     parser.add_argument("--record_token_score_diagnostics", action="store_true", default=False)
