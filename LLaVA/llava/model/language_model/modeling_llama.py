@@ -370,6 +370,13 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
         return query_states
 
     layer = int(layer_idx) if layer_idx is not None else -1
+    q_len = int(query_states.shape[2])
+    phase = "decode" if q_len == 1 else "prefill"
+    projection_phase = getattr(config, "query_direction_phase", "all")
+    if projection_phase == "decode" and phase != "decode":
+        return query_states
+    if projection_phase == "prefill" and phase != "prefill":
+        return query_states
     strength = float(getattr(config, "query_direction_strength", 0.0))
     if abs(strength) <= 0.0:
         return query_states
@@ -423,6 +430,8 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
             q_norm_value = torch.linalg.vector_norm(q, dim=-1, keepdim=True)
             records.append({
                 "kind": "query_projection",
+                "phase": phase,
+                "q_len": q_len,
                 "layer": layer,
                 "head": head,
                 "head_key": key,

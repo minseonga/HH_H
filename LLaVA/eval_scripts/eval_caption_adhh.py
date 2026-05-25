@@ -503,6 +503,49 @@ def eval_model(args):
                 model.config.unsupported_component_query_gate_directions = {}
                 model.config.unsupported_component_query_gate_thresholds = {}
 
+    if args.query_direction_project:
+        if not args.query_direction_calibration:
+            raise ValueError("--query_direction_calibration is required with --query_direction_project")
+        if not os.path.exists(args.query_direction_calibration):
+            raise FileNotFoundError(args.query_direction_calibration)
+        directions, thresholds, direction_rows = load_query_direction_gate(
+            args.query_direction_calibration,
+            top_k=args.query_direction_top_k,
+            min_auroc=args.query_direction_min_auroc,
+        )
+        if not directions:
+            raise ValueError(
+                "No query directions selected; lower --query_direction_min_auroc "
+                "or increase --query_direction_top_k."
+            )
+        model.config.query_direction_project = True
+        model.config.query_direction_directions = directions
+        model.config.query_direction_thresholds = thresholds
+        model.config.query_direction_strength = args.query_direction_strength
+        model.config.query_direction_gate_mode = args.query_direction_gate_mode
+        model.config.query_direction_temperature = args.query_direction_temperature
+        model.config.query_direction_positive_only = not args.query_direction_allow_negative
+        model.config.query_direction_phase = args.query_direction_phase
+        model.config.record_query_projection_diagnostics = args.record_query_projection_diagnostics
+        model.config.query_projection_diagnostics = []
+        print(
+            f"[info] query projection directions: {len(directions)} "
+            f"from {args.query_direction_calibration}"
+        )
+        print(
+            f"[info] query projection: strength={args.query_direction_strength} "
+            f"phase={args.query_direction_phase} gate={args.query_direction_gate_mode} "
+            f"positive_only={not args.query_direction_allow_negative}"
+        )
+        for row in direction_rows[:10]:
+            print(
+                "[info] query projection direction "
+                f"rank={row['rank']} head={row['head_key']} "
+                f"auc={row['test_auroc']:.4f} threshold={row['threshold']:.4f}"
+            )
+    else:
+        model.config.query_direction_project = False
+
     unsupported_diag_file = None
     if args.record_unsupported_component_diagnostics:
         unsupported_diag_path = args.unsupported_component_diagnostics_file
@@ -531,6 +574,20 @@ def eval_model(args):
         layer_contrastive_diag_file = open(layer_contrastive_diag_path, "w")
         print(f"[info] layer contrastive diagnostics: {layer_contrastive_diag_path}")
 
+    query_projection_diag_file = None
+    if args.record_query_projection_diagnostics:
+        query_projection_diag_path = args.query_projection_diagnostics_file
+        if not query_projection_diag_path:
+            query_projection_diag_path = os.path.join(
+                os.path.dirname(answers_file),
+                "query_projection_diagnostics.jsonl",
+            )
+        query_projection_diag_dir = os.path.dirname(query_projection_diag_path)
+        if query_projection_diag_dir:
+            os.makedirs(query_projection_diag_dir, exist_ok=True)
+        query_projection_diag_file = open(query_projection_diag_path, "w")
+        print(f"[info] query projection diagnostics: {query_projection_diag_path}")
+
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
         count += 1
@@ -548,6 +605,8 @@ def eval_model(args):
             model.config.layer_contrastive_diagnostics = []
             model.config.layer_contrastive_call_index = 0
             model.config.layer_contrastive_forward_index = 0
+        if args.record_query_projection_diagnostics:
+            model.config.query_projection_diagnostics = []
 
         input_ids = input_ids.to(device='cuda', non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True)
@@ -644,10 +703,21 @@ def eval_model(args):
                 layer_contrastive_diag_file.write(json.dumps(record) + "\n")
             layer_contrastive_diag_file.flush()
 
+        if query_projection_diag_file is not None:
+            for record in getattr(model.config, "query_projection_diagnostics", []):
+                record = dict(record)
+                record["question_id"] = question_id
+                record["image"] = image_file
+                record["caption"] = outputs
+                query_projection_diag_file.write(json.dumps(record) + "\n")
+            query_projection_diag_file.flush()
+
     if unsupported_diag_file is not None:
         unsupported_diag_file.close()
     if layer_contrastive_diag_file is not None:
         layer_contrastive_diag_file.close()
+    if query_projection_diag_file is not None:
+        query_projection_diag_file.close()
 
 
 
@@ -753,6 +823,22 @@ if __name__ == "__main__":
     parser.add_argument("--record_layer_contrastive_diagnostics", action="store_true", default=False)
     parser.add_argument("--layer_contrastive_diagnostics_file", type=str, default="")
     parser.add_argument("--layer_contrastive_diagnostics_max_records", type=int, default=0)
+    parser.add_argument("--query_direction_project", action="store_true", default=False)
+    parser.add_argument("--query_direction_calibration", type=str, default="")
+    parser.add_argument("--query_direction_top_k", type=int, default=1)
+    parser.add_argument("--query_direction_min_auroc", type=float, default=0.0)
+    parser.add_argument("--query_direction_strength", type=float, default=0.5)
+    parser.add_argument(
+        "--query_direction_gate_mode",
+        type=str,
+        default="none",
+        choices=["none", "positive", "threshold", "sigmoid"],
+    )
+    parser.add_argument("--query_direction_temperature", type=float, default=0.05)
+    parser.add_argument("--query_direction_allow_negative", action="store_true", default=False)
+    parser.add_argument("--query_direction_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
+    parser.add_argument("--record_query_projection_diagnostics", action="store_true", default=False)
+    parser.add_argument("--query_projection_diagnostics_file", type=str, default="")
     parser.add_argument("--unsupported_component_mode", type=str, default="continuous", choices=["hard", "continuous", "hybrid"])
     parser.add_argument("--unsupported_component_layer_top_k", type=int, default=1)
     parser.add_argument("--unsupported_component_gamma", type=float, default=0.5)

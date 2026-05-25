@@ -428,6 +428,76 @@ def auc_rows_from_features(mention_rows, feature_names):
     return rows
 
 
+def percentile(values, q):
+    clean = []
+    for value in values:
+        if value is None or value == "":
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            clean.append(value)
+    if not clean:
+        return None
+    clean.sort()
+    if len(clean) == 1:
+        return clean[0]
+    pos = (len(clean) - 1) * float(q)
+    low = int(math.floor(pos))
+    high = int(math.ceil(pos))
+    if low == high:
+        return clean[low]
+    frac = pos - low
+    return clean[low] * (1.0 - frac) + clean[high] * frac
+
+
+def build_sample_rows(mention_rows, feature_names):
+    grouped = {}
+    for row in mention_rows:
+        key = str(row.get("question_id", row.get("image_id", "")))
+        grouped.setdefault(key, []).append(row)
+
+    sample_rows = []
+    sample_feature_names = []
+    for feature in feature_names:
+        for suffix in ("mean", "max", "p90", "min"):
+            sample_feature_names.append(f"{feature}_{suffix}")
+
+    for key, rows in sorted(grouped.items()):
+        labels = [int(row["label"]) for row in rows]
+        out = {
+            "question_id": key,
+            "image_id": rows[0].get("image_id", ""),
+            "image": rows[0].get("image", ""),
+            "label": 1 if any(label == 1 for label in labels) else 0,
+            "label_name": "CHAIRs1" if any(label == 1 for label in labels) else "CHAIRs0",
+            "n_object_mentions": len(rows),
+            "n_hallucinated_mentions": sum(labels),
+            "n_grounded_mentions": len(labels) - sum(labels),
+        }
+        for feature in feature_names:
+            values = []
+            for row in rows:
+                value = row.get(feature)
+                if value is None or value == "":
+                    continue
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(value):
+                    values.append(value)
+            if values:
+                out[f"{feature}_mean"] = mean(values)
+                out[f"{feature}_max"] = max(values)
+                out[f"{feature}_p90"] = percentile(values, 0.9)
+                out[f"{feature}_min"] = min(values)
+        sample_rows.append(out)
+    return sample_rows, sample_feature_names
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval-results", required=True)
@@ -617,6 +687,8 @@ def main():
         feature_names.append(f"{item['head_key']}_margin")
 
     mention_auc_rows = auc_rows_from_features(mention_rows, feature_names)
+    sample_rows, sample_feature_names = build_sample_rows(mention_rows, feature_names)
+    sample_auc_rows = auc_rows_from_features(sample_rows, sample_feature_names)
     head_auc_rows = []
     by_head = {}
     for row in head_score_rows:
@@ -655,8 +727,10 @@ def main():
         })
 
     write_csv(os.path.join(args.output_dir, "query_direction_chair_mentions.csv"), mention_rows)
+    write_csv(os.path.join(args.output_dir, "query_direction_chair_samples.csv"), sample_rows)
     write_csv(os.path.join(args.output_dir, "query_direction_chair_head_scores.csv"), head_score_rows)
     write_csv(os.path.join(args.output_dir, "query_direction_chair_auc.csv"), mention_auc_rows)
+    write_csv(os.path.join(args.output_dir, "query_direction_chair_sample_auc.csv"), sample_auc_rows)
     write_csv(os.path.join(args.output_dir, "query_direction_chair_head_auc.csv"), head_auc_rows)
 
     label_counts = Counter(row["label_name"] for row in mention_rows)
@@ -665,6 +739,7 @@ def main():
         "calibration_npz": args.calibration_npz,
         "n_sentences": len(sentences),
         "n_mentions": len(mention_rows),
+        "n_samples": len(sample_rows),
         "label_counts": dict(label_counts),
         "selected_direction_count": len(directions),
         "selected_directions": direction_rows,
@@ -681,18 +756,29 @@ def main():
             ),
             reverse=True,
         )[:20],
+        "top_sample_auc_features": sorted(
+            sample_auc_rows,
+            key=lambda row: max(
+                row["auroc_high_predicts_hallucinated"] or 0.0,
+                row["auroc_low_predicts_hallucinated"] or 0.0,
+            ),
+            reverse=True,
+        )[:20],
     }
     with open(os.path.join(args.output_dir, "query_direction_chair_alignment_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     print(json.dumps({
         "n_sentences": summary["n_sentences"],
         "n_mentions": summary["n_mentions"],
+        "n_samples": summary["n_samples"],
         "label_counts": summary["label_counts"],
         "selected_direction_count": summary["selected_direction_count"],
         "top_auc_features": summary["top_auc_features"][:10],
+        "top_sample_auc_features": summary["top_sample_auc_features"][:10],
         "outputs": {
             "mentions": os.path.join(args.output_dir, "query_direction_chair_mentions.csv"),
             "auc": os.path.join(args.output_dir, "query_direction_chair_auc.csv"),
+            "sample_auc": os.path.join(args.output_dir, "query_direction_chair_sample_auc.csv"),
             "head_auc": os.path.join(args.output_dir, "query_direction_chair_head_auc.csv"),
         },
     }, indent=2))
