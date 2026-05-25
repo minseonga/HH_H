@@ -3,6 +3,7 @@ import csv
 import json
 import math
 import os
+import re
 from collections import Counter
 
 import numpy as np
@@ -101,15 +102,39 @@ def image_name_from_sentence(sentence, image_split="val2014"):
 def resolve_image_path(image_file, image_folder, image_split="val2014"):
     candidates = []
     image_file = str(image_file or "")
+    image_folder = os.path.expanduser(str(image_folder or ""))
+    basename = os.path.basename(image_file)
+    names = []
+    if image_file:
+        names.extend([image_file, basename])
+    match = re.search(r"COCO_(?:train|val)2014_(\d{12})\.jpg$", basename)
+    if match:
+        image_id = match.group(1)
+        names.extend([
+            f"{image_id}.jpg",
+            f"COCO_{image_split}_{image_id}.jpg",
+            f"COCO_val2014_{image_id}.jpg",
+            f"COCO_train2014_{image_id}.jpg",
+        ])
+
+    dirs = [image_folder]
+    parent = os.path.dirname(image_folder.rstrip(os.sep))
+    dirs.extend([
+        os.path.join(image_folder, image_split),
+        os.path.join(image_folder, "images"),
+        os.path.join(image_folder, "images", image_split),
+        parent,
+        os.path.join(parent, image_split),
+        os.path.join(parent, "images"),
+        os.path.join(parent, "images", image_split),
+    ])
+
     if os.path.isabs(image_file):
         candidates.append(image_file)
-    if image_file:
-        candidates.extend([
-            os.path.join(image_folder, image_file),
-            os.path.join(image_folder, os.path.basename(image_file)),
-            os.path.join(image_folder, image_split, image_file),
-            os.path.join(image_folder, image_split, os.path.basename(image_file)),
-        ])
+    for directory in dirs:
+        for name in names:
+            if name:
+                candidates.append(os.path.join(directory, name))
     seen = set()
     unique = []
     for candidate in candidates:
