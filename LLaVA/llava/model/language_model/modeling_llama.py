@@ -493,6 +493,28 @@ def _apply_unsupported_component_suppression(
     text_mass = torch.sum(text_attention, dim=-1, keepdim=True).float()
     img_mass = torch.sum(img_attention, dim=-1, keepdim=True).float()
     low_img_mass = 1.0 - torch.clamp(img_mass, min=0.0, max=1.0)
+    text_attention_float = text_attention.float()
+    img_attention_float = img_attention.float()
+    text_max_attention = torch.max(text_attention_float, dim=-1, keepdim=True).values
+    img_max_attention = torch.max(img_attention_float, dim=-1, keepdim=True).values
+    text_top1_ratio = text_max_attention / torch.clamp(text_mass, min=eps)
+    img_top1_ratio = img_max_attention / torch.clamp(img_mass, min=eps)
+    text_prob = text_attention_float / torch.clamp(text_mass, min=eps)
+    img_prob = img_attention_float / torch.clamp(img_mass, min=eps)
+    text_entropy = -torch.sum(text_prob * torch.log(torch.clamp(text_prob, min=eps)), dim=-1, keepdim=True)
+    img_entropy = -torch.sum(img_prob * torch.log(torch.clamp(img_prob, min=eps)), dim=-1, keepdim=True)
+    text_entropy_den = math.log(max(int(text_attention.shape[-1]), 2))
+    img_entropy_den = math.log(max(int(img_attention.shape[-1]), 2))
+    text_entropy_norm = text_entropy / max(text_entropy_den, eps)
+    img_entropy_norm = img_entropy / max(img_entropy_den, eps)
+    text_concentration = 1.0 - torch.clamp(text_entropy_norm, min=0.0, max=1.0)
+    img_concentration = 1.0 - torch.clamp(img_entropy_norm, min=0.0, max=1.0)
+    recent_text_window = int(getattr(config, "unsupported_component_recent_text_window", 8))
+    recent_text_window = min(max(recent_text_window, 1), int(text_attention.shape[-1]))
+    recent_text_mass = torch.sum(text_attention_float[:, :, -recent_text_window:], dim=-1, keepdim=True)
+    recent_text_ratio = recent_text_mass / torch.clamp(text_mass, min=eps)
+    first_text_attention = text_attention_float[:, :, :1]
+    last_text_attention = text_attention_float[:, :, -1:]
 
     layer_key = int(layer_idx) if layer_idx is not None else -1
     protected_heads_by_layer = getattr(config, "unsupported_component_prefill_protect_heads", None)
@@ -738,6 +760,18 @@ def _apply_unsupported_component_suppression(
                 "text_mass": text_mass[:, local_idx, :].detach().float().mean().cpu().item(),
                 "img_mass": img_mass[:, local_idx, :].detach().float().mean().cpu().item(),
                 "low_img_mass": low_img_mass[:, local_idx, :].detach().float().mean().cpu().item(),
+                "text_max_attention": text_max_attention[:, local_idx, :].detach().float().mean().cpu().item(),
+                "text_top1_ratio": text_top1_ratio[:, local_idx, :].detach().float().mean().cpu().item(),
+                "text_entropy_norm": text_entropy_norm[:, local_idx, :].detach().float().mean().cpu().item(),
+                "text_concentration": text_concentration[:, local_idx, :].detach().float().mean().cpu().item(),
+                "recent_text_mass": recent_text_mass[:, local_idx, :].detach().float().mean().cpu().item(),
+                "recent_text_ratio": recent_text_ratio[:, local_idx, :].detach().float().mean().cpu().item(),
+                "first_text_attention": first_text_attention[:, local_idx, :].detach().float().mean().cpu().item(),
+                "last_text_attention": last_text_attention[:, local_idx, :].detach().float().mean().cpu().item(),
+                "img_max_attention": img_max_attention[:, local_idx, :].detach().float().mean().cpu().item(),
+                "img_top1_ratio": img_top1_ratio[:, local_idx, :].detach().float().mean().cpu().item(),
+                "img_entropy_norm": img_entropy_norm[:, local_idx, :].detach().float().mean().cpu().item(),
+                "img_concentration": img_concentration[:, local_idx, :].detach().float().mean().cpu().item(),
                 "prefill_protected": int(head) in protected_heads,
                 "text_value_norm": text_norm[:, local_idx, :].detach().float().mean().cpu().item(),
                 "img_value_norm": img_norm[:, local_idx, :].detach().float().mean().cpu().item(),
@@ -925,6 +959,18 @@ def _apply_unsupported_component_suppression(
                 "text_mass": text_mass[:, idx, :].detach().float().mean().cpu().item(),
                 "img_mass": img_mass[:, idx, :].detach().float().mean().cpu().item(),
                 "low_img_mass": low_img_mass[:, idx, :].detach().float().mean().cpu().item(),
+                "text_max_attention": text_max_attention[:, idx, :].detach().float().mean().cpu().item(),
+                "text_top1_ratio": text_top1_ratio[:, idx, :].detach().float().mean().cpu().item(),
+                "text_entropy_norm": text_entropy_norm[:, idx, :].detach().float().mean().cpu().item(),
+                "text_concentration": text_concentration[:, idx, :].detach().float().mean().cpu().item(),
+                "recent_text_mass": recent_text_mass[:, idx, :].detach().float().mean().cpu().item(),
+                "recent_text_ratio": recent_text_ratio[:, idx, :].detach().float().mean().cpu().item(),
+                "first_text_attention": first_text_attention[:, idx, :].detach().float().mean().cpu().item(),
+                "last_text_attention": last_text_attention[:, idx, :].detach().float().mean().cpu().item(),
+                "img_max_attention": img_max_attention[:, idx, :].detach().float().mean().cpu().item(),
+                "img_top1_ratio": img_top1_ratio[:, idx, :].detach().float().mean().cpu().item(),
+                "img_entropy_norm": img_entropy_norm[:, idx, :].detach().float().mean().cpu().item(),
+                "img_concentration": img_concentration[:, idx, :].detach().float().mean().cpu().item(),
                 "prefill_protected": int(head) in protected_heads,
                 "text_value_norm": text_norm[:, idx, :].detach().float().mean().cpu().item(),
                 "img_value_norm": img_norm[:, idx, :].detach().float().mean().cpu().item(),

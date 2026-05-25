@@ -306,6 +306,7 @@ def eval_model(args):
             model.config.unsupported_component_phase = args.unsupported_component_phase
             model.config.unsupported_component_layers = parse_int_ranges(args.unsupported_component_layers)
             model.config.unsupported_component_prefill_protect_top_k = args.unsupported_component_prefill_protect_top_k
+            model.config.unsupported_component_recent_text_window = args.unsupported_component_recent_text_window
             if args.unsupported_component_risk_feature in (
                 "unsupported_object_logit",
                 "text_mass_x_object_logit_disagreement",
@@ -540,6 +541,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--unsupported_component_object_vocab_path", type=str, default="eval_scripts/eval_utils/data/synonyms.txt")
     parser.add_argument("--unsupported_component_prefill_protect_top_k", type=int, default=0)
+    parser.add_argument("--unsupported_component_recent_text_window", type=int, default=8)
     parser.add_argument("--unsupported_component_all_heads", action="store_true", default=False)
     parser.add_argument("--record_unsupported_component_diagnostics", action="store_true", default=False)
     parser.add_argument("--record_unsupported_component_candidates", action="store_true", default=False)
