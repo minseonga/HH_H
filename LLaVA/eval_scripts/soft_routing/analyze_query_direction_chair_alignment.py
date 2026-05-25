@@ -72,14 +72,90 @@ def parse_int_list(text):
     return values
 
 
+def normalize_image_id(value):
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    basename = os.path.basename(text)
+    match = re.search(r"COCO_(?:train|val)2014_(\d{12})\.jpg$", basename)
+    if match:
+        return str(int(match.group(1)))
+    match = re.search(r"(\d{12})\.jpg$", basename)
+    if match:
+        return str(int(match.group(1)))
+    try:
+        return str(int(float(text)))
+    except ValueError:
+        return text
+
+
 def image_id_key(sentence):
-    return str(sentence.get("image_id", sentence.get("question_id", "")))
+    for key in ("image_id", "question_id", "image"):
+        image_id = normalize_image_id(sentence.get(key))
+        if image_id:
+            return image_id
+    return ""
 
 
-def filter_sentences(sentences, match_eval_results="", max_sentences=0):
+def load_ids_from_eval_results(path):
+    return {image_id_key(item) for item in load_eval_sentences(path) if image_id_key(item)}
+
+
+def load_ids_from_csv(path):
+    ids = set()
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            for key in ("image_id", "question_id", "image"):
+                image_id = normalize_image_id(row.get(key))
+                if image_id:
+                    ids.add(image_id)
+                    break
+    return ids
+
+
+def load_ids_from_text_or_file(value):
+    ids = set()
+    if not value:
+        return ids
+    if os.path.exists(value):
+        if value.endswith(".json"):
+            return load_ids_from_eval_results(value)
+        if value.endswith(".csv"):
+            return load_ids_from_csv(value)
+        with open(value) as f:
+            text = f.read()
+    else:
+        text = str(value)
+    for item in re.split(r"[\s,]+", text):
+        image_id = normalize_image_id(item)
+        if image_id:
+            ids.add(image_id)
+    return ids
+
+
+def collect_exclude_ids(args):
+    ids = set()
+    for path in args.exclude_eval_results:
+        ids |= load_ids_from_eval_results(path)
+    for item in args.exclude_image_ids:
+        ids |= load_ids_from_text_or_file(item)
+    if args.exclude_query_probe_dir:
+        args.exclude_probe_steps.append(
+            os.path.join(args.exclude_query_probe_dir, "query_direction_steps.csv")
+        )
+    for path in args.exclude_probe_steps:
+        ids |= load_ids_from_csv(path)
+    return ids
+
+
+def filter_sentences(sentences, match_eval_results="", exclude_image_ids=None, max_sentences=0):
     if match_eval_results:
-        match_ids = {image_id_key(item) for item in load_eval_sentences(match_eval_results)}
+        match_ids = load_ids_from_eval_results(match_eval_results)
         sentences = [item for item in sentences if image_id_key(item) in match_ids]
+    if exclude_image_ids:
+        sentences = [item for item in sentences if image_id_key(item) not in exclude_image_ids]
     if max_sentences and max_sentences > 0:
         sentences = sentences[:max_sentences]
     return sentences
@@ -517,6 +593,10 @@ def main():
     parser.add_argument("--score-span", choices=["first", "all"], default="first")
     parser.add_argument("--span-aggregation", choices=["max", "mean"], default="max")
     parser.add_argument("--match-eval-results", default="")
+    parser.add_argument("--exclude-eval-results", nargs="*", default=[])
+    parser.add_argument("--exclude-image-ids", nargs="*", default=[])
+    parser.add_argument("--exclude-probe-steps", nargs="*", default=[])
+    parser.add_argument("--exclude-query-probe-dir", default="")
     parser.add_argument("--max-sentences", type=int, default=0)
     parser.add_argument("--max-mentions", type=int, default=0)
     args = parser.parse_args()
@@ -569,10 +649,17 @@ def main():
     model.config.query_record_max_layer = max(selected_layers)
     model.config.query_record_batch_index = 0
 
+    all_sentences = load_eval_sentences(args.eval_results)
+    exclude_ids = collect_exclude_ids(args)
     sentences = filter_sentences(
-        load_eval_sentences(args.eval_results),
+        all_sentences,
         match_eval_results=args.match_eval_results,
+        exclude_image_ids=exclude_ids,
         max_sentences=args.max_sentences,
+    )
+    print(
+        f"[info] sentences: input={len(all_sentences)} "
+        f"after_filter={len(sentences)} excluded_ids={len(exclude_ids)}"
     )
     ensemble_top_ks = parse_int_list(args.ensemble_top_ks)
 
@@ -737,9 +824,12 @@ def main():
     summary = {
         "eval_results": args.eval_results,
         "calibration_npz": args.calibration_npz,
+        "n_input_sentences": len(all_sentences),
         "n_sentences": len(sentences),
         "n_mentions": len(mention_rows),
         "n_samples": len(sample_rows),
+        "excluded_image_id_count": len(exclude_ids),
+        "excluded_image_id_examples": sorted(exclude_ids)[:20],
         "label_counts": dict(label_counts),
         "selected_direction_count": len(directions),
         "selected_directions": direction_rows,

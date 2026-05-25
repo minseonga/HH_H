@@ -27,6 +27,10 @@ ENSEMBLE_TOP_KS="${ENSEMBLE_TOP_KS:-1,3,5,10,20}"
 SCORE_SPAN="${SCORE_SPAN:-first}"
 SPAN_AGGREGATION="${SPAN_AGGREGATION:-max}"
 MATCH_EVAL_RESULTS="${MATCH_EVAL_RESULTS:-}"
+EXCLUDE_QUERY_PROBE_DIR="${EXCLUDE_QUERY_PROBE_DIR:-}"
+EXCLUDE_PROBE_STEPS="${EXCLUDE_PROBE_STEPS:-}"
+EXCLUDE_EVAL_RESULTS="${EXCLUDE_EVAL_RESULTS:-}"
+EXCLUDE_IMAGE_IDS="${EXCLUDE_IMAGE_IDS:-}"
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -44,11 +48,26 @@ if [ -n "${MATCH_EVAL_RESULTS}" ]; then
     match_args=(--match-eval-results "${MATCH_EVAL_RESULTS}")
 fi
 
+exclude_args=()
+if [ -n "${EXCLUDE_QUERY_PROBE_DIR}" ]; then
+    exclude_args+=(--exclude-query-probe-dir "${EXCLUDE_QUERY_PROBE_DIR}")
+fi
+if [ -n "${EXCLUDE_PROBE_STEPS}" ]; then
+    exclude_args+=(--exclude-probe-steps ${EXCLUDE_PROBE_STEPS})
+fi
+if [ -n "${EXCLUDE_EVAL_RESULTS}" ]; then
+    exclude_args+=(--exclude-eval-results ${EXCLUDE_EVAL_RESULTS})
+fi
+if [ -n "${EXCLUDE_IMAGE_IDS}" ]; then
+    exclude_args+=(--exclude-image-ids ${EXCLUDE_IMAGE_IDS})
+fi
+
 echo "[info] eval results: ${EVAL_RESULTS}"
 echo "[info] calibration: ${CALIBRATION_NPZ}"
 echo "[info] output dir: ${OUTPUT_DIR}"
 echo "[info] image folder: ${IMAGE_FOLDER}"
 echo "[info] num samples: ${NUM_SAMPLES}"
+echo "[info] exclude query probe dir: ${EXCLUDE_QUERY_PROBE_DIR:-none}"
 
 CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.analyze_query_direction_chair_alignment \
     --eval-results "${EVAL_RESULTS}" \
@@ -66,7 +85,8 @@ CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.analyze_que
     --score-span "${SCORE_SPAN}" \
     --span-aggregation "${SPAN_AGGREGATION}" \
     --max-sentences "${NUM_SAMPLES}" \
-    "${match_args[@]}"
+    "${match_args[@]}" \
+    "${exclude_args[@]}"
 
 echo "[summary] mention-level AUROC"
 if [ -f "${OUTPUT_DIR}/query_direction_chair_auc.csv" ]; then
@@ -77,4 +97,3 @@ echo "[summary] sample-level AUROC"
 if [ -f "${OUTPUT_DIR}/query_direction_chair_sample_auc.csv" ]; then
     column -s, -t "${OUTPUT_DIR}/query_direction_chair_sample_auc.csv" | head -30
 fi
-
