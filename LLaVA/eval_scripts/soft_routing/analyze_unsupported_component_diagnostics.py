@@ -78,6 +78,21 @@ def summarize_layer_calls(rows):
             "mean_selected_n": mean(row.get("selected_n", 0) for row in group_rows),
             "mean_active_n": mean(row.get("active_n", 0) for row in group_rows),
             "mean_score_high": mean(row.get("score_high", 0) for row in candidate_rows),
+            "mean_base_gamma": mean(row.get("base_gamma", 0) for row in candidate_rows),
+            "mean_effective_gamma": mean(row.get("gamma", 0) for row in candidate_rows),
+            "mean_query_gate_value": mean(row.get("query_gate_value", 0) for row in candidate_rows),
+            "p50_query_gate_value": percentile(
+                [row.get("query_gate_value", 0) for row in candidate_rows],
+                50,
+            ),
+            "p90_query_gate_value": percentile(
+                [row.get("query_gate_value", 0) for row in candidate_rows],
+                90,
+            ),
+            "query_gate_ready_rate": mean(
+                1.0 if row.get("query_gate_ready") else 0.0
+                for row in candidate_rows
+            ),
             "mean_strength": mean(row.get("mean_strength", 0) for row in active_rows),
             "mean_relative_head_output_delta": mean(
                 row.get("mean_relative_head_output_delta", 0) for row in active_rows
@@ -108,6 +123,8 @@ def summarize_selected_heads(rows):
             "active_rate": len(active) / max(len(items), 1),
             "mean_score": mean(row.get("score", 0) for row in items),
             "mean_normalized_score": mean(row.get("normalized_score", 0) for row in items),
+            "mean_query_gate_value": mean(row.get("query_gate_value", 0) for row in items),
+            "mean_effective_gamma": mean(row.get("gamma", 0) for row in items),
             "mean_strength": mean(row.get("strength", 0) for row in active),
             "mean_delta_norm": mean(row.get("delta_norm", 0) for row in active),
             "mean_relative_head_output_delta": mean(row.get("relative_head_output_delta", 0) for row in active),
@@ -161,6 +178,8 @@ def summarize_steps(layer_rows):
             "candidate_layer_rate": len(candidate_calls) / max(len(items), 1),
             "active_layer_rate": len(active_calls) / max(len(items), 1),
             "total_active_heads": sum(int(safe_float(row.get("active_n"))) for row in active_calls),
+            "mean_query_gate_value": mean(row.get("query_gate_value", 0) for row in candidate_calls),
+            "mean_effective_gamma": mean(row.get("gamma", 0) for row in candidate_calls),
             "mean_relative_head_output_delta": mean(
                 row.get("mean_relative_head_output_delta", 0) for row in active_calls
             ),
@@ -183,6 +202,16 @@ def summarize_step_coverage(step_rows):
             "mean_candidate_layer_rate": mean(row.get("candidate_layer_rate", 0) for row in rows),
             "mean_active_layer_rate": mean(row.get("active_layer_rate", 0) for row in rows),
             "mean_total_active_heads": mean(row.get("total_active_heads", 0) for row in rows),
+            "mean_query_gate_value": mean(row.get("mean_query_gate_value", 0) for row in rows),
+            "p50_query_gate_value": percentile(
+                [row.get("mean_query_gate_value", 0) for row in rows],
+                50,
+            ),
+            "p90_query_gate_value": percentile(
+                [row.get("mean_query_gate_value", 0) for row in rows],
+                90,
+            ),
+            "mean_effective_gamma": mean(row.get("mean_effective_gamma", 0) for row in rows),
             "mean_relative_head_output_delta": mean(
                 row.get("mean_relative_head_output_delta", 0) for row in active_steps
             ),
