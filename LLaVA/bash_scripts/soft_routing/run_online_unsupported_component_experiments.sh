@@ -40,6 +40,7 @@ UNSUPPORTED_COMPONENT_HEAD_PATH="${UNSUPPORTED_COMPONENT_HEAD_PATH:-}"
 UNSUPPORTED_COMPONENT_HEAD_TOP_K="${UNSUPPORTED_COMPONENT_HEAD_TOP_K:-${TOP_POOL_K}}"
 RECORD_UNSUPPORTED_COMPONENT_DIAGNOSTICS="${RECORD_UNSUPPORTED_COMPONENT_DIAGNOSTICS:-0}"
 RECORD_UNSUPPORTED_COMPONENT_CANDIDATES="${RECORD_UNSUPPORTED_COMPONENT_CANDIDATES:-0}"
+RECORD_TOKEN_SCORE_DIAGNOSTICS="${RECORD_TOKEN_SCORE_DIAGNOSTICS:-0}"
 UNSUPPORTED_COMPONENT_DIAGNOSTICS_MAX_RECORDS="${UNSUPPORTED_COMPONENT_DIAGNOSTICS_MAX_RECORDS:-0}"
 
 BASE_RESULT_PATH="${BASE_RESULT_PATH:-./results/${DATASET}/soft_routing_smoke_n${NUM_SAMPLES}_seed${SEED}_tau${ADHH_THRESHOLD}_T${SOFT_TEMPERATURE}}"
@@ -93,6 +94,7 @@ echo "[info] sink offsets: ${UNSUPPORTED_COMPONENT_SINK_OFFSETS:-dynamic}"
 echo "[info] all heads: ${UNSUPPORTED_COMPONENT_ALL_HEADS}"
 echo "[info] record unsupported diagnostics: ${RECORD_UNSUPPORTED_COMPONENT_DIAGNOSTICS}"
 echo "[info] record unsupported candidates: ${RECORD_UNSUPPORTED_COMPONENT_CANDIDATES}"
+echo "[info] record token score diagnostics: ${RECORD_TOKEN_SCORE_DIAGNOSTICS}"
 
 if [ -z "${UNSUPPORTED_COMPONENT_HEAD_PATH}" ] && { [ "${FORCE}" = "1" ] || [ ! -f "${POOL_PATH}" ]; }; then
     python -m eval_scripts.soft_routing.build_contrastive_candidate_pool \
@@ -121,6 +123,9 @@ if [ "${RECORD_UNSUPPORTED_COMPONENT_DIAGNOSTICS}" = "1" ]; then
     )
     if [ "${RECORD_UNSUPPORTED_COMPONENT_CANDIDATES}" = "1" ]; then
         diagnostic_args+=(--record_unsupported_component_candidates)
+    fi
+    if [ "${RECORD_TOKEN_SCORE_DIAGNOSTICS}" = "1" ]; then
+        diagnostic_args+=(--record_token_score_diagnostics)
     fi
 fi
 

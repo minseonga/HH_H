@@ -371,6 +371,7 @@ def eval_model(args):
                 max_new_tokens=args.max_new_tokens,
                 use_cache=True,
                 output_attentions=True,
+                output_scores=args.record_token_score_diagnostics,
                 return_dict_in_generate=True)
 
         output_ids = output_dict['sequences']
@@ -388,6 +389,42 @@ def eval_model(args):
         ans_file.flush()
 
         if unsupported_diag_file is not None:
+            if args.record_token_score_diagnostics:
+                score_tensors = output_dict.get("scores", None)
+                if score_tensors is not None:
+                    for token_pos, score_tensor in enumerate(score_tensors):
+                        score = score_tensor[0].detach().float()
+                        probs = torch.softmax(score, dim=-1)
+                        log_probs = torch.log_softmax(score, dim=-1)
+                        entropy = -(probs * log_probs).sum()
+                        top_vals, top_ids = torch.topk(score, k=min(5, score.shape[-1]), largest=True)
+                        top_ids_list = [int(item) for item in top_ids.detach().cpu().tolist()]
+                        top_vals_list = [float(item) for item in top_vals.detach().float().cpu().tolist()]
+                        token_record = {
+                            "record_type": "token_score",
+                            "phase": "decode",
+                            "question_id": question_id,
+                            "image": image_file,
+                            "token_pos": int(token_pos),
+                            "step_index": int(token_pos),
+                            "logit_entropy": float(entropy.detach().float().cpu().item()),
+                            "top1_top2_margin": (
+                                float(top_vals_list[0] - top_vals_list[1])
+                                if len(top_vals_list) >= 2 else None
+                            ),
+                            "negative_top1_top2_margin": (
+                                float(top_vals_list[1] - top_vals_list[0])
+                                if len(top_vals_list) >= 2 else None
+                            ),
+                            "top1_logit": top_vals_list[0] if top_vals_list else None,
+                            "top2_logit": top_vals_list[1] if len(top_vals_list) >= 2 else None,
+                            "top1_token_id": top_ids_list[0] if top_ids_list else None,
+                            "top1_token": tokenizer.decode([top_ids_list[0]]) if top_ids_list else "",
+                            "top5_token_ids": ",".join(str(item) for item in top_ids_list),
+                            "top5_logits": ",".join(f"{item:.6g}" for item in top_vals_list),
+                            "top5_tokens": "|".join(tokenizer.decode([item]).replace("\n", "\\n") for item in top_ids_list),
+                        }
+                        unsupported_diag_file.write(json.dumps(token_record) + "\n")
             for record in getattr(model.config, "unsupported_component_diagnostics", []):
                 record = dict(record)
                 record["question_id"] = question_id
@@ -551,6 +588,7 @@ if __name__ == "__main__":
     parser.add_argument("--unsupported_component_all_heads", action="store_true", default=False)
     parser.add_argument("--record_unsupported_component_diagnostics", action="store_true", default=False)
     parser.add_argument("--record_unsupported_component_candidates", action="store_true", default=False)
+    parser.add_argument("--record_token_score_diagnostics", action="store_true", default=False)
     parser.add_argument("--unsupported_component_diagnostics_file", type=str, default="")
     parser.add_argument("--unsupported_component_diagnostics_max_records", type=int, default=0)
     parser.add_argument("--head_norm_thresholds_path", type=str, default="")

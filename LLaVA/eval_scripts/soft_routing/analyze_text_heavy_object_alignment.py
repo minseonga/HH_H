@@ -6,6 +6,33 @@ import os
 from collections import defaultdict
 
 
+HEAD_SCALAR_FEATURES = [
+    "unsupported_text_value_norm",
+    "unsupported_head_output_ratio",
+    "text_value_norm",
+    "img_mass",
+    "img_entropy_norm",
+    "img_concentration",
+    "semantic_img_mass",
+    "semantic_low_img_mass",
+    "semantic_img_entropy_norm",
+    "semantic_img_concentration",
+    "semantic_img_removed_mass_ratio",
+    "full_entropy_norm",
+    "full_concentration",
+    "recent_text_mass",
+    "recent_text_ratio",
+]
+
+TOKEN_SCORE_FEATURES = [
+    "logit_entropy",
+    "top1_top2_margin",
+    "negative_top1_top2_margin",
+    "top1_logit",
+    "top2_logit",
+]
+
+
 def safe_float(value, default=None):
     try:
         value = float(value)
@@ -252,6 +279,13 @@ def add_head_record(agg, record, threshold):
         agg[f"{key}_n_heads"] += 1 if band == key else 0
         if band == key and is_heavy:
             agg[f"{key}_text_heavy_count"] += 1
+    for feature in HEAD_SCALAR_FEATURES:
+        value = safe_float(record.get(feature))
+        if value is None:
+            continue
+        agg["feature_values"][feature].append(value)
+        if band in ("middle", "late"):
+            agg["midlate_feature_values"][feature].append(value)
 
 
 def empty_step_agg():
@@ -268,6 +302,8 @@ def empty_step_agg():
         "middle_text_heavy_count": 0,
         "late_n_heads": 0,
         "late_text_heavy_count": 0,
+        "feature_values": defaultdict(list),
+        "midlate_feature_values": defaultdict(list),
     }
 
 
@@ -297,6 +333,15 @@ def finalize_step_row(question_id, token_pos, agg):
             if (agg["middle_n_heads"] + agg["late_n_heads"]) else None
         ),
     }
+    for feature in HEAD_SCALAR_FEATURES:
+        values = agg["feature_values"].get(feature, [])
+        midlate_values = agg["midlate_feature_values"].get(feature, [])
+        row[f"{feature}_mean"] = mean(values)
+        row[f"{feature}_max"] = max(values) if values else None
+        row[f"{feature}_p90"] = percentile(values, 90)
+        row[f"midlate_{feature}_mean"] = mean(midlate_values)
+        row[f"midlate_{feature}_max"] = max(midlate_values) if midlate_values else None
+        row[f"midlate_{feature}_p90"] = percentile(midlate_values, 90)
     return row
 
 
@@ -439,6 +484,7 @@ def load_step_rows(diagnostics_jsonl, threshold, phase):
         threshold_info = {"threshold": threshold}
 
     raw = defaultdict(lambda: defaultdict(empty_step_agg))
+    token_scores = defaultdict(dict)
     first_step_by_qid = {}
     for record in iter_jsonl(diagnostics_jsonl):
         if record.get("record_type") != "candidate_head":
@@ -454,6 +500,17 @@ def load_step_rows(diagnostics_jsonl, threshold, phase):
             first_step_by_qid[qid] = step_index
         add_head_record(raw[qid][step_index], record, threshold)
 
+    for record in iter_jsonl(diagnostics_jsonl):
+        if record.get("record_type") != "token_score":
+            continue
+        if phase != "all" and record.get("phase") != phase:
+            continue
+        qid = str(record.get("question_id"))
+        token_pos = safe_int(record.get("token_pos", record.get("step_index")))
+        if not qid or token_pos is None:
+            continue
+        token_scores[qid][token_pos] = record
+
     by_qid = defaultdict(dict)
     flat_rows = []
     for qid, steps in raw.items():
@@ -463,6 +520,12 @@ def load_step_rows(diagnostics_jsonl, threshold, phase):
             row = finalize_step_row(qid, token_pos, agg)
             row["step_index"] = int(step_index)
             row["first_decode_step_index"] = int(first)
+            if token_pos in token_scores.get(qid, {}):
+                token_record = token_scores[qid][token_pos]
+                for feature in TOKEN_SCORE_FEATURES:
+                    row[feature] = safe_float(token_record.get(feature))
+                row["top1_token_id"] = token_record.get("top1_token_id")
+                row["top1_token"] = token_record.get("top1_token", "")
             by_qid[qid][token_pos] = row
             flat_rows.append(row)
     flat_rows.sort(key=lambda item: (str(item["question_id"]), int(item["token_pos"])))
@@ -510,6 +573,37 @@ def main():
         "middle_text_heavy_rate",
         "late_text_heavy_rate",
         "midlate_text_heavy_rate",
+        "unsupported_text_value_norm_max",
+        "unsupported_text_value_norm_p90",
+        "midlate_unsupported_text_value_norm_max",
+        "midlate_unsupported_text_value_norm_p90",
+        "unsupported_head_output_ratio_max",
+        "unsupported_head_output_ratio_p90",
+        "midlate_unsupported_head_output_ratio_max",
+        "midlate_unsupported_head_output_ratio_p90",
+        "semantic_img_mass_mean",
+        "semantic_img_mass_p90",
+        "midlate_semantic_img_mass_mean",
+        "midlate_semantic_img_mass_p90",
+        "semantic_low_img_mass_mean",
+        "midlate_semantic_low_img_mass_mean",
+        "semantic_img_entropy_norm_mean",
+        "semantic_img_entropy_norm_p90",
+        "midlate_semantic_img_entropy_norm_mean",
+        "midlate_semantic_img_entropy_norm_p90",
+        "semantic_img_concentration_mean",
+        "midlate_semantic_img_concentration_mean",
+        "semantic_img_removed_mass_ratio_mean",
+        "midlate_semantic_img_removed_mass_ratio_mean",
+        "img_entropy_norm_mean",
+        "img_entropy_norm_p90",
+        "full_entropy_norm_mean",
+        "full_entropy_norm_p90",
+        "recent_text_ratio_mean",
+        "recent_text_ratio_p90",
+        "logit_entropy",
+        "top1_top2_margin",
+        "negative_top1_top2_margin",
     ]
     mention_rows, align_summary = mention_feature_rows(
         sentences,
