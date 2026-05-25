@@ -1,5 +1,6 @@
 import argparse
 import csv
+import glob
 import json
 import os
 import re
@@ -17,6 +18,10 @@ from eval_scripts.soft_routing.head_prior_utils import (
     headwise_percentile_thresholds,
     load_head_priors,
 )
+
+
+_IMAGE_PATH_CACHE = {}
+_IMAGE_DIR_HINTS = []
 
 
 def load_eval_sentences(path):
@@ -60,6 +65,9 @@ def resolve_image_path(image_file, image_folder, image_split="val2014"):
     image_file = str(image_file or "")
     image_folder = os.path.expanduser(str(image_folder or ""))
     basename = os.path.basename(image_file)
+    cache_key = (image_folder, image_split, basename)
+    if cache_key in _IMAGE_PATH_CACHE:
+        return _IMAGE_PATH_CACHE[cache_key]
     names = []
     if image_file:
         names.extend([image_file, basename])
@@ -72,8 +80,9 @@ def resolve_image_path(image_file, image_folder, image_split="val2014"):
             f"COCO_val2014_{image_id}.jpg",
             f"COCO_train2014_{image_id}.jpg",
         ])
-    dirs = [image_folder]
+    dirs = list(_IMAGE_DIR_HINTS) + [image_folder]
     parent = os.path.dirname(image_folder.rstrip(os.sep))
+    grandparent = os.path.dirname(parent.rstrip(os.sep))
     dirs.extend([
         os.path.join(image_folder, image_split),
         os.path.join(image_folder, "images"),
@@ -82,6 +91,10 @@ def resolve_image_path(image_file, image_folder, image_split="val2014"):
         os.path.join(parent, image_split),
         os.path.join(parent, "images"),
         os.path.join(parent, "images", image_split),
+        grandparent,
+        os.path.join(grandparent, image_split),
+        os.path.join(grandparent, "images"),
+        os.path.join(grandparent, "images", image_split),
     ])
     if os.path.isabs(image_file):
         candidates.append(image_file)
@@ -97,11 +110,38 @@ def resolve_image_path(image_file, image_folder, image_split="val2014"):
             unique.append(candidate)
     for candidate in unique:
         if os.path.exists(candidate):
+            _IMAGE_PATH_CACHE[cache_key] = candidate
             return candidate
+
+    search_names = []
+    for name in names:
+        base = os.path.basename(name)
+        if base and base not in search_names:
+            search_names.append(base)
+    search_roots = []
+    root = image_folder
+    for _ in range(5):
+        if root and os.path.isdir(root) and root not in search_roots:
+            search_roots.append(root)
+        parent_root = os.path.dirname(root.rstrip(os.sep))
+        if not parent_root or parent_root == root:
+            break
+        root = parent_root
+    for root in search_roots:
+        for name in search_names:
+            matches = glob.glob(os.path.join(root, "**", name), recursive=True)
+            if matches:
+                path = matches[0]
+                found_dir = os.path.dirname(path)
+                if found_dir not in _IMAGE_DIR_HINTS:
+                    _IMAGE_DIR_HINTS.insert(0, found_dir)
+                _IMAGE_PATH_CACHE[cache_key] = path
+                return path
     raise FileNotFoundError(
         "Could not resolve image path. "
         f"image_file={image_file!r}, image_folder={image_folder!r}, "
-        f"image_split={image_split!r}, tried={unique[:8]!r}"
+        f"image_split={image_split!r}, tried={unique[:32]!r}, "
+        f"recursive_search_roots={search_roots!r}, search_names={search_names!r}"
     )
 
 
