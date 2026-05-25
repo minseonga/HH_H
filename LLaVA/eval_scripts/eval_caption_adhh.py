@@ -402,6 +402,9 @@ def eval_model(args):
             model.config.unsupported_component_layer_top_k = args.unsupported_component_layer_top_k
             model.config.unsupported_component_gamma = args.unsupported_component_gamma
             model.config.unsupported_component_action = args.unsupported_component_action
+            model.config.unsupported_component_delta_budget = args.unsupported_component_delta_budget
+            model.config.unsupported_component_unsupported_weight = args.unsupported_component_unsupported_weight
+            model.config.unsupported_component_image_weight = args.unsupported_component_image_weight
             model.config.unsupported_component_soft_threshold = args.unsupported_component_soft_threshold
             model.config.unsupported_component_hard_threshold = args.unsupported_component_hard_threshold
             model.config.unsupported_component_risk_feature = args.unsupported_component_risk_feature
@@ -695,10 +698,14 @@ if __name__ == "__main__":
             "boost_image",
             "boost_image_geomean",
             "boost_image_matched",
+            "prefill_balanced_steer",
             "scale_head_output",
             "scale_text_component",
         ],
     )
+    parser.add_argument("--unsupported_component_delta_budget", type=float, default=0.0)
+    parser.add_argument("--unsupported_component_unsupported_weight", type=float, default=1.0)
+    parser.add_argument("--unsupported_component_image_weight", type=float, default=1.0)
     parser.add_argument("--unsupported_component_soft_threshold", type=float, default=0.25)
     parser.add_argument("--unsupported_component_hard_threshold", type=float, default=0.75)
     parser.add_argument(

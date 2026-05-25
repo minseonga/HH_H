@@ -658,6 +658,7 @@ def _apply_unsupported_component_suppression(
         "boost_image",
         "boost_image_matched",
         "boost_image_geomean",
+        "prefill_balanced_steer",
         "scale_head_output",
         "scale_text_component",
     ):
@@ -1190,7 +1191,8 @@ def _apply_unsupported_component_suppression(
             continue
         head = candidate_heads[idx]
         head_output = head_outputs[:, head, -1, :].float()
-        head_output_norm = torch.linalg.vector_norm(head_output, dim=-1).detach().float().mean()
+        head_output_norm_per_batch = torch.linalg.vector_norm(head_output, dim=-1, keepdim=True)
+        head_output_norm = head_output_norm_per_batch.detach().float().mean()
         if action == "boost_image":
             delta_value = img_value[:, idx, :]
         elif action == "boost_image_geomean":
@@ -1198,15 +1200,27 @@ def _apply_unsupported_component_suppression(
             delta_value = img_unit[:, idx, :] * geomean_norm
         elif action == "boost_image_matched":
             delta_value = img_unit[:, idx, :] * unsupported_norm[:, idx, :]
+        elif action == "prefill_balanced_steer":
+            unsupported_weight = float(getattr(config, "unsupported_component_unsupported_weight", 1.0))
+            image_weight = float(getattr(config, "unsupported_component_image_weight", 1.0))
+            image_matched_value = img_unit[:, idx, :] * unsupported_norm[:, idx, :]
+            delta_value = -unsupported_weight * unsupported_value[:, idx, :] + image_weight * image_matched_value
         elif action == "scale_head_output":
             delta_value = -head_output
         elif action == "scale_text_component":
             delta_value = -text_value[:, idx, :]
         else:
             delta_value = -unsupported_value[:, idx, :]
-        delta_norm = (float(strength) * torch.linalg.vector_norm(delta_value, dim=-1)).detach().float().mean()
+        effective_delta = float(strength) * delta_value
+        delta_budget = float(getattr(config, "unsupported_component_delta_budget", 0.0))
+        if delta_budget > 0.0:
+            effective_delta_norm = torch.linalg.vector_norm(effective_delta, dim=-1, keepdim=True)
+            budget_norm = delta_budget * head_output_norm_per_batch
+            cap = torch.clamp(budget_norm / torch.clamp(effective_delta_norm, min=eps), max=1.0)
+            effective_delta = effective_delta * cap
+        delta_norm = torch.linalg.vector_norm(effective_delta, dim=-1).detach().float().mean()
         relative_delta = delta_norm / torch.clamp(head_output_norm, min=eps)
-        projected_output = head_outputs[:, head, -1, :].float() + strength * delta_value
+        projected_output = head_outputs[:, head, -1, :].float() + effective_delta
         head_outputs[:, head, -1, :] = projected_output.to(head_outputs.dtype)
         active_n += 1
         selected_strengths.append(float(strength))
@@ -1226,6 +1240,9 @@ def _apply_unsupported_component_suppression(
                 "mode": mode,
                 "gamma": gamma,
                 "action": action,
+                "delta_budget": float(getattr(config, "unsupported_component_delta_budget", 0.0)),
+                "unsupported_weight": float(getattr(config, "unsupported_component_unsupported_weight", 1.0)),
+                "image_weight": float(getattr(config, "unsupported_component_image_weight", 1.0)),
                 "score": score.detach().float().cpu().item(),
                 "score_low": score_low.detach().float().cpu().item(),
                 "score_high": score_high.detach().float().cpu().item(),
@@ -1317,6 +1334,9 @@ def _apply_unsupported_component_suppression(
         "mode": mode,
         "gamma": gamma,
         "action": action,
+        "delta_budget": float(getattr(config, "unsupported_component_delta_budget", 0.0)),
+        "unsupported_weight": float(getattr(config, "unsupported_component_unsupported_weight", 1.0)),
+        "image_weight": float(getattr(config, "unsupported_component_image_weight", 1.0)),
         "layer_top_k": layer_top_k,
         "score_low": score_low.detach().float().cpu().item(),
         "score_high": score_high.detach().float().cpu().item(),

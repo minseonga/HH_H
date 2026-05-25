@@ -22,6 +22,9 @@ RUN_METHODS="${RUN_METHODS:-online_unsupported_layer_top1_continuous online_unsu
 
 UNSUPPORTED_COMPONENT_GAMMA="${UNSUPPORTED_COMPONENT_GAMMA:-0.5}"
 UNSUPPORTED_COMPONENT_ACTION="${UNSUPPORTED_COMPONENT_ACTION:-suppress_unsupported}"
+UNSUPPORTED_COMPONENT_DELTA_BUDGET="${UNSUPPORTED_COMPONENT_DELTA_BUDGET:-0.0}"
+UNSUPPORTED_COMPONENT_UNSUPPORTED_WEIGHT="${UNSUPPORTED_COMPONENT_UNSUPPORTED_WEIGHT:-1.0}"
+UNSUPPORTED_COMPONENT_IMAGE_WEIGHT="${UNSUPPORTED_COMPONENT_IMAGE_WEIGHT:-1.0}"
 UNSUPPORTED_COMPONENT_RISK_FEATURE="${UNSUPPORTED_COMPONENT_RISK_FEATURE:-unsupported_norm_x_low_anchor}"
 UNSUPPORTED_COMPONENT_SOFT_THRESHOLD="${UNSUPPORTED_COMPONENT_SOFT_THRESHOLD:-0.25}"
 UNSUPPORTED_COMPONENT_HARD_THRESHOLD="${UNSUPPORTED_COMPONENT_HARD_THRESHOLD:-0.75}"
@@ -82,6 +85,8 @@ echo "[info] output dir: ${OUTPUT_DIR}"
 echo "[info] risk feature: ${UNSUPPORTED_COMPONENT_RISK_FEATURE}"
 echo "[info] gamma: ${UNSUPPORTED_COMPONENT_GAMMA}"
 echo "[info] action: ${UNSUPPORTED_COMPONENT_ACTION}"
+echo "[info] delta budget: ${UNSUPPORTED_COMPONENT_DELTA_BUDGET}"
+echo "[info] unsupported/image weights: ${UNSUPPORTED_COMPONENT_UNSUPPORTED_WEIGHT}/${UNSUPPORTED_COMPONENT_IMAGE_WEIGHT}"
 echo "[info] score norm: ${UNSUPPORTED_COMPONENT_SCORE_NORM}"
 echo "[info] score low/high: ${UNSUPPORTED_COMPONENT_SCORE_LOW}/${UNSUPPORTED_COMPONENT_SCORE_HIGH}"
 echo "[info] phase: ${UNSUPPORTED_COMPONENT_PHASE}"
@@ -160,6 +165,9 @@ run_eval() {
         --unsupported_component_layer_top_k "${layer_top_k}" \
         --unsupported_component_gamma "${UNSUPPORTED_COMPONENT_GAMMA}" \
         --unsupported_component_action "${UNSUPPORTED_COMPONENT_ACTION}" \
+        --unsupported_component_delta_budget "${UNSUPPORTED_COMPONENT_DELTA_BUDGET}" \
+        --unsupported_component_unsupported_weight "${UNSUPPORTED_COMPONENT_UNSUPPORTED_WEIGHT}" \
+        --unsupported_component_image_weight "${UNSUPPORTED_COMPONENT_IMAGE_WEIGHT}" \
         --unsupported_component_soft_threshold "${UNSUPPORTED_COMPONENT_SOFT_THRESHOLD}" \
         --unsupported_component_hard_threshold "${UNSUPPORTED_COMPONENT_HARD_THRESHOLD}" \
         --unsupported_component_score_norm "${UNSUPPORTED_COMPONENT_SCORE_NORM}" \
