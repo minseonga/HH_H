@@ -69,6 +69,169 @@ logger = logging.get_logger(__name__)
 _CONFIG_FOR_DOC = "LlamaConfig"
 
 
+def _parse_layer_indices(layer_config, default_layers=None):
+    if layer_config is None or layer_config == "":
+        return list(default_layers or [])
+    if isinstance(layer_config, int):
+        return [int(layer_config)]
+    if isinstance(layer_config, (list, tuple, set)):
+        return [int(layer) for layer in layer_config]
+    layers = []
+    for part in str(layer_config).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, end = part.split("-", 1)
+            start = int(start.strip())
+            end = int(end.strip())
+            step = 1 if end >= start else -1
+            layers.extend(range(start, end + step, step))
+        else:
+            layers.append(int(part))
+    return layers
+
+
+def _maybe_apply_layer_contrastive_logits(config, lm_head, hidden_states, final_logits, phase):
+    if not getattr(config, "layer_contrastive_deactivate", False):
+        return final_logits
+    if hidden_states is None:
+        return final_logits
+
+    phase_mode = getattr(config, "layer_contrastive_phase", "decode")
+    if phase_mode != "all" and phase != phase_mode:
+        return final_logits
+
+    layers = _parse_layer_indices(
+        getattr(config, "layer_contrastive_layers", None),
+        default_layers=[int(getattr(config, "layer_contrastive_layer", 16))],
+    )
+    if not layers:
+        return final_logits
+
+    num_hidden_states = len(hidden_states)
+    valid_layers = []
+    for layer in layers:
+        layer = int(layer)
+        if layer < 0:
+            layer += num_hidden_states
+        if 0 <= layer < num_hidden_states:
+            valid_layers.append(layer)
+    if not valid_layers:
+        return final_logits
+
+    mid_logits = None
+    for layer in valid_layers:
+        layer_logits = lm_head(hidden_states[layer])
+        mid_logits = layer_logits if mid_logits is None else mid_logits + layer_logits
+    mid_logits = mid_logits / float(len(valid_layers))
+
+    final_float = final_logits.float()
+    mid_float = mid_logits.float()
+
+    gate_feature = getattr(config, "layer_contrastive_gate_feature", "js_divergence")
+    eps = float(getattr(config, "layer_contrastive_eps", 1e-8))
+    js_norm = None
+    entropy_norm = None
+    low_margin = None
+
+    if gate_feature in ("js_divergence", "js_x_entropy", "js_x_low_margin"):
+        final_log_probs = torch.log_softmax(final_float, dim=-1)
+        mid_log_probs = torch.log_softmax(mid_float, dim=-1)
+        final_probs = final_log_probs.exp()
+        mid_probs = mid_log_probs.exp()
+        mixture_probs = 0.5 * (final_probs + mid_probs)
+        mixture_log_probs = torch.log(torch.clamp(mixture_probs, min=eps))
+        js = 0.5 * (
+            torch.sum(final_probs * (final_log_probs - mixture_log_probs), dim=-1)
+            + torch.sum(mid_probs * (mid_log_probs - mixture_log_probs), dim=-1)
+        )
+        js_norm = torch.clamp(js / math.log(2.0), min=0.0, max=1.0)
+
+    if gate_feature in ("final_entropy", "js_x_entropy"):
+        final_log_probs_for_entropy = torch.log_softmax(final_float, dim=-1)
+        final_probs_for_entropy = final_log_probs_for_entropy.exp()
+        entropy = -torch.sum(final_probs_for_entropy * final_log_probs_for_entropy, dim=-1)
+        entropy_norm = torch.clamp(entropy / math.log(float(final_float.shape[-1])), min=0.0, max=1.0)
+
+    if gate_feature in ("low_margin", "js_x_low_margin"):
+        top_vals = torch.topk(final_float, k=2, dim=-1).values
+        margin = top_vals[..., 0] - top_vals[..., 1]
+        margin_temperature = max(float(getattr(config, "layer_contrastive_margin_temperature", 1.0)), eps)
+        low_margin = torch.exp(-torch.clamp(margin, min=0.0) / margin_temperature)
+
+    if gate_feature == "constant":
+        gate = torch.ones(final_float.shape[:-1], device=final_float.device, dtype=final_float.dtype)
+    elif gate_feature == "final_entropy":
+        gate = entropy_norm
+    elif gate_feature == "low_margin":
+        gate = low_margin
+    elif gate_feature == "js_x_entropy":
+        gate = torch.sqrt(torch.clamp(js_norm * entropy_norm, min=0.0, max=1.0))
+    elif gate_feature == "js_x_low_margin":
+        gate = torch.sqrt(torch.clamp(js_norm * low_margin, min=0.0, max=1.0))
+    else:
+        gate = js_norm
+
+    gate_power = float(getattr(config, "layer_contrastive_gate_power", 1.0))
+    if gate_power != 1.0:
+        gate = torch.pow(torch.clamp(gate, min=0.0, max=1.0), gate_power)
+    gate = torch.clamp(gate, min=0.0, max=1.0)
+
+    alpha = float(getattr(config, "layer_contrastive_alpha", 0.5))
+    corrected_float = final_float + alpha * gate.unsqueeze(-1) * (mid_float - final_float)
+    corrected_logits = corrected_float.to(dtype=final_logits.dtype)
+
+    records = getattr(config, "layer_contrastive_diagnostics", None)
+    if getattr(config, "record_layer_contrastive_diagnostics", False) and records is not None:
+        call_index = int(getattr(config, "layer_contrastive_call_index", 0))
+        try:
+            config.layer_contrastive_call_index = call_index + 1
+        except Exception:
+            pass
+        max_records = int(getattr(config, "layer_contrastive_diagnostics_max_records", 0))
+        if max_records <= 0 or len(records) < max_records:
+            batch_idx = int(getattr(config, "layer_contrastive_record_batch_index", 0))
+            if 0 <= batch_idx < final_float.shape[0]:
+                pos = final_float.shape[1] - 1
+                final_last = final_float[batch_idx, pos]
+                mid_last = mid_float[batch_idx, pos]
+                corrected_last = corrected_float[batch_idx, pos]
+                final_top = torch.topk(final_last, k=2)
+                mid_top = torch.topk(mid_last, k=2)
+                corrected_top = torch.topk(corrected_last, k=2)
+                record = {
+                    "record_type": "layer_contrastive",
+                    "phase": phase,
+                    "call_index": call_index,
+                    "position": int(pos),
+                    "layers": ",".join(str(layer) for layer in valid_layers),
+                    "alpha": alpha,
+                    "gate_feature": gate_feature,
+                    "gate": float(gate[batch_idx, pos].detach().cpu().item()),
+                    "final_top1_token_id": int(final_top.indices[0].detach().cpu().item()),
+                    "mid_top1_token_id": int(mid_top.indices[0].detach().cpu().item()),
+                    "corrected_top1_token_id": int(corrected_top.indices[0].detach().cpu().item()),
+                    "final_top1_logit": float(final_top.values[0].detach().cpu().item()),
+                    "mid_top1_logit": float(mid_top.values[0].detach().cpu().item()),
+                    "corrected_top1_logit": float(corrected_top.values[0].detach().cpu().item()),
+                    "final_top1_top2_margin": float((final_top.values[0] - final_top.values[1]).detach().cpu().item()),
+                    "mid_top1_top2_margin": float((mid_top.values[0] - mid_top.values[1]).detach().cpu().item()),
+                    "corrected_top1_top2_margin": float((corrected_top.values[0] - corrected_top.values[1]).detach().cpu().item()),
+                    "final_mid_top1_agree": bool(final_top.indices[0].detach().cpu().item() == mid_top.indices[0].detach().cpu().item()),
+                    "final_corrected_top1_agree": bool(final_top.indices[0].detach().cpu().item() == corrected_top.indices[0].detach().cpu().item()),
+                }
+                if js_norm is not None:
+                    record["js_divergence_norm"] = float(js_norm[batch_idx, pos].detach().cpu().item())
+                if entropy_norm is not None:
+                    record["final_entropy_norm"] = float(entropy_norm[batch_idx, pos].detach().cpu().item())
+                if low_margin is not None:
+                    record["low_margin"] = float(low_margin[batch_idx, pos].detach().cpu().item())
+                records.append(record)
+
+    return corrected_logits
+
+
 def _record_query_diagnostics(config, layer_idx, query_states, num_heads):
     if not getattr(config, "record_query_diagnostics", False):
         return
@@ -3281,7 +3444,11 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_attention_statistics=output_attention_statistics,
-            output_hidden_states=output_hidden_states or early_exit_layers is not None,
+            output_hidden_states=(
+                output_hidden_states
+                or early_exit_layers is not None
+                or getattr(self.config, "layer_contrastive_deactivate", False)
+            ),
             return_dict=return_dict,
             labels=labels,
         )
@@ -3317,6 +3484,17 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         else:
             hidden_states = outputs[0]
             logits = self.lm_head(hidden_states)
+            phase = "prefill" if past_key_values is None and hidden_states.shape[1] > 1 else "decode"
+            contrastive_hidden_states = getattr(outputs, "hidden_states", None)
+            if contrastive_hidden_states is None and not return_dict and len(outputs) > 2:
+                contrastive_hidden_states = outputs[2]
+            logits = _maybe_apply_layer_contrastive_logits(
+                self.config,
+                self.lm_head,
+                contrastive_hidden_states,
+                logits,
+                phase,
+            )
 
             loss = None
             if labels is not None:

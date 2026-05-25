@@ -291,6 +291,18 @@ def eval_model(args):
                 with open(args.head_norm_thresholds_path, "r") as f:
                     threshold_data = json.load(f)
                 model.config.head_norm_thresholds = threshold_data.get("head_norm_thresholds", threshold_data)
+        if args.layer_contrastive_deactivate:
+            model.config.layer_contrastive_deactivate = True
+            model.config.layer_contrastive_layers = parse_int_ranges(args.layer_contrastive_layers)
+            if not model.config.layer_contrastive_layers:
+                model.config.layer_contrastive_layers = [args.layer_contrastive_layer]
+            model.config.layer_contrastive_alpha = args.layer_contrastive_alpha
+            model.config.layer_contrastive_gate_feature = args.layer_contrastive_gate_feature
+            model.config.layer_contrastive_gate_power = args.layer_contrastive_gate_power
+            model.config.layer_contrastive_margin_temperature = args.layer_contrastive_margin_temperature
+            model.config.layer_contrastive_phase = args.layer_contrastive_phase
+            model.config.record_layer_contrastive_diagnostics = args.record_layer_contrastive_diagnostics
+            model.config.layer_contrastive_diagnostics_max_records = args.layer_contrastive_diagnostics_max_records
         if args.unsupported_component_deactivate:
             model.config.unsupported_component_deactivate = True
             model.config.unsupported_component_mode = args.unsupported_component_mode
@@ -343,6 +355,20 @@ def eval_model(args):
         unsupported_diag_file = open(unsupported_diag_path, "w")
         print(f"[info] unsupported component diagnostics: {unsupported_diag_path}")
 
+    layer_contrastive_diag_file = None
+    if args.record_layer_contrastive_diagnostics:
+        layer_contrastive_diag_path = args.layer_contrastive_diagnostics_file
+        if not layer_contrastive_diag_path:
+            layer_contrastive_diag_path = os.path.join(
+                os.path.dirname(answers_file),
+                "layer_contrastive_diagnostics.jsonl",
+            )
+        layer_contrastive_diag_dir = os.path.dirname(layer_contrastive_diag_path)
+        if layer_contrastive_diag_dir:
+            os.makedirs(layer_contrastive_diag_dir, exist_ok=True)
+        layer_contrastive_diag_file = open(layer_contrastive_diag_path, "w")
+        print(f"[info] layer contrastive diagnostics: {layer_contrastive_diag_path}")
+
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
         count += 1
@@ -355,6 +381,9 @@ def eval_model(args):
             model.config.unsupported_component_call_index = 0
         if args.unsupported_component_deactivate:
             model.config.unsupported_component_prefill_protect_heads = {}
+        if args.record_layer_contrastive_diagnostics:
+            model.config.layer_contrastive_diagnostics = []
+            model.config.layer_contrastive_call_index = 0
 
         input_ids = input_ids.to(device='cuda', non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True)
@@ -434,8 +463,19 @@ def eval_model(args):
                 unsupported_diag_file.write(json.dumps(record) + "\n")
             unsupported_diag_file.flush()
 
+        if layer_contrastive_diag_file is not None:
+            for record in getattr(model.config, "layer_contrastive_diagnostics", []):
+                record = dict(record)
+                record["question_id"] = question_id
+                record["image"] = image_file
+                record["caption"] = outputs
+                layer_contrastive_diag_file.write(json.dumps(record) + "\n")
+            layer_contrastive_diag_file.flush()
+
     if unsupported_diag_file is not None:
         unsupported_diag_file.close()
+    if layer_contrastive_diag_file is not None:
+        layer_contrastive_diag_file.close()
 
 
 
@@ -467,6 +507,7 @@ if __name__ == "__main__":
     parser.add_argument("--visual_gate_deactivate", action='store_true', default=False)
     parser.add_argument("--wide_gate_deactivate", action='store_true', default=False)
     parser.add_argument("--online_value_selector_deactivate", action='store_true', default=False)
+    parser.add_argument("--layer_contrastive_deactivate", action="store_true", default=False)
     parser.add_argument("--unsupported_component_deactivate", action='store_true', default=False)
     parser.add_argument("--adhh_threshold", type=float, default=0.0)
     parser.add_argument("--attention_head_path", type=str, default="")
@@ -525,6 +566,21 @@ if __name__ == "__main__":
     parser.add_argument("--online_value_selector_norm_high", type=float, default=1.0)
     parser.add_argument("--online_value_selector_norm_source", type=str, default="text_value", choices=["text_value", "head_output"])
     parser.add_argument("--online_value_selector_no_text_trigger", action="store_true", default=False)
+    parser.add_argument("--layer_contrastive_layer", type=int, default=16)
+    parser.add_argument("--layer_contrastive_layers", type=str, default="")
+    parser.add_argument("--layer_contrastive_alpha", type=float, default=0.5)
+    parser.add_argument(
+        "--layer_contrastive_gate_feature",
+        type=str,
+        default="js_divergence",
+        choices=["constant", "js_divergence", "final_entropy", "low_margin", "js_x_entropy", "js_x_low_margin"],
+    )
+    parser.add_argument("--layer_contrastive_gate_power", type=float, default=1.0)
+    parser.add_argument("--layer_contrastive_margin_temperature", type=float, default=1.0)
+    parser.add_argument("--layer_contrastive_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
+    parser.add_argument("--record_layer_contrastive_diagnostics", action="store_true", default=False)
+    parser.add_argument("--layer_contrastive_diagnostics_file", type=str, default="")
+    parser.add_argument("--layer_contrastive_diagnostics_max_records", type=int, default=0)
     parser.add_argument("--unsupported_component_mode", type=str, default="continuous", choices=["hard", "continuous", "hybrid"])
     parser.add_argument("--unsupported_component_layer_top_k", type=int, default=1)
     parser.add_argument("--unsupported_component_gamma", type=float, default=0.5)
@@ -603,6 +659,7 @@ if __name__ == "__main__":
         args.visual_gate_deactivate,
         args.wide_gate_deactivate,
         args.online_value_selector_deactivate,
+        args.layer_contrastive_deactivate,
         args.unsupported_component_deactivate,
     ]) > 1:
         raise ValueError("Only one intervention mode can be enabled")
