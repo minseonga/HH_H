@@ -504,6 +504,15 @@ def eval_model(args):
                 model.config.unsupported_component_query_gate_thresholds = {}
 
     if args.query_direction_project:
+        if model_path == 'liuhaotian/llava-v1.5-7b':
+            model.config.img_start_pos = 35
+            model.config.img_length = 576
+        elif model_path == 'liuhaotian/llava-v1.5-13b':
+            model.config.img_start_pos = 35
+            model.config.img_length = 576
+        elif model_path == 'liuhaotian/llava-v1.6-34b':
+            model.config.img_start_pos = 33
+            model.config.img_length = 1948
         if not args.query_direction_calibration:
             raise ValueError("--query_direction_calibration is required with --query_direction_project")
         if not os.path.exists(args.query_direction_calibration):
@@ -526,6 +535,13 @@ def eval_model(args):
         model.config.query_direction_temperature = args.query_direction_temperature
         model.config.query_direction_positive_only = not args.query_direction_allow_negative
         model.config.query_direction_phase = args.query_direction_phase
+        model.config.query_direction_prefill_positions = args.query_direction_prefill_positions
+        model.config.query_direction_sample_gate_mode = args.query_direction_sample_gate_mode
+        model.config.query_direction_sample_gate_positions = args.query_direction_sample_gate_positions
+        model.config.query_direction_sample_gate_scale = args.query_direction_sample_gate_scale
+        model.config.query_direction_sample_gate_min = args.query_direction_sample_gate_min
+        model.config.query_direction_sample_gate_max = args.query_direction_sample_gate_max
+        model.config.query_direction_sample_gate_state = {}
         model.config.record_query_projection_diagnostics = args.record_query_projection_diagnostics
         model.config.query_projection_diagnostics = []
         print(
@@ -535,7 +551,8 @@ def eval_model(args):
         print(
             f"[info] query projection: strength={args.query_direction_strength} "
             f"phase={args.query_direction_phase} gate={args.query_direction_gate_mode} "
-            f"positive_only={not args.query_direction_allow_negative}"
+            f"positive_only={not args.query_direction_allow_negative} "
+            f"sample_gate={args.query_direction_sample_gate_mode}"
         )
         for row in direction_rows[:10]:
             print(
@@ -607,6 +624,8 @@ def eval_model(args):
             model.config.layer_contrastive_forward_index = 0
         if args.record_query_projection_diagnostics:
             model.config.query_projection_diagnostics = []
+        if args.query_direction_project:
+            model.config.query_direction_sample_gate_state = {}
 
         input_ids = input_ids.to(device='cuda', non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True)
@@ -837,6 +856,17 @@ if __name__ == "__main__":
     parser.add_argument("--query_direction_temperature", type=float, default=0.05)
     parser.add_argument("--query_direction_allow_negative", action="store_true", default=False)
     parser.add_argument("--query_direction_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
+    parser.add_argument("--query_direction_prefill_positions", type=str, default="last", choices=["last", "all", "image", "text"])
+    parser.add_argument(
+        "--query_direction_sample_gate_mode",
+        type=str,
+        default="off",
+        choices=["off", "prefill_max_score", "prefill_mean_score", "prefill_max_margin", "prefill_mean_margin"],
+    )
+    parser.add_argument("--query_direction_sample_gate_positions", type=str, default="image", choices=["last", "all", "image", "text"])
+    parser.add_argument("--query_direction_sample_gate_scale", type=float, default=0.1)
+    parser.add_argument("--query_direction_sample_gate_min", type=float, default=0.0)
+    parser.add_argument("--query_direction_sample_gate_max", type=float, default=1.0)
     parser.add_argument("--record_query_projection_diagnostics", action="store_true", default=False)
     parser.add_argument("--query_projection_diagnostics_file", type=str, default="")
     parser.add_argument("--unsupported_component_mode", type=str, default="continuous", choices=["hard", "continuous", "hybrid"])

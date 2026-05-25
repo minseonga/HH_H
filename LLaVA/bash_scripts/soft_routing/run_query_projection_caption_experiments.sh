@@ -31,6 +31,12 @@ QUERY_DIRECTION_MIN_AUROC="${QUERY_DIRECTION_MIN_AUROC:-0.0}"
 QUERY_DIRECTION_GATE_MODE="${QUERY_DIRECTION_GATE_MODE:-none}"
 QUERY_DIRECTION_TEMPERATURE="${QUERY_DIRECTION_TEMPERATURE:-0.05}"
 QUERY_DIRECTION_ALLOW_NEGATIVE="${QUERY_DIRECTION_ALLOW_NEGATIVE:-0}"
+QUERY_DIRECTION_PREFILL_POSITIONS="${QUERY_DIRECTION_PREFILL_POSITIONS:-last}"
+QUERY_DIRECTION_SAMPLE_GATE_MODES="${QUERY_DIRECTION_SAMPLE_GATE_MODES:-off}"
+QUERY_DIRECTION_SAMPLE_GATE_POSITIONS="${QUERY_DIRECTION_SAMPLE_GATE_POSITIONS:-image}"
+QUERY_DIRECTION_SAMPLE_GATE_SCALE="${QUERY_DIRECTION_SAMPLE_GATE_SCALE:-0.1}"
+QUERY_DIRECTION_SAMPLE_GATE_MIN="${QUERY_DIRECTION_SAMPLE_GATE_MIN:-0.0}"
+QUERY_DIRECTION_SAMPLE_GATE_MAX="${QUERY_DIRECTION_SAMPLE_GATE_MAX:-1.0}"
 RECORD_QUERY_PROJECTION_DIAGNOSTICS="${RECORD_QUERY_PROJECTION_DIAGNOSTICS:-1}"
 
 mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
@@ -46,6 +52,7 @@ echo "[info] top ks: ${QUERY_DIRECTION_TOP_KS}"
 echo "[info] phases: ${QUERY_DIRECTION_PHASES}"
 echo "[info] strengths: ${QUERY_DIRECTION_STRENGTHS}"
 echo "[info] gate mode: ${QUERY_DIRECTION_GATE_MODE}"
+echo "[info] sample gate modes: ${QUERY_DIRECTION_SAMPLE_GATE_MODES}"
 echo "[info] image folder: ${IMAGE_FOLDER}"
 echo "[info] num samples: ${NUM_SAMPLES}"
 
@@ -63,9 +70,14 @@ run_projection() {
     local phase="$1"
     local top_k="$2"
     local strength="$3"
+    local sample_gate_mode="$4"
     local strength_tag
     strength_tag="$(printf "%s" "${strength}" | tr "." "p")"
-    local tag="qproj_${phase}_top${top_k}_s${strength_tag}"
+    local gate_tag="${sample_gate_mode}"
+    if [ "${sample_gate_mode}" = "off" ]; then
+        gate_tag="token"
+    fi
+    local tag="qproj_${gate_tag}_${phase}_top${top_k}_s${strength_tag}"
     local result_dir="${OUTPUT_DIR}/${tag}"
     local answers_file="${result_dir}/captions.jsonl"
     local eval_file="${result_dir}/captions_eval_results.json"
@@ -96,6 +108,12 @@ run_projection() {
         --query_direction_gate_mode "${QUERY_DIRECTION_GATE_MODE}" \
         --query_direction_temperature "${QUERY_DIRECTION_TEMPERATURE}" \
         --query_direction_phase "${phase}" \
+        --query_direction_prefill_positions "${QUERY_DIRECTION_PREFILL_POSITIONS}" \
+        --query_direction_sample_gate_mode "${sample_gate_mode}" \
+        --query_direction_sample_gate_positions "${QUERY_DIRECTION_SAMPLE_GATE_POSITIONS}" \
+        --query_direction_sample_gate_scale "${QUERY_DIRECTION_SAMPLE_GATE_SCALE}" \
+        --query_direction_sample_gate_min "${QUERY_DIRECTION_SAMPLE_GATE_MIN}" \
+        --query_direction_sample_gate_max "${QUERY_DIRECTION_SAMPLE_GATE_MAX}" \
         "${allow_negative_args[@]}" \
         "${diagnostic_args[@]}" \
         2>&1 | tee "${LOG_DIR}/${tag}.log"
@@ -109,7 +127,9 @@ run_projection() {
 for phase in ${QUERY_DIRECTION_PHASES}; do
     for top_k in ${QUERY_DIRECTION_TOP_KS}; do
         for strength in ${QUERY_DIRECTION_STRENGTHS}; do
-            run_projection "${phase}" "${top_k}" "${strength}"
+            for sample_gate_mode in ${QUERY_DIRECTION_SAMPLE_GATE_MODES}; do
+                run_projection "${phase}" "${top_k}" "${strength}" "${sample_gate_mode}"
+            done
         done
     done
 done
@@ -162,4 +182,3 @@ echo "[summary] query projection caption metrics"
 if [ -f "${OUTPUT_DIR}/query_projection_caption_summary.csv" ]; then
     column -s, -t "${OUTPUT_DIR}/query_projection_caption_summary.csv"
 fi
-

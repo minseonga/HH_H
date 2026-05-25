@@ -373,9 +373,11 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
     q_len = int(query_states.shape[2])
     phase = "decode" if q_len == 1 else "prefill"
     projection_phase = getattr(config, "query_direction_phase", "all")
-    if projection_phase == "decode" and phase != "decode":
-        return query_states
-    if projection_phase == "prefill" and phase != "prefill":
+    sample_gate_mode = getattr(config, "query_direction_sample_gate_mode", "off")
+    sample_gate_state = getattr(config, "query_direction_sample_gate_state", None)
+    update_sample_gate = phase == "prefill" and sample_gate_mode != "off" and sample_gate_state is not None
+    apply_projection = projection_phase == "all" or projection_phase == phase
+    if not update_sample_gate and not apply_projection:
         return query_states
     strength = float(getattr(config, "query_direction_strength", 0.0))
     if abs(strength) <= 0.0:
@@ -389,6 +391,33 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
     records = getattr(config, "query_projection_diagnostics", None)
     record_diagnostics = bool(getattr(config, "record_query_projection_diagnostics", False) and records is not None)
     eps = float(getattr(config, "query_direction_eps", 1e-6))
+    sample_gate_scale = max(float(getattr(config, "query_direction_sample_gate_scale", 0.1)), eps)
+    sample_gate_min = float(getattr(config, "query_direction_sample_gate_min", 0.0))
+    sample_gate_max = float(getattr(config, "query_direction_sample_gate_max", 1.0))
+    sample_gate_positions = getattr(config, "query_direction_sample_gate_positions", "image")
+    prefill_positions = getattr(config, "query_direction_prefill_positions", "last")
+
+    def _position_indices(position_mode):
+        if phase == "decode" or q_len <= 1 or position_mode == "last":
+            return torch.tensor([q_len - 1], device=query_states.device, dtype=torch.long)
+        if position_mode == "image":
+            img_start = int(getattr(config, "img_start_pos", 0))
+            img_length = int(getattr(config, "img_length", 0))
+            start = max(0, min(img_start, q_len - 1))
+            end = max(start + 1, min(img_start + img_length, q_len))
+            if img_length > 0 and start < end:
+                return torch.arange(start, end, device=query_states.device, dtype=torch.long)
+        if position_mode == "text":
+            img_start = int(getattr(config, "img_start_pos", 0))
+            img_length = int(getattr(config, "img_length", 0))
+            img_end = img_start + img_length
+            idx = [
+                pos for pos in range(q_len)
+                if not (img_length > 0 and img_start <= pos < img_end)
+            ]
+            if idx:
+                return torch.tensor(idx, device=query_states.device, dtype=torch.long)
+        return torch.arange(0, q_len, device=query_states.device, dtype=torch.long)
 
     for head in range(num_heads):
         key = f"{layer}:{head}"
@@ -400,11 +429,47 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
         direction = direction.to(device=query_states.device, dtype=query_states.dtype)
         direction = direction / torch.clamp(torch.linalg.vector_norm(direction), min=eps)
 
-        q = query_states[:, head, -1, :]
+        threshold = float(thresholds.get(key, 0.0))
+
+        if update_sample_gate:
+            gate_positions = _position_indices(sample_gate_positions)
+            q_gate = query_states[:, head, gate_positions, :]
+            q_gate_norm = q_gate / torch.clamp(torch.linalg.vector_norm(q_gate, dim=-1, keepdim=True), min=eps)
+            gate_scores = torch.sum(q_gate_norm * direction, dim=-1)
+            if sample_gate_mode.endswith("_margin"):
+                gate_scores = gate_scores - threshold
+            if "max" in sample_gate_mode:
+                gate_value = torch.clamp(gate_scores, min=0.0).amax()
+            elif "mean" in sample_gate_mode:
+                gate_value = torch.clamp(gate_scores, min=0.0).mean()
+            else:
+                gate_value = torch.clamp(gate_scores, min=0.0).amax()
+            previous = float(sample_gate_state.get(key, 0.0))
+            sample_gate_state[key] = max(previous, float(gate_value.detach().float().cpu().item()))
+            if record_diagnostics:
+                records.append({
+                    "kind": "query_projection_sample_gate",
+                    "phase": phase,
+                    "q_len": q_len,
+                    "layer": layer,
+                    "head": head,
+                    "head_key": key,
+                    "sample_gate_mode": sample_gate_mode,
+                    "sample_gate_positions": sample_gate_positions,
+                    "sample_gate_n_positions": int(gate_positions.numel()),
+                    "sample_gate_value": float(gate_value.detach().float().cpu().item()),
+                    "sample_gate_state": float(sample_gate_state[key]),
+                    "threshold": threshold,
+                })
+
+        if not apply_projection:
+            continue
+
+        positions = _position_indices(prefill_positions if phase == "prefill" else "last")
+        q = query_states[:, head, positions, :]
         raw_coeff = torch.sum(q * direction, dim=-1, keepdim=True)
         q_norm = q / torch.clamp(torch.linalg.vector_norm(q, dim=-1, keepdim=True), min=eps)
         norm_score = torch.sum(q_norm * direction, dim=-1, keepdim=True)
-        threshold = float(thresholds.get(key, 0.0))
 
         if gate_mode == "none":
             gate = torch.ones_like(raw_coeff)
@@ -420,7 +485,13 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
         if positive_only:
             coeff = torch.clamp(coeff, min=0.0)
         active_projection = (torch.abs(gate * coeff) > eps).to(query_states.dtype)
-        projected_q = q - strength * gate * coeff * direction
+        sample_gate_raw = float(sample_gate_state.get(key, 0.0)) if sample_gate_state is not None else 0.0
+        sample_gate = 1.0
+        if sample_gate_mode != "off":
+            sample_gate = (sample_gate_raw / sample_gate_scale)
+            sample_gate = min(max(sample_gate, sample_gate_min), sample_gate_max)
+        effective_strength = strength * sample_gate
+        projected_q = q - effective_strength * gate * coeff * direction
         if record_diagnostics:
             projected_raw_coeff = torch.sum(projected_q * direction, dim=-1, keepdim=True)
             projected_q_norm = projected_q / torch.clamp(torch.linalg.vector_norm(projected_q, dim=-1, keepdim=True), min=eps)
@@ -436,24 +507,30 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
                 "head": head,
                 "head_key": key,
                 "strength": strength,
+                "effective_strength": effective_strength,
                 "gate_mode": gate_mode,
-                "gate": gate.detach().float().cpu().item(),
+                "prefill_positions": prefill_positions if phase == "prefill" else "last",
+                "n_positions": int(positions.numel()),
+                "sample_gate_mode": sample_gate_mode,
+                "sample_gate_raw": sample_gate_raw,
+                "sample_gate": sample_gate,
+                "gate": gate.detach().float().mean().cpu().item(),
                 "positive_only": float(positive_only),
-                "positive_coeff": positive_coeff.detach().float().cpu().item(),
-                "effective_coeff": coeff.detach().float().cpu().item(),
-                "active_projection": active_projection.detach().float().cpu().item(),
+                "positive_coeff": positive_coeff.detach().float().mean().cpu().item(),
+                "effective_coeff": coeff.detach().float().mean().cpu().item(),
+                "active_projection": active_projection.detach().float().mean().cpu().item(),
                 "threshold": threshold,
-                "raw_score_before": raw_coeff.detach().float().cpu().item(),
-                "raw_score_after": projected_raw_coeff.detach().float().cpu().item(),
-                "raw_score_delta": (raw_coeff - projected_raw_coeff).detach().float().cpu().item(),
-                "normalized_score_before": norm_score.detach().float().cpu().item(),
-                "normalized_score_after": projected_norm_score.detach().float().cpu().item(),
-                "normalized_score_delta": (norm_score - projected_norm_score).detach().float().cpu().item(),
-                "q_delta_norm": q_delta_norm.detach().float().cpu().item(),
-                "q_norm": q_norm_value.detach().float().cpu().item(),
-                "relative_q_delta": (q_delta_norm / torch.clamp(q_norm_value, min=eps)).detach().float().cpu().item(),
+                "raw_score_before": raw_coeff.detach().float().mean().cpu().item(),
+                "raw_score_after": projected_raw_coeff.detach().float().mean().cpu().item(),
+                "raw_score_delta": (raw_coeff - projected_raw_coeff).detach().float().mean().cpu().item(),
+                "normalized_score_before": norm_score.detach().float().mean().cpu().item(),
+                "normalized_score_after": projected_norm_score.detach().float().mean().cpu().item(),
+                "normalized_score_delta": (norm_score - projected_norm_score).detach().float().mean().cpu().item(),
+                "q_delta_norm": q_delta_norm.detach().float().mean().cpu().item(),
+                "q_norm": q_norm_value.detach().float().mean().cpu().item(),
+                "relative_q_delta": (q_delta_norm / torch.clamp(q_norm_value, min=eps)).detach().float().mean().cpu().item(),
             })
-        query_states[:, head, -1, :] = projected_q
+        query_states[:, head, positions, :] = projected_q
     return query_states
 
 
