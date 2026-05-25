@@ -22,6 +22,15 @@ DEFAULT_FEATURES = [
     "img_entropy_norm",
     "img_concentration",
     "img_top1_offset",
+    "semantic_img_mass",
+    "semantic_low_img_mass",
+    "semantic_img_removed_mass",
+    "semantic_img_removed_mass_ratio",
+    "semantic_img_max_attention",
+    "semantic_img_top1_ratio",
+    "semantic_img_entropy_norm",
+    "semantic_img_concentration",
+    "semantic_img_top1_offset",
     "full_max_attention",
     "full_entropy_norm",
     "full_concentration",
@@ -353,32 +362,38 @@ def summarize_bimodality(rows, group_keys, features):
 
 
 def summarize_image_sink_offsets(rows):
+    offset_features = ["img_top1_offset", "semantic_img_top1_offset"]
     groups = defaultdict(lambda: defaultdict(int))
     totals = defaultdict(int)
     for row in rows:
-        value = row.get("img_top1_offset")
-        if value is None:
-            continue
-        offset = int(round(value))
-        for group_keys in (("record_type", "phase"), ("record_type", "phase", "layer")):
-            group = tuple(row.get(key, "") for key in group_keys)
-            groups[(group_keys, group)][offset] += 1
-            totals[(group_keys, group)] += 1
+        for feature in offset_features:
+            value = row.get(feature)
+            if value is None:
+                continue
+            offset = int(round(value))
+            for group_keys in (("record_type", "phase"), ("record_type", "phase", "layer")):
+                group = tuple(row.get(key, "") for key in group_keys)
+                groups[(feature, group_keys, group)][offset] += 1
+                totals[(feature, group_keys, group)] += 1
     output = []
-    for (group_keys, group), counts in groups.items():
-        total = totals[(group_keys, group)]
+    for (feature, group_keys, group), counts in groups.items():
+        total = totals[(feature, group_keys, group)]
         ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
         for rank, (offset, count) in enumerate(ranked[:20], start=1):
             item = {group_key: group[idx] for idx, group_key in enumerate(group_keys)}
             item.update({
+                "feature": feature,
                 "rank": rank,
-                "img_top1_offset": offset,
+                "top1_offset": offset,
                 "n": count,
                 "rate": count / max(total, 1),
                 "total": total,
             })
             output.append(item)
-    output.sort(key=lambda row: tuple(str(row.get(key, "")) for key in ("record_type", "phase", "layer")) + (row["rank"],))
+    output.sort(
+        key=lambda row: tuple(str(row.get(key, "")) for key in ("record_type", "phase", "layer", "feature"))
+        + (row["rank"],)
+    )
     return output
 
 

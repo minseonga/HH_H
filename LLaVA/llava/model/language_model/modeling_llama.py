@@ -507,6 +507,53 @@ def _apply_unsupported_component_suppression(
     full_top1_is_prefix = (full_top1_index < img_start).float()
     text_top1_ratio = text_max_attention / torch.clamp(text_mass, min=eps)
     img_top1_ratio = img_max_attention / torch.clamp(img_mass, min=eps)
+    sink_offsets_config = getattr(config, "unsupported_component_sink_offsets", None)
+    if sink_offsets_config is None:
+        sink_offsets_config = []
+    sink_top_k = int(getattr(config, "unsupported_component_sink_top_k", 0))
+    img_len = int(img_attention_float.shape[-1])
+    static_sink_offsets = [
+        int(offset) for offset in sink_offsets_config
+        if 0 <= int(offset) < img_len
+    ]
+    if static_sink_offsets:
+        sink_index = torch.tensor(sorted(set(static_sink_offsets)), device=device, dtype=torch.long)
+    elif sink_top_k > 0:
+        sink_top_k = min(max(sink_top_k, 0), img_len)
+        sink_scores = torch.mean(img_attention_float, dim=(0, 1))
+        _, sink_index = torch.topk(sink_scores, k=sink_top_k, largest=True)
+    else:
+        sink_index = torch.empty((0,), device=device, dtype=torch.long)
+    if int(sink_index.numel()) > 0:
+        sink_index_sorted, _ = torch.sort(sink_index)
+        sink_mask = torch.ones((img_len,), device=device, dtype=torch.bool)
+        sink_mask[sink_index_sorted] = False
+        semantic_img_attention_float = img_attention_float.masked_fill(~sink_mask.view(1, 1, -1), 0.0)
+        semantic_img_removed_mass = torch.sum(
+            torch.index_select(img_attention_float, dim=-1, index=sink_index_sorted),
+            dim=-1,
+            keepdim=True,
+        )
+    else:
+        sink_index_sorted = sink_index
+        semantic_img_attention_float = img_attention_float
+        semantic_img_removed_mass = torch.zeros_like(img_mass)
+    semantic_img_mass = torch.sum(semantic_img_attention_float, dim=-1, keepdim=True).float()
+    semantic_low_img_mass = 1.0 - torch.clamp(semantic_img_mass, min=0.0, max=1.0)
+    semantic_img_max_attention = torch.max(semantic_img_attention_float, dim=-1, keepdim=True).values
+    semantic_img_top1_offset = torch.argmax(semantic_img_attention_float, dim=-1, keepdim=True)
+    semantic_img_top1_ratio = semantic_img_max_attention / torch.clamp(semantic_img_mass, min=eps)
+    semantic_img_prob = semantic_img_attention_float / torch.clamp(semantic_img_mass, min=eps)
+    semantic_img_entropy = -torch.sum(
+        semantic_img_prob * torch.log(torch.clamp(semantic_img_prob, min=eps)),
+        dim=-1,
+        keepdim=True,
+    )
+    semantic_img_entropy_den = math.log(max(img_len - int(sink_index_sorted.numel()), 2))
+    semantic_img_entropy_norm = semantic_img_entropy / max(semantic_img_entropy_den, eps)
+    semantic_img_concentration = 1.0 - torch.clamp(semantic_img_entropy_norm, min=0.0, max=1.0)
+    semantic_img_removed_mass_ratio = semantic_img_removed_mass / torch.clamp(img_mass, min=eps)
+    sink_offsets_text = ",".join(str(int(offset)) for offset in sink_index_sorted.detach().cpu().tolist())
     text_prob = text_attention_float / torch.clamp(text_mass, min=eps)
     img_prob = img_attention_float / torch.clamp(img_mass, min=eps)
     full_prob = full_attention_float / torch.clamp(torch.sum(full_attention_float, dim=-1, keepdim=True), min=eps)
@@ -691,6 +738,10 @@ def _apply_unsupported_component_suppression(
         risk = text_mass_x_object_logit_disagreement
     elif risk_feature == "low_img_mass":
         risk = low_img_mass
+    elif risk_feature == "semantic_low_img_mass":
+        risk = semantic_low_img_mass
+    elif risk_feature == "semantic_img_mass":
+        risk = semantic_img_mass
     elif risk_feature == "unsupported_norm_x_low_visual":
         risk = unsupported_norm * low_visual
     elif risk_feature == "unsupported_norm_x_low_anchor_x_low_visual":
@@ -786,6 +837,17 @@ def _apply_unsupported_component_suppression(
                 "img_entropy_norm": img_entropy_norm[:, local_idx, :].detach().float().mean().cpu().item(),
                 "img_concentration": img_concentration[:, local_idx, :].detach().float().mean().cpu().item(),
                 "img_top1_offset": img_top1_offset[:, local_idx, :].detach().float().mean().cpu().item(),
+                "sink_top_k": int(sink_index_sorted.numel()),
+                "sink_offsets": sink_offsets_text,
+                "semantic_img_mass": semantic_img_mass[:, local_idx, :].detach().float().mean().cpu().item(),
+                "semantic_low_img_mass": semantic_low_img_mass[:, local_idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_removed_mass": semantic_img_removed_mass[:, local_idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_removed_mass_ratio": semantic_img_removed_mass_ratio[:, local_idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_max_attention": semantic_img_max_attention[:, local_idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_top1_ratio": semantic_img_top1_ratio[:, local_idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_entropy_norm": semantic_img_entropy_norm[:, local_idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_concentration": semantic_img_concentration[:, local_idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_top1_offset": semantic_img_top1_offset[:, local_idx, :].detach().float().mean().cpu().item(),
                 "full_max_attention": full_max_attention[:, local_idx, :].detach().float().mean().cpu().item(),
                 "full_entropy_norm": full_entropy_norm[:, local_idx, :].detach().float().mean().cpu().item(),
                 "full_concentration": full_concentration[:, local_idx, :].detach().float().mean().cpu().item(),
@@ -842,6 +904,11 @@ def _apply_unsupported_component_suppression(
             "action": action,
             "score_low": score_low.detach().float().cpu().item(),
             "score_high": score_high.detach().float().cpu().item(),
+            "sink_top_k": int(sink_index_sorted.numel()),
+            "sink_offsets": sink_offsets_text,
+            "mean_img_mass": img_mass.detach().float().mean().cpu().item(),
+            "mean_semantic_img_mass": semantic_img_mass.detach().float().mean().cpu().item(),
+            "mean_semantic_img_removed_mass_ratio": semantic_img_removed_mass_ratio.detach().float().mean().cpu().item(),
         })
         return head_outputs
 
@@ -993,6 +1060,17 @@ def _apply_unsupported_component_suppression(
                 "img_entropy_norm": img_entropy_norm[:, idx, :].detach().float().mean().cpu().item(),
                 "img_concentration": img_concentration[:, idx, :].detach().float().mean().cpu().item(),
                 "img_top1_offset": img_top1_offset[:, idx, :].detach().float().mean().cpu().item(),
+                "sink_top_k": int(sink_index_sorted.numel()),
+                "sink_offsets": sink_offsets_text,
+                "semantic_img_mass": semantic_img_mass[:, idx, :].detach().float().mean().cpu().item(),
+                "semantic_low_img_mass": semantic_low_img_mass[:, idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_removed_mass": semantic_img_removed_mass[:, idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_removed_mass_ratio": semantic_img_removed_mass_ratio[:, idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_max_attention": semantic_img_max_attention[:, idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_top1_ratio": semantic_img_top1_ratio[:, idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_entropy_norm": semantic_img_entropy_norm[:, idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_concentration": semantic_img_concentration[:, idx, :].detach().float().mean().cpu().item(),
+                "semantic_img_top1_offset": semantic_img_top1_offset[:, idx, :].detach().float().mean().cpu().item(),
                 "full_max_attention": full_max_attention[:, idx, :].detach().float().mean().cpu().item(),
                 "full_entropy_norm": full_entropy_norm[:, idx, :].detach().float().mean().cpu().item(),
                 "full_concentration": full_concentration[:, idx, :].detach().float().mean().cpu().item(),
@@ -1054,6 +1132,11 @@ def _apply_unsupported_component_suppression(
         "score_high": score_high.detach().float().cpu().item(),
         "absolute_score_low": absolute_score_low,
         "absolute_score_high": absolute_score_high,
+        "sink_top_k": int(sink_index_sorted.numel()),
+        "sink_offsets": sink_offsets_text,
+        "mean_img_mass": img_mass.detach().float().mean().cpu().item(),
+        "mean_semantic_img_mass": semantic_img_mass.detach().float().mean().cpu().item(),
+        "mean_semantic_img_removed_mass_ratio": semantic_img_removed_mass_ratio.detach().float().mean().cpu().item(),
         "mean_selected_score": float(sum(selected_scores) / len(selected_scores)) if selected_scores else 0.0,
         "mean_strength": float(sum(selected_strengths) / len(selected_strengths)) if selected_strengths else 0.0,
         "mean_relative_head_output_delta": (
