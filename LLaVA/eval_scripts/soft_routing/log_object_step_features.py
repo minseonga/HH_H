@@ -1,6 +1,8 @@
 import argparse
+import csv
 import json
 import os
+import re
 from collections import defaultdict
 
 import numpy as np
@@ -10,11 +12,6 @@ from PIL import Image
 from sklearn.metrics import average_precision_score, roc_auc_score
 from tqdm import tqdm
 
-from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-from llava.conversation import conv_templates
-from llava.mm_utils import get_model_name_from_path, process_images, tokenizer_image_token
-from llava.model.builder import load_pretrained_model
-from llava.utils import disable_torch_init
 from eval_scripts.soft_routing.head_prior_utils import (
     default_heads_for_model,
     headwise_percentile_thresholds,
@@ -28,7 +25,91 @@ def load_eval_sentences(path):
     return data["sentences"]
 
 
-def build_prompt_inputs(image_file, image_folder, tokenizer, image_processor, model_config, conv_mode):
+def write_csv(path, rows):
+    if not rows:
+        with open(path, "w") as f:
+            f.write("")
+        return
+    fields = []
+    for row in rows:
+        for key in row:
+            if key not in fields:
+                fields.append(key)
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def image_name_from_sentence(sentence, image_split="val2014"):
+    image = sentence.get("image")
+    if image:
+        return str(image)
+    image_id = sentence.get("image_id", sentence.get("question_id"))
+    if image_id is None:
+        return ""
+    try:
+        image_id = int(image_id)
+    except (TypeError, ValueError):
+        return str(image_id)
+    return f"COCO_{image_split}_{image_id:012d}.jpg"
+
+
+def resolve_image_path(image_file, image_folder, image_split="val2014"):
+    candidates = []
+    image_file = str(image_file or "")
+    image_folder = os.path.expanduser(str(image_folder or ""))
+    basename = os.path.basename(image_file)
+    names = []
+    if image_file:
+        names.extend([image_file, basename])
+    match = re.search(r"COCO_(?:train|val)2014_(\d{12})\.jpg$", basename)
+    if match:
+        image_id = match.group(1)
+        names.extend([
+            f"{image_id}.jpg",
+            f"COCO_{image_split}_{image_id}.jpg",
+            f"COCO_val2014_{image_id}.jpg",
+            f"COCO_train2014_{image_id}.jpg",
+        ])
+    dirs = [image_folder]
+    parent = os.path.dirname(image_folder.rstrip(os.sep))
+    dirs.extend([
+        os.path.join(image_folder, image_split),
+        os.path.join(image_folder, "images"),
+        os.path.join(image_folder, "images", image_split),
+        parent,
+        os.path.join(parent, image_split),
+        os.path.join(parent, "images"),
+        os.path.join(parent, "images", image_split),
+    ])
+    if os.path.isabs(image_file):
+        candidates.append(image_file)
+    for directory in dirs:
+        for name in names:
+            if name:
+                candidates.append(os.path.join(directory, name))
+    seen = set()
+    unique = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            unique.append(candidate)
+    for candidate in unique:
+        if os.path.exists(candidate):
+            return candidate
+    raise FileNotFoundError(
+        "Could not resolve image path. "
+        f"image_file={image_file!r}, image_folder={image_folder!r}, "
+        f"image_split={image_split!r}, tried={unique[:8]!r}"
+    )
+
+
+def build_prompt_inputs(image_file, image_folder, tokenizer, image_processor, model_config, conv_mode, image_split="val2014"):
+    from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
+    from llava.conversation import conv_templates
+    from llava.mm_utils import process_images, tokenizer_image_token
+
     qs = "Please describe this image in detail."
     if model_config.mm_use_im_start_end:
         qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + "\n" + qs
@@ -38,7 +119,7 @@ def build_prompt_inputs(image_file, image_folder, tokenizer, image_processor, mo
     conv.append_message(conv.roles[0], qs)
     conv.append_message(conv.roles[1], None)
     prompt = conv.get_prompt()
-    image = Image.open(os.path.join(image_folder, image_file)).convert("RGB")
+    image = Image.open(resolve_image_path(image_file, image_folder, image_split=image_split)).convert("RGB")
     image_tensor = process_images([image], image_processor, model_config)[0]
     input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
     return input_ids.unsqueeze(0), image_tensor.unsqueeze(0), image.size
@@ -161,20 +242,45 @@ def aggregate_features(records, hard_threshold=0.4, head_thresholds=None):
     img = np.array([r["img_mass"] for r in records], dtype=float)
     prior = np.array([r["attribution_prior"] for r in records], dtype=float)
     trigger = np.array([1.0 if r["hard_trigger"] else 0.0 for r in records], dtype=float)
+    margin = text - hard_threshold
+    soft_alpha = np.array([float(r.get("soft_alpha", 0.0)) for r in records], dtype=float)
+    soft_strength = np.array([float(r.get("soft_strength", 0.0)) for r in records], dtype=float)
     weighted_text = prior * text
-    excess = np.maximum(text - hard_threshold, 0.0)
+    excess = np.maximum(margin, 0.0)
     weighted_excess = prior * excess
+    prior_sum = float(prior.sum())
+    trigger_sum = float(trigger.sum())
+    triggered_text = text[trigger > 0.0]
+    untriggered_text = text[trigger <= 0.0]
     features = {
+        "n_adhh_heads": int(len(records)),
+        "sum_prior": prior_sum,
         "max_i_text": float(text.max()),
         "mean_i_text": float(text.mean()),
+        "p90_i_text": float(np.percentile(text, 90)),
         "max_text_ratio": float((text / (text + img + 1e-6)).max()),
         "mean_text_ratio": float((text / (text + img + 1e-6)).mean()),
         "max_prior_i_text": float(weighted_text.max()),
         "mean_prior_i_text": float(weighted_text.mean()),
         "trigger_count": int(trigger.sum()),
+        "trigger_rate": float(trigger.mean()),
         "weighted_trigger_count": float((prior * trigger).sum()),
+        "weighted_trigger_rate": float((prior * trigger).sum() / (prior_sum + 1e-6)),
+        "mean_triggered_text_mass": float(triggered_text.mean()) if len(triggered_text) else 0.0,
+        "mean_untriggered_text_mass": float(untriggered_text.mean()) if len(untriggered_text) else 0.0,
+        "mean_margin": float(margin.mean()),
+        "max_margin": float(margin.max()),
+        "p90_margin": float(np.percentile(margin, 90)),
+        "mean_soft_alpha": float(soft_alpha.mean()),
+        "max_soft_alpha": float(soft_alpha.max()),
+        "mean_soft_strength": float(soft_strength.mean()),
+        "weighted_soft_strength": float((prior * soft_strength).sum() / (prior_sum + 1e-6)),
         "sum_prior_excess": float(weighted_excess.sum()),
+        "mean_prior_excess": float(weighted_excess.mean()),
         "max_prior_excess": float(weighted_excess.max()),
+        "sum_excess": float(excess.sum()),
+        "mean_excess": float(excess.mean()),
+        "max_excess": float(excess.max()),
     }
     if head_thresholds:
         percentile_excess = []
@@ -226,6 +332,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval-results", required=True)
     parser.add_argument("--image-folder", required=True)
+    parser.add_argument("--image-split", default="val2014")
     parser.add_argument("--model-path", default="liuhaotian/llava-v1.5-7b")
     parser.add_argument("--model-base", default=None)
     parser.add_argument("--conv-mode", default="vicuna_v1")
@@ -244,9 +351,14 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     sentences = load_eval_sentences(args.eval_results)[:args.max_samples]
 
+    from llava.mm_utils import get_model_name_from_path
+    from llava.model.builder import load_pretrained_model
+    from llava.utils import disable_torch_init
+
     disable_torch_init()
     model_name = get_model_name_from_path(os.path.expanduser(args.model_path))
     tokenizer, model, image_processor, _ = load_pretrained_model(args.model_path, args.model_base, model_name)
+    model.eval()
     _, priors, prior_source = configure_model(
         model, args.model_path, args.attention_head_path, args.top_k, args.head_prior_mode,
         args.adhh_threshold, args.soft_gamma, args.soft_temperature,
@@ -262,7 +374,13 @@ def main():
         if not aligned:
             continue
         prompt_ids, image_tensor, image_size = build_prompt_inputs(
-            sentence["image"], args.image_folder, tokenizer, image_processor, model.config, args.conv_mode
+            image_name_from_sentence(sentence, args.image_split),
+            args.image_folder,
+            tokenizer,
+            image_processor,
+            model.config,
+            args.conv_mode,
+            image_split=args.image_split,
         )
         prompt_ids = prompt_ids.to(device="cuda", non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device="cuda", non_blocking=True)
@@ -273,7 +391,7 @@ def main():
                 head_records[record["head_key"]].append(record["text_mass"])
             row = {
                 "image_id": sentence["image_id"],
-                "image": sentence["image"],
+                "image": image_name_from_sentence(sentence, args.image_split),
                 "object_word": mention["word"],
                 "node_word": mention["node_word"],
                 "label": int(mention["label"]),
@@ -294,16 +412,34 @@ def main():
             out.write(json.dumps({**row, "head_diagnostics": diagnostics}) + "\n")
 
     feature_names = [
+        "n_adhh_heads",
+        "sum_prior",
         "max_i_text",
         "mean_i_text",
+        "p90_i_text",
         "max_text_ratio",
         "mean_text_ratio",
         "max_prior_i_text",
         "mean_prior_i_text",
         "trigger_count",
+        "trigger_rate",
         "weighted_trigger_count",
+        "weighted_trigger_rate",
+        "mean_triggered_text_mass",
+        "mean_untriggered_text_mass",
+        "mean_margin",
+        "max_margin",
+        "p90_margin",
+        "mean_soft_alpha",
+        "max_soft_alpha",
+        "mean_soft_strength",
+        "weighted_soft_strength",
         "sum_prior_excess",
+        "mean_prior_excess",
         "max_prior_excess",
+        "sum_excess",
+        "mean_excess",
+        "max_excess",
         "sum_prior_percentile_excess",
         "max_prior_percentile_excess",
         "weighted_percentile_active_count",
@@ -323,6 +459,8 @@ def main():
         json.dump(summary, f, indent=2)
     with open(os.path.join(args.output_dir, "head_thresholds.json"), "w") as f:
         json.dump({"head_text_thresholds": summary["head_text_thresholds"]}, f, indent=2)
+    write_csv(os.path.join(args.output_dir, "object_step_features.csv"), rows)
+    write_csv(os.path.join(args.output_dir, "adhh_trigger_hallucinated_vs_grounded_auc.csv"), summary["feature_summary"])
     print(json.dumps(summary, indent=2))
 
 
