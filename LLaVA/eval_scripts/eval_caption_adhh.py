@@ -114,6 +114,12 @@ def build_layer_contrastive_records_from_hidden_states(model, output_dict, args)
         mid_log_probs = torch.log_softmax(mid_logits, dim=-1)
         final_probs = final_log_probs.exp()
         mid_probs = mid_log_probs.exp()
+        final_entropy = -torch.sum(final_probs * final_log_probs)
+        final_entropy_norm = torch.clamp(
+            final_entropy / math.log(float(final_logits.shape[-1])),
+            min=0.0,
+            max=1.0,
+        )
         mixture_probs = 0.5 * (final_probs + mid_probs)
         mixture_log_probs = torch.log(torch.clamp(mixture_probs, min=eps))
         kl_final_mid = torch.sum(final_probs * (final_log_probs - mid_log_probs))
@@ -143,6 +149,8 @@ def build_layer_contrastive_records_from_hidden_states(model, output_dict, args)
             "kl_mid_final": float(kl_mid_final.detach().cpu().item()),
             "sym_kl": float((0.5 * (kl_final_mid + kl_mid_final)).detach().cpu().item()),
             "js_divergence_norm": float(js_norm.detach().cpu().item()),
+            "final_entropy": float(final_entropy.detach().cpu().item()),
+            "final_entropy_norm": float(final_entropy_norm.detach().cpu().item()),
             "final_top1_token_id": int(final_top_ids[0].detach().cpu().item()),
             "mid_top1_token_id": int(mid_top_ids[0].detach().cpu().item()),
             "corrected_top1_token_id": int(final_top_ids[0].detach().cpu().item()),

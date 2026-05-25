@@ -164,6 +164,9 @@ def _maybe_apply_layer_contrastive_logits(config, lm_head, hidden_states, final_
         final_probs_for_entropy = final_log_probs_for_entropy.exp()
         entropy = -torch.sum(final_probs_for_entropy * final_log_probs_for_entropy, dim=-1)
         entropy_norm = torch.clamp(entropy / math.log(float(final_float.shape[-1])), min=0.0, max=1.0)
+    elif getattr(config, "record_layer_contrastive_diagnostics", False):
+        entropy = -torch.sum(final_probs * final_log_probs, dim=-1)
+        entropy_norm = torch.clamp(entropy / math.log(float(final_float.shape[-1])), min=0.0, max=1.0)
 
     if gate_feature in ("low_margin", "js_x_low_margin"):
         top_vals = torch.topk(final_float, k=2, dim=-1).values
@@ -247,6 +250,7 @@ def _maybe_apply_layer_contrastive_logits(config, lm_head, hidden_states, final_
                 if js_norm is not None:
                     record["js_divergence_norm"] = float(js_norm[batch_idx, pos].detach().cpu().item())
                 if entropy_norm is not None:
+                    record["final_entropy"] = float(entropy[batch_idx, pos].detach().cpu().item())
                     record["final_entropy_norm"] = float(entropy_norm[batch_idx, pos].detach().cpu().item())
                 if low_margin is not None:
                     record["low_margin"] = float(low_margin[batch_idx, pos].detach().cpu().item())
