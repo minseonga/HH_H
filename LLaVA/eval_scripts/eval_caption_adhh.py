@@ -78,6 +78,7 @@ def _top2_margin(logits):
     return top_vals, top_ids, top_vals[0] - top_vals[1]
 
 
+@torch.inference_mode()
 def build_layer_contrastive_records_from_hidden_states(model, output_dict, args):
     hidden_states_by_step = output_dict.get("hidden_states", None)
     if not hidden_states_by_step:
