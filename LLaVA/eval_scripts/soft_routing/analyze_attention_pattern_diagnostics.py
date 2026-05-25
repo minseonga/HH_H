@@ -21,6 +21,14 @@ DEFAULT_FEATURES = [
     "img_top1_ratio",
     "img_entropy_norm",
     "img_concentration",
+    "img_top1_offset",
+    "full_max_attention",
+    "full_entropy_norm",
+    "full_concentration",
+    "full_top1_index",
+    "full_top1_is_img",
+    "full_top1_is_text",
+    "full_top1_is_prefix",
 ]
 
 
@@ -268,6 +276,112 @@ def summarize_head_step_variance(rows, features):
     return output
 
 
+def two_cluster_summary(values):
+    values = sorted(value for value in values if value is not None)
+    if len(values) < 4:
+        return None
+    left = percentile(values, 25)
+    right = percentile(values, 75)
+    if left is None or right is None:
+        return None
+    for _ in range(30):
+        left_values = [value for value in values if abs(value - left) <= abs(value - right)]
+        right_values = [value for value in values if abs(value - left) > abs(value - right)]
+        if not left_values or not right_values:
+            return None
+        new_left = mean(left_values)
+        new_right = mean(right_values)
+        if abs(new_left - left) + abs(new_right - right) < 1e-8:
+            left, right = new_left, new_right
+            break
+        left, right = new_left, new_right
+    if left > right:
+        left, right = right, left
+        left_values, right_values = right_values, left_values
+    total_var = variance(values) or 0.0
+    separation = right - left
+    valley_midpoint = (left + right) / 2.0
+    between = [value for value in values if left <= value <= right]
+    valley_hist = valley_midpoint
+    if between:
+        width = max((right - left) / 20.0, 1e-6)
+        bins = defaultdict(int)
+        for value in between:
+            bins[bucket(value, width, left, right)] += 1
+        valley_bin = min(bins.items(), key=lambda item: item[1])[0]
+        valley_hist = sum(float(part) for part in valley_bin.split("-")) / 2.0
+    return {
+        "n": len(values),
+        "cluster_low_mean": left,
+        "cluster_high_mean": right,
+        "cluster_separation": separation,
+        "cluster_separation_over_std": separation / math.sqrt(total_var) if total_var > 0 else None,
+        "cluster_low_weight": len(left_values) / len(values),
+        "cluster_high_weight": len(right_values) / len(values),
+        "valley_midpoint": valley_midpoint,
+        "valley_histogram": valley_hist,
+    }
+
+
+def summarize_bimodality(rows, group_keys, features):
+    grouped = defaultdict(list)
+    for row in rows:
+        group = tuple(row.get(key, "") for key in group_keys)
+        for feature in features:
+            value = row.get(feature)
+            if value is not None:
+                grouped[group + (feature,)].append(value)
+    output = []
+    for key, values in grouped.items():
+        summary = two_cluster_summary(values)
+        if summary is None:
+            continue
+        group = key[:-1]
+        feature = key[-1]
+        item = {group_key: group[idx] for idx, group_key in enumerate(group_keys)}
+        item["feature"] = feature
+        item.update(summary)
+        output.append(item)
+    output.sort(
+        key=lambda row: (
+            tuple(str(row.get(key, "")) for key in group_keys),
+            -(row.get("cluster_separation_over_std") or 0.0),
+            row["feature"],
+        )
+    )
+    return output
+
+
+def summarize_image_sink_offsets(rows):
+    groups = defaultdict(lambda: defaultdict(int))
+    totals = defaultdict(int)
+    for row in rows:
+        value = row.get("img_top1_offset")
+        if value is None:
+            continue
+        offset = int(round(value))
+        for group_keys in (("record_type", "phase"), ("record_type", "phase", "layer")):
+            group = tuple(row.get(key, "") for key in group_keys)
+            groups[(group_keys, group)][offset] += 1
+            totals[(group_keys, group)] += 1
+    output = []
+    for (group_keys, group), counts in groups.items():
+        total = totals[(group_keys, group)]
+        ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        for rank, (offset, count) in enumerate(ranked[:20], start=1):
+            item = {group_key: group[idx] for idx, group_key in enumerate(group_keys)}
+            item.update({
+                "rank": rank,
+                "img_top1_offset": offset,
+                "n": count,
+                "rate": count / max(total, 1),
+                "total": total,
+            })
+            output.append(item)
+    output.sort(key=lambda row: tuple(str(row.get(key, "")) for key in ("record_type", "phase", "layer")) + (row["rank"],))
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--diagnostics-jsonl", required=True)
@@ -295,6 +409,8 @@ def main():
         "step_variance": os.path.join(args.output_dir, "attention_pattern_step_variance.csv"),
         "head_step_variance": os.path.join(args.output_dir, "attention_pattern_head_step_variance.csv"),
         "active_summary": os.path.join(args.output_dir, "attention_pattern_active_summary.csv"),
+        "bimodality_summary": os.path.join(args.output_dir, "attention_pattern_bimodality_summary.csv"),
+        "image_sink_offsets": os.path.join(args.output_dir, "image_sink_offset_summary.csv"),
     }
     write_csv(files["overall_summary"], summarize_distribution(distribution_source, ["record_type", "phase"], features))
     write_csv(files["layer_summary"], summarize_distribution(distribution_source, ["record_type", "phase", "layer"], features))
@@ -302,6 +418,8 @@ def main():
     write_csv(files["step_variance"], summarize_step_variance(distribution_source, features))
     write_csv(files["head_step_variance"], summarize_head_step_variance(distribution_source, features))
     write_csv(files["active_summary"], summarize_distribution(active_rows, ["record_type", "phase", "prefill_protected"], features))
+    write_csv(files["bimodality_summary"], summarize_bimodality(distribution_source, ["record_type", "phase"], features))
+    write_csv(files["image_sink_offsets"], summarize_image_sink_offsets(distribution_source))
 
     config = {
         "diagnostics_jsonl": args.diagnostics_jsonl,

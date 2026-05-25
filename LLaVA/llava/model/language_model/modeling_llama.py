@@ -488,6 +488,7 @@ def _apply_unsupported_component_suppression(
     selected_values = value_states.index_select(1, head_index)
     text_attention = selected_weights[:, :, -1, text_start:]
     img_attention = selected_weights[:, :, -1, img_start:img_end]
+    full_attention = selected_weights[:, :, -1, :]
     text_values = selected_values[:, :, text_start:, :]
     img_values = selected_values[:, :, img_start:img_end, :]
     text_mass = torch.sum(text_attention, dim=-1, keepdim=True).float()
@@ -495,20 +496,32 @@ def _apply_unsupported_component_suppression(
     low_img_mass = 1.0 - torch.clamp(img_mass, min=0.0, max=1.0)
     text_attention_float = text_attention.float()
     img_attention_float = img_attention.float()
+    full_attention_float = full_attention.float()
     text_max_attention = torch.max(text_attention_float, dim=-1, keepdim=True).values
     img_max_attention = torch.max(img_attention_float, dim=-1, keepdim=True).values
+    full_max_attention = torch.max(full_attention_float, dim=-1, keepdim=True).values
+    img_top1_offset = torch.argmax(img_attention_float, dim=-1, keepdim=True)
+    full_top1_index = torch.argmax(full_attention_float, dim=-1, keepdim=True)
+    full_top1_is_img = ((full_top1_index >= img_start) & (full_top1_index < img_end)).float()
+    full_top1_is_text = (full_top1_index >= text_start).float()
+    full_top1_is_prefix = (full_top1_index < img_start).float()
     text_top1_ratio = text_max_attention / torch.clamp(text_mass, min=eps)
     img_top1_ratio = img_max_attention / torch.clamp(img_mass, min=eps)
     text_prob = text_attention_float / torch.clamp(text_mass, min=eps)
     img_prob = img_attention_float / torch.clamp(img_mass, min=eps)
+    full_prob = full_attention_float / torch.clamp(torch.sum(full_attention_float, dim=-1, keepdim=True), min=eps)
     text_entropy = -torch.sum(text_prob * torch.log(torch.clamp(text_prob, min=eps)), dim=-1, keepdim=True)
     img_entropy = -torch.sum(img_prob * torch.log(torch.clamp(img_prob, min=eps)), dim=-1, keepdim=True)
+    full_entropy = -torch.sum(full_prob * torch.log(torch.clamp(full_prob, min=eps)), dim=-1, keepdim=True)
     text_entropy_den = math.log(max(int(text_attention.shape[-1]), 2))
     img_entropy_den = math.log(max(int(img_attention.shape[-1]), 2))
+    full_entropy_den = math.log(max(int(full_attention.shape[-1]), 2))
     text_entropy_norm = text_entropy / max(text_entropy_den, eps)
     img_entropy_norm = img_entropy / max(img_entropy_den, eps)
+    full_entropy_norm = full_entropy / max(full_entropy_den, eps)
     text_concentration = 1.0 - torch.clamp(text_entropy_norm, min=0.0, max=1.0)
     img_concentration = 1.0 - torch.clamp(img_entropy_norm, min=0.0, max=1.0)
+    full_concentration = 1.0 - torch.clamp(full_entropy_norm, min=0.0, max=1.0)
     recent_text_window = int(getattr(config, "unsupported_component_recent_text_window", 8))
     recent_text_window = min(max(recent_text_window, 1), int(text_attention.shape[-1]))
     recent_text_mass = torch.sum(text_attention_float[:, :, -recent_text_window:], dim=-1, keepdim=True)
@@ -772,6 +785,14 @@ def _apply_unsupported_component_suppression(
                 "img_top1_ratio": img_top1_ratio[:, local_idx, :].detach().float().mean().cpu().item(),
                 "img_entropy_norm": img_entropy_norm[:, local_idx, :].detach().float().mean().cpu().item(),
                 "img_concentration": img_concentration[:, local_idx, :].detach().float().mean().cpu().item(),
+                "img_top1_offset": img_top1_offset[:, local_idx, :].detach().float().mean().cpu().item(),
+                "full_max_attention": full_max_attention[:, local_idx, :].detach().float().mean().cpu().item(),
+                "full_entropy_norm": full_entropy_norm[:, local_idx, :].detach().float().mean().cpu().item(),
+                "full_concentration": full_concentration[:, local_idx, :].detach().float().mean().cpu().item(),
+                "full_top1_index": full_top1_index[:, local_idx, :].detach().float().mean().cpu().item(),
+                "full_top1_is_img": full_top1_is_img[:, local_idx, :].detach().float().mean().cpu().item(),
+                "full_top1_is_text": full_top1_is_text[:, local_idx, :].detach().float().mean().cpu().item(),
+                "full_top1_is_prefix": full_top1_is_prefix[:, local_idx, :].detach().float().mean().cpu().item(),
                 "prefill_protected": int(head) in protected_heads,
                 "text_value_norm": text_norm[:, local_idx, :].detach().float().mean().cpu().item(),
                 "img_value_norm": img_norm[:, local_idx, :].detach().float().mean().cpu().item(),
@@ -971,6 +992,14 @@ def _apply_unsupported_component_suppression(
                 "img_top1_ratio": img_top1_ratio[:, idx, :].detach().float().mean().cpu().item(),
                 "img_entropy_norm": img_entropy_norm[:, idx, :].detach().float().mean().cpu().item(),
                 "img_concentration": img_concentration[:, idx, :].detach().float().mean().cpu().item(),
+                "img_top1_offset": img_top1_offset[:, idx, :].detach().float().mean().cpu().item(),
+                "full_max_attention": full_max_attention[:, idx, :].detach().float().mean().cpu().item(),
+                "full_entropy_norm": full_entropy_norm[:, idx, :].detach().float().mean().cpu().item(),
+                "full_concentration": full_concentration[:, idx, :].detach().float().mean().cpu().item(),
+                "full_top1_index": full_top1_index[:, idx, :].detach().float().mean().cpu().item(),
+                "full_top1_is_img": full_top1_is_img[:, idx, :].detach().float().mean().cpu().item(),
+                "full_top1_is_text": full_top1_is_text[:, idx, :].detach().float().mean().cpu().item(),
+                "full_top1_is_prefix": full_top1_is_prefix[:, idx, :].detach().float().mean().cpu().item(),
                 "prefill_protected": int(head) in protected_heads,
                 "text_value_norm": text_norm[:, idx, :].detach().float().mean().cpu().item(),
                 "img_value_norm": img_norm[:, idx, :].detach().float().mean().cpu().item(),
