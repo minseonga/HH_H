@@ -72,6 +72,90 @@ def load_first_subtoken_ids(tokenizer, vocab_path):
                 token_ids.append(token_id)
     return token_ids
 
+
+def _top2_margin(logits):
+    top_vals, top_ids = torch.topk(logits, k=2)
+    return top_vals, top_ids, top_vals[0] - top_vals[1]
+
+
+def build_layer_contrastive_records_from_hidden_states(model, output_dict, args):
+    hidden_states_by_step = output_dict.get("hidden_states", None)
+    if not hidden_states_by_step:
+        return []
+
+    layers = parse_int_ranges(args.layer_contrastive_layers) or [args.layer_contrastive_layer]
+    lm_head = model.get_output_embeddings()
+    records = []
+    eps = 1e-8
+    for step_idx, step_hidden_states in enumerate(hidden_states_by_step):
+        if not step_hidden_states:
+            continue
+        num_hidden_states = len(step_hidden_states)
+        valid_layers = []
+        for layer in layers:
+            layer = int(layer)
+            if layer < 0:
+                layer += num_hidden_states
+            if 0 <= layer < num_hidden_states:
+                valid_layers.append(layer)
+        if not valid_layers:
+            continue
+
+        final_vec = step_hidden_states[-1][0, -1, :]
+        final_logits = lm_head(final_vec).float()
+        mid_logits = None
+        for layer in valid_layers:
+            layer_logits = lm_head(step_hidden_states[layer][0, -1, :]).float()
+            mid_logits = layer_logits if mid_logits is None else mid_logits + layer_logits
+        mid_logits = mid_logits / float(len(valid_layers))
+
+        final_log_probs = torch.log_softmax(final_logits, dim=-1)
+        mid_log_probs = torch.log_softmax(mid_logits, dim=-1)
+        final_probs = final_log_probs.exp()
+        mid_probs = mid_log_probs.exp()
+        mixture_probs = 0.5 * (final_probs + mid_probs)
+        mixture_log_probs = torch.log(torch.clamp(mixture_probs, min=eps))
+        kl_final_mid = torch.sum(final_probs * (final_log_probs - mid_log_probs))
+        kl_mid_final = torch.sum(mid_probs * (mid_log_probs - final_log_probs))
+        js = 0.5 * (
+            torch.sum(final_probs * (final_log_probs - mixture_log_probs))
+            + torch.sum(mid_probs * (mid_log_probs - mixture_log_probs))
+        )
+        js_norm = torch.clamp(js / math.log(2.0), min=0.0, max=1.0)
+
+        final_top_vals, final_top_ids, final_margin = _top2_margin(final_logits)
+        mid_top_vals, mid_top_ids, mid_margin = _top2_margin(mid_logits)
+        phase = "prefill" if step_idx == 0 else "decode"
+        records.append({
+            "record_type": "layer_contrastive",
+            "phase": phase,
+            "call_index": int(step_idx),
+            "forward_index": int(step_idx),
+            "step_index": int(step_idx),
+            "token_pos": int(step_idx),
+            "position": -1,
+            "layers": ",".join(str(layer) for layer in valid_layers),
+            "alpha": float(args.layer_contrastive_alpha),
+            "gate_feature": args.layer_contrastive_gate_feature,
+            "gate": float(js_norm.detach().cpu().item()),
+            "kl_final_mid": float(kl_final_mid.detach().cpu().item()),
+            "kl_mid_final": float(kl_mid_final.detach().cpu().item()),
+            "sym_kl": float((0.5 * (kl_final_mid + kl_mid_final)).detach().cpu().item()),
+            "js_divergence_norm": float(js_norm.detach().cpu().item()),
+            "final_top1_token_id": int(final_top_ids[0].detach().cpu().item()),
+            "mid_top1_token_id": int(mid_top_ids[0].detach().cpu().item()),
+            "corrected_top1_token_id": int(final_top_ids[0].detach().cpu().item()),
+            "final_top1_logit": float(final_top_vals[0].detach().cpu().item()),
+            "mid_top1_logit": float(mid_top_vals[0].detach().cpu().item()),
+            "corrected_top1_logit": float(final_top_vals[0].detach().cpu().item()),
+            "final_top1_top2_margin": float(final_margin.detach().cpu().item()),
+            "mid_top1_top2_margin": float(mid_margin.detach().cpu().item()),
+            "corrected_top1_top2_margin": float(final_margin.detach().cpu().item()),
+            "final_mid_top1_agree": bool(final_top_ids[0].detach().cpu().item() == mid_top_ids[0].detach().cpu().item()),
+            "final_corrected_top1_agree": True,
+        })
+    return records
+
 # Custom dataset class
 class CustomDataset(Dataset):
     def __init__(self, questions, image_folder, tokenizer, image_processor, model_config):
@@ -401,6 +485,7 @@ def eval_model(args):
                 max_new_tokens=args.max_new_tokens,
                 use_cache=True,
                 output_attentions=True,
+                output_hidden_states=args.record_layer_contrastive_diagnostics,
                 output_scores=args.record_token_score_diagnostics,
                 return_dict_in_generate=True)
 
@@ -465,7 +550,14 @@ def eval_model(args):
             unsupported_diag_file.flush()
 
         if layer_contrastive_diag_file is not None:
-            for record in getattr(model.config, "layer_contrastive_diagnostics", []):
+            layer_contrastive_records = getattr(model.config, "layer_contrastive_diagnostics", [])
+            if not layer_contrastive_records:
+                layer_contrastive_records = build_layer_contrastive_records_from_hidden_states(
+                    model,
+                    output_dict,
+                    args,
+                )
+            for record in layer_contrastive_records:
                 record = dict(record)
                 record["question_id"] = question_id
                 record["image"] = image_file
