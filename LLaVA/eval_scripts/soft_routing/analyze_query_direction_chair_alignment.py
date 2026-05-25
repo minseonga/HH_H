@@ -84,7 +84,49 @@ def filter_sentences(sentences, match_eval_results="", max_sentences=0):
     return sentences
 
 
-def build_prompt_inputs(image_file, image_folder, tokenizer, image_processor, model_config, conv_mode):
+def image_name_from_sentence(sentence, image_split="val2014"):
+    image = sentence.get("image")
+    if image:
+        return str(image)
+    image_id = sentence.get("image_id", sentence.get("question_id"))
+    if image_id is None:
+        return ""
+    try:
+        image_id = int(image_id)
+    except (TypeError, ValueError):
+        return str(image_id)
+    return f"COCO_{image_split}_{image_id:012d}.jpg"
+
+
+def resolve_image_path(image_file, image_folder, image_split="val2014"):
+    candidates = []
+    image_file = str(image_file or "")
+    if os.path.isabs(image_file):
+        candidates.append(image_file)
+    if image_file:
+        candidates.extend([
+            os.path.join(image_folder, image_file),
+            os.path.join(image_folder, os.path.basename(image_file)),
+            os.path.join(image_folder, image_split, image_file),
+            os.path.join(image_folder, image_split, os.path.basename(image_file)),
+        ])
+    seen = set()
+    unique = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            unique.append(candidate)
+    for candidate in unique:
+        if os.path.exists(candidate):
+            return candidate
+    raise FileNotFoundError(
+        "Could not resolve image path. "
+        f"image_file={image_file!r}, image_folder={image_folder!r}, "
+        f"image_split={image_split!r}, tried={unique[:8]!r}"
+    )
+
+
+def build_prompt_inputs(image_file, image_folder, tokenizer, image_processor, model_config, conv_mode, image_split="val2014"):
     from PIL import Image
 
     from llava.constants import (
@@ -105,7 +147,8 @@ def build_prompt_inputs(image_file, image_folder, tokenizer, image_processor, mo
     conv.append_message(conv.roles[0], qs)
     conv.append_message(conv.roles[1], None)
     prompt = conv.get_prompt()
-    image = Image.open(os.path.join(image_folder, image_file)).convert("RGB")
+    image_path = resolve_image_path(image_file, image_folder, image_split=image_split)
+    image = Image.open(image_path).convert("RGB")
     image_tensor = process_images([image], image_processor, model_config)[0]
     input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
     return input_ids.unsqueeze(0), image_tensor.unsqueeze(0), image.size
@@ -365,6 +408,7 @@ def main():
     parser.add_argument("--eval-results", required=True)
     parser.add_argument("--calibration-npz", required=True)
     parser.add_argument("--image-folder", required=True)
+    parser.add_argument("--image-split", default="val2014")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--model-path", default="liuhaotian/llava-v1.5-7b")
     parser.add_argument("--model-base", default=None)
@@ -449,12 +493,13 @@ def main():
             continue
 
         prompt_ids, image_tensor, image_size = build_prompt_inputs(
-            sentence["image"],
+            image_name_from_sentence(sentence, args.image_split),
             args.image_folder,
             tokenizer,
             image_processor,
             model.config,
             args.conv_mode,
+            image_split=args.image_split,
         )
         prompt_ids = prompt_ids.to(device="cuda", non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device="cuda", non_blocking=True)
@@ -493,7 +538,7 @@ def main():
             row = {
                 "question_id": sentence.get("question_id", sentence.get("image_id", "")),
                 "image_id": sentence.get("image_id", ""),
-                "image": sentence.get("image", ""),
+                "image": image_name_from_sentence(sentence, args.image_split),
                 "word": mention["word"],
                 "node_word": mention["node_word"],
                 "word_idx": mention.get("word_idx", ""),
