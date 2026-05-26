@@ -815,9 +815,14 @@ def _update_query_logit_correction_risk(config, layer_idx, query_states, num_hea
     if getattr(config, "record_query_logit_correction_diagnostics", False) and records is not None:
         scores = torch.stack(score_values, dim=0)
         margins = torch.stack(margin_values, dim=0)
+        call_index = int(getattr(config, "query_logit_correction_call_index", 0))
+        predicted_token_pos = call_index + 1 if phase == "decode" and phase_mode == "decode" else call_index
         records.append({
             "kind": "query_logit_correction_risk",
             "phase": phase,
+            "call_index": call_index,
+            "step_index": call_index if phase == "decode" else None,
+            "predicted_token_pos": predicted_token_pos,
             "q_len": q_len,
             "layer": layer,
             "n_heads": int(len(layer_risks)),
@@ -847,8 +852,7 @@ def _maybe_apply_query_logit_correction(config, logits, phase):
         return logits
 
     strength = max(float(getattr(config, "query_logit_correction_strength", 1.0)), 0.0)
-    if strength <= 0.0:
-        return logits
+    call_index = int(getattr(config, "query_logit_correction_call_index", 0))
 
     risks = torch.stack([risk.to(device=logits.device, dtype=logits.dtype) for risk in risk_values], dim=0)
     aggregation = getattr(config, "query_logit_correction_global_aggregation", "max")
@@ -883,16 +887,24 @@ def _maybe_apply_query_logit_correction(config, logits, phase):
     if max_penalty > 0.0:
         penalty = torch.clamp(penalty, max=max_penalty)
 
-    corrected_last_logits = last_logits.clone()
-    corrected_last_logits.scatter_add_(1, top_ids, -penalty)
-    corrected_logits = logits.clone()
-    corrected_logits[:, -1, :] = corrected_last_logits
+    if strength > 0.0:
+        corrected_last_logits = last_logits.clone()
+        corrected_last_logits.scatter_add_(1, top_ids, -penalty)
+        corrected_logits = logits.clone()
+        corrected_logits[:, -1, :] = corrected_last_logits
+    else:
+        corrected_last_logits = last_logits
+        corrected_logits = logits
 
     records = getattr(config, "query_logit_correction_diagnostics", None)
     if getattr(config, "record_query_logit_correction_diagnostics", False) and records is not None:
+        predicted_token_pos = call_index + 1 if phase == "decode" and phase_mode == "decode" else call_index
         records.append({
             "kind": "query_logit_correction_logits",
             "phase": phase,
+            "call_index": call_index,
+            "step_index": call_index if phase == "decode" else None,
+            "predicted_token_pos": predicted_token_pos,
             "top_k": int(top_k),
             "strength": strength,
             "risk": risk.detach().float().mean().cpu().item(),
@@ -906,6 +918,7 @@ def _maybe_apply_query_logit_correction(config, logits, phase):
             "global_aggregation": aggregation,
             "rank_weight": rank_weight_mode,
         })
+    config.query_logit_correction_call_index = call_index + 1
     return corrected_logits
 
 

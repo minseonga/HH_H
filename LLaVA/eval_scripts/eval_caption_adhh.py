@@ -969,6 +969,7 @@ def eval_model(args):
             model.config.query_gated_head_output_diagnostics = []
         if args.record_query_logit_correction_diagnostics:
             model.config.query_logit_correction_diagnostics = []
+            model.config.query_logit_correction_call_index = 0
         if args.record_query_visual_attention_boost_diagnostics:
             model.config.query_visual_attention_boost_diagnostics = []
 
