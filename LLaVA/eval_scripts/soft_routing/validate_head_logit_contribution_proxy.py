@@ -83,6 +83,16 @@ def mean(values):
     return float(sum(values) / len(values)) if values else None
 
 
+def safe_float(value, default=None):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value):
+        return default
+    return value
+
+
 def parse_head_key(text):
     layer, head = str(text).strip().split(":", 1)
     return int(layer), int(head)
@@ -164,11 +174,12 @@ def clear_interventions(model):
     model.config.intervention_diagnostics = None
 
 
-def set_head_output_recording(model, heads_by_layer):
+def set_head_output_recording(model, heads_by_layer, record_components=False):
     model.config.record_head_output_diagnostics = True
     model.config.head_output_diagnostics = []
     model.config.head_output_record_all_heads = False
     model.config.head_output_record_batch_index = 0
+    model.config.head_output_record_components = bool(record_components)
     model.config.head_output_record_min_layer = min(heads_by_layer) if heads_by_layer else None
     model.config.head_output_record_max_layer = max(heads_by_layer) if heads_by_layer else None
     model.config.head_output_record_heads_by_layer = {
@@ -183,6 +194,7 @@ def clear_head_output_recording(model):
     model.config.head_output_record_all_heads = False
     model.config.head_output_record_heads = None
     model.config.head_output_record_heads_by_layer = None
+    model.config.head_output_record_components = False
     model.config.head_output_record_min_layer = None
     model.config.head_output_record_max_layer = None
 
@@ -194,7 +206,9 @@ def one_step_scores(
     image_tensor,
     image_size,
     zero_head=None,
+    subtract_head_component=None,
     record_head_outputs=False,
+    record_components=False,
     heads_by_layer=None,
 ):
     clear_interventions(model)
@@ -205,24 +219,32 @@ def one_step_scores(
         step_input = prompt_ids
 
     handle = None
-    if zero_head is not None:
-        layer, head = zero_head
+    if zero_head is not None or subtract_head_component is not None:
+        if zero_head is not None:
+            layer, head = zero_head
+            subtract_value = None
+        else:
+            layer, head, subtract_value = subtract_head_component
         layers = get_layers(model)
         module = layers[int(layer)].self_attn.o_proj
         head_dim = int(model.config.hidden_size // model.config.num_attention_heads)
         start = int(head) * head_dim
         end = start + head_dim
 
-        def zero_current_position_head(_module, inputs):
+        def patch_current_position_head(_module, inputs):
             hidden = inputs[0]
             patched = hidden.clone()
-            patched[:, -1:, start:end] = 0
+            if subtract_value is None:
+                patched[:, -1:, start:end] = 0
+            else:
+                value = subtract_value.to(device=patched.device, dtype=patched.dtype).view(1, 1, -1)
+                patched[:, -1:, start:end] = patched[:, -1:, start:end] - value
             return (patched,)
 
-        handle = module.register_forward_pre_hook(zero_current_position_head)
+        handle = module.register_forward_pre_hook(patch_current_position_head)
 
     if record_head_outputs:
-        set_head_output_recording(model, heads_by_layer or {})
+        set_head_output_recording(model, heads_by_layer or {}, record_components=record_components)
     else:
         clear_head_output_recording(model)
 
@@ -276,6 +298,10 @@ def head_output_proxy(model, layer, head, head_output, token_id):
     return float(torch.dot(residual_delta, unembed).item()), float(torch.linalg.vector_norm(residual_delta).item())
 
 
+def head_component_proxy(model, layer, head, component_value, token_id):
+    return head_output_proxy(model, layer, head, component_value, token_id)[0]
+
+
 def target_rank(sorted_ids, token_id):
     matches = (sorted_ids == int(token_id)).nonzero(as_tuple=False)
     if matches.numel() == 0:
@@ -302,18 +328,22 @@ def build_mentions(args, tokenizer):
     per_label = Counter()
     for sentence in sentences:
         image_file = image_name_from_sentence(sentence, image_split=args.image_split)
+        occurrence_counters = defaultdict(int)
         for mention in prepare_mentions(tokenizer, sentence, score_span="first"):
             family = row_label_family(mention)
             if args.label_filter != "all" and family != args.label_filter:
                 continue
             if args.max_per_label and per_label[family] >= args.max_per_label:
                 continue
+            occurrence_idx = occurrence_counters[(family, mention["node_word"])]
+            occurrence_counters[(family, mention["node_word"])] += 1
             positions = mention.get("score_positions") or [mention["token_pos"]]
             token_pos = int(positions[0])
             mentions.append({
                 **mention,
                 "image_id": image_id_key(sentence),
                 "image": image_file,
+                "occurrence_idx": occurrence_idx,
                 "target_token_pos": token_pos,
                 "target_token_id": int(mention["caption_ids"][token_pos]),
             })
@@ -331,6 +361,18 @@ def summarize_correlations(rows):
         "proxy_top1_logit",
         "proxy_target_logit_positive",
         "proxy_top1_logit_positive",
+        "proxy_text_target_logit",
+        "proxy_img_target_logit",
+        "proxy_evidence_gap_target",
+        "proxy_text_target_logit_positive",
+        "proxy_img_target_logit_positive",
+        "proxy_evidence_gap_target_positive",
+        "proxy_text_top1_logit",
+        "proxy_img_top1_logit",
+        "proxy_evidence_gap_top1",
+        "proxy_text_top1_logit_positive",
+        "proxy_img_top1_logit_positive",
+        "proxy_evidence_gap_top1_positive",
         "head_residual_norm",
     ]
     effects = [
@@ -338,20 +380,31 @@ def summarize_correlations(rows):
         "target_logprob_drop",
         "top1_logit_drop",
         "top1_logprob_drop",
+        "target_text_logit_drop",
+        "target_text_logprob_drop",
+        "top1_text_logit_drop",
+        "top1_text_logprob_drop",
     ]
     for group in groups:
         group_rows = rows if group == "all" else [row for row in rows if row["label_family"] == group]
         if not group_rows:
             continue
         for proxy in proxies:
-            x = [float(row[proxy]) for row in group_rows]
             for effect in effects:
-                y = [float(row[effect]) for row in group_rows]
+                pairs = [
+                    (safe_float(row.get(proxy)), safe_float(row.get(effect)))
+                    for row in group_rows
+                ]
+                pairs = [(x, y) for x, y in pairs if x is not None and y is not None]
+                if not pairs:
+                    continue
+                x = [item[0] for item in pairs]
+                y = [item[1] for item in pairs]
                 summary.append({
                     "group": group,
                     "proxy": proxy,
                     "effect": effect,
-                    "n": len(group_rows),
+                    "n": len(pairs),
                     "pearson": pearson(x, y),
                     "spearman": spearman(x, y),
                     "mean_proxy": mean(x),
@@ -366,21 +419,40 @@ def summarize_topk(rows, top_ks):
     for row in rows:
         by_step[row["step_id"]].append(row)
     output = []
-    for effect in ["target_logit_drop", "target_logprob_drop", "top1_logit_drop"]:
-        for proxy in ["proxy_target_logit", "proxy_top1_logit", "proxy_target_logit_positive"]:
+    for effect in [
+        "target_logit_drop",
+        "target_logprob_drop",
+        "top1_logit_drop",
+        "target_text_logit_drop",
+        "target_text_logprob_drop",
+        "top1_text_logit_drop",
+    ]:
+        for proxy in [
+            "proxy_target_logit",
+            "proxy_top1_logit",
+            "proxy_target_logit_positive",
+            "proxy_text_target_logit",
+            "proxy_evidence_gap_target",
+            "proxy_text_target_logit_positive",
+            "proxy_evidence_gap_target_positive",
+        ]:
             for k in top_ks:
                 step_rows = []
                 for step_id, items in by_step.items():
                     kk = min(int(k), len(items))
                     if kk <= 0:
                         continue
+                    effect_items = [row for row in items if safe_float(row.get(effect)) is not None]
+                    proxy_items = [row for row in items if safe_float(row.get(proxy)) is not None]
+                    if len(effect_items) < kk or len(proxy_items) < kk:
+                        continue
                     teacher = {
                         row["head_key"]
-                        for row in sorted(items, key=lambda item: float(item[effect]), reverse=True)[:kk]
+                        for row in sorted(effect_items, key=lambda item: safe_float(item.get(effect), -1e30), reverse=True)[:kk]
                     }
                     selected = {
                         row["head_key"]
-                        for row in sorted(items, key=lambda item: float(item[proxy]), reverse=True)[:kk]
+                        for row in sorted(proxy_items, key=lambda item: safe_float(item.get(proxy), -1e30), reverse=True)[:kk]
                     }
                     inter = teacher & selected
                     union = teacher | selected
@@ -409,6 +481,85 @@ def summarize_topk(rows, top_ks):
                         "mean_jaccard": mean([row["jaccard"] for row in group_rows]),
                     })
     output.sort(key=lambda row: (row["group"], row["top_k"], -(row["mean_jaccard"] or 0.0)))
+    return output
+
+
+def aggregate_mention_features(rows):
+    by_step = defaultdict(list)
+    for row in rows:
+        by_step[row["step_id"]].append(row)
+
+    features = [
+        "proxy_target_logit",
+        "proxy_top1_logit",
+        "proxy_text_target_logit",
+        "proxy_img_target_logit",
+        "proxy_evidence_gap_target",
+        "proxy_text_target_logit_positive",
+        "proxy_img_target_logit_positive",
+        "proxy_evidence_gap_target_positive",
+        "proxy_text_top1_logit",
+        "proxy_img_top1_logit",
+        "proxy_evidence_gap_top1",
+        "proxy_text_top1_logit_positive",
+        "proxy_img_top1_logit_positive",
+        "proxy_evidence_gap_top1_positive",
+        "target_logit_drop",
+        "target_logprob_drop",
+        "target_text_logit_drop",
+        "target_text_logprob_drop",
+        "text_mass",
+        "img_mass",
+        "full_entropy_norm",
+        "text_entropy_norm",
+    ]
+    output = []
+    for _, items in sorted(
+        by_step.items(),
+        key=lambda item: min(int(row.get("mention_index_global", 0)) for row in item[1]),
+    ):
+        first = items[0]
+        row = {
+            "image_id": first.get("image_id"),
+            "image": first.get("image"),
+            "word": first.get("word"),
+            "node_word": first.get("node_word"),
+            "occurrence_idx": first.get("occurrence_idx"),
+            "label": first.get("label"),
+            "label_name": first.get("label_name"),
+            "token_pos": first.get("token_pos"),
+            "target_token_id": first.get("target_token_id"),
+            "target_token": first.get("target_token"),
+            "top1_token_id": first.get("top1_token_id"),
+            "top1_token": first.get("top1_token"),
+            "target_rank_original": first.get("target_rank_original"),
+            "n_heads": len(items),
+        }
+        for feature in features:
+            values = [safe_float(item.get(feature)) for item in items]
+            pairs = [
+                (safe_float(item.get(feature)), item.get("head_key"))
+                for item in items
+                if safe_float(item.get(feature)) is not None
+            ]
+            values = [value for value in values if value is not None]
+            if not values:
+                continue
+            row[f"mean_{feature}"] = mean(values)
+            row[f"sum_{feature}"] = float(sum(values))
+            row[f"max_{feature}"] = float(max(values))
+            row[f"min_{feature}"] = float(min(values))
+            positive = [max(0.0, value) for value in values]
+            row[f"sum_positive_{feature}"] = float(sum(positive))
+            row[f"mean_positive_{feature}"] = mean(positive)
+            best_value, best_head = max(pairs, key=lambda item: item[0])
+            row[f"max_{feature}_head"] = best_head
+            row[f"max_{feature}_value"] = best_value
+        text_sum = safe_float(row.get("sum_positive_proxy_text_target_logit"), 0.0)
+        img_sum = safe_float(row.get("sum_positive_proxy_img_target_logit"), 0.0)
+        row["sum_positive_text_minus_img_target"] = text_sum - img_sum
+        row["sum_positive_text_over_img_target"] = text_sum / max(img_sum, 1e-6)
+        output.append(row)
     return output
 
 
@@ -500,6 +651,7 @@ def main():
                 image_tensor,
                 image_size,
                 record_head_outputs=True,
+                record_components=True,
                 heads_by_layer=heads_by_layer,
             )
             diagnostics = {
@@ -520,6 +672,8 @@ def main():
                 record = diagnostics.get((int(layer), int(head)))
                 if record is None or "head_output" not in record:
                     continue
+                text_value = record.get("text_value")
+                img_value = record.get("img_value")
                 proxy_target, residual_norm = head_output_proxy(
                     model,
                     layer,
@@ -534,6 +688,30 @@ def main():
                     record["head_output"],
                     top1_id,
                 )
+                proxy_text_target = (
+                    head_component_proxy(model, layer, head, text_value, target_token_id)
+                    if text_value is not None else None
+                )
+                proxy_img_target = (
+                    head_component_proxy(model, layer, head, img_value, target_token_id)
+                    if img_value is not None else None
+                )
+                proxy_text_top1 = (
+                    head_component_proxy(model, layer, head, text_value, top1_id)
+                    if text_value is not None else None
+                )
+                proxy_img_top1 = (
+                    head_component_proxy(model, layer, head, img_value, top1_id)
+                    if img_value is not None else None
+                )
+                evidence_gap_target = (
+                    proxy_text_target - proxy_img_target
+                    if proxy_text_target is not None and proxy_img_target is not None else None
+                )
+                evidence_gap_top1 = (
+                    proxy_text_top1 - proxy_img_top1
+                    if proxy_text_top1 is not None and proxy_img_top1 is not None else None
+                )
                 ablated = one_step_scores(
                     model,
                     prompt_ids,
@@ -543,10 +721,35 @@ def main():
                     zero_head=(layer, head),
                     record_head_outputs=False,
                 )
+                text_ablated = None
+                if text_value is not None:
+                    text_ablated = one_step_scores(
+                        model,
+                        prompt_ids,
+                        prefix_ids,
+                        image_tensor,
+                        image_size,
+                        subtract_head_component=(layer, head, text_value),
+                        record_head_outputs=False,
+                    )
                 target_logit_zero = float(ablated["score"][target_token_id].item())
                 target_logprob_zero = float(ablated["log_probs"][target_token_id].item())
                 top1_logit_zero = float(ablated["score"][top1_id].item())
                 top1_logprob_zero = float(ablated["log_probs"][top1_id].item())
+                if text_ablated is not None:
+                    target_logit_text_zero = float(text_ablated["score"][target_token_id].item())
+                    target_logprob_text_zero = float(text_ablated["log_probs"][target_token_id].item())
+                    top1_logit_text_zero = float(text_ablated["score"][top1_id].item())
+                    top1_logprob_text_zero = float(text_ablated["log_probs"][top1_id].item())
+                    text_zero_top1_id = int(text_ablated["top1_id"])
+                    text_zero_target_rank = target_rank(text_ablated["sorted_ids"], target_token_id)
+                else:
+                    target_logit_text_zero = None
+                    target_logprob_text_zero = None
+                    top1_logit_text_zero = None
+                    top1_logprob_text_zero = None
+                    text_zero_top1_id = None
+                    text_zero_target_rank = None
                 out_row = {
                     "step_id": step_id,
                     "mention_index_global": mention_idx,
@@ -554,6 +757,7 @@ def main():
                     "image": mention["image"],
                     "word": mention["word"],
                     "node_word": mention["node_word"],
+                    "occurrence_idx": int(mention.get("occurrence_idx", 0)),
                     "label": int(mention["label"]),
                     "label_name": mention["label_name"],
                     "label_family": row_label_family(mention),
@@ -574,6 +778,22 @@ def main():
                     "proxy_top1_logit": proxy_top1,
                     "proxy_target_logit_positive": max(0.0, proxy_target),
                     "proxy_top1_logit_positive": max(0.0, proxy_top1),
+                    "proxy_text_target_logit": proxy_text_target,
+                    "proxy_img_target_logit": proxy_img_target,
+                    "proxy_evidence_gap_target": evidence_gap_target,
+                    "proxy_text_target_logit_positive": max(0.0, proxy_text_target) if proxy_text_target is not None else None,
+                    "proxy_img_target_logit_positive": max(0.0, proxy_img_target) if proxy_img_target is not None else None,
+                    "proxy_evidence_gap_target_positive": max(0.0, evidence_gap_target) if evidence_gap_target is not None else None,
+                    "proxy_text_top1_logit": proxy_text_top1,
+                    "proxy_img_top1_logit": proxy_img_top1,
+                    "proxy_evidence_gap_top1": evidence_gap_top1,
+                    "proxy_text_top1_logit_positive": max(0.0, proxy_text_top1) if proxy_text_top1 is not None else None,
+                    "proxy_img_top1_logit_positive": max(0.0, proxy_img_top1) if proxy_img_top1 is not None else None,
+                    "proxy_evidence_gap_top1_positive": max(0.0, evidence_gap_top1) if evidence_gap_top1 is not None else None,
+                    "text_mass": record.get("text_mass"),
+                    "img_mass": record.get("img_mass"),
+                    "full_entropy_norm": record.get("full_entropy_norm"),
+                    "text_entropy_norm": record.get("text_entropy_norm"),
                     "head_residual_norm": residual_norm,
                     "target_logit_zero": target_logit_zero,
                     "target_logprob_zero": target_logprob_zero,
@@ -586,6 +806,29 @@ def main():
                     "zero_top1_token_id": int(ablated["top1_id"]),
                     "zero_top1_token": tokenizer.decode([int(ablated["top1_id"])]),
                     "target_rank_zero": target_rank(ablated["sorted_ids"], target_token_id),
+                    "target_logit_text_zero": target_logit_text_zero,
+                    "target_logprob_text_zero": target_logprob_text_zero,
+                    "top1_logit_text_zero": top1_logit_text_zero,
+                    "top1_logprob_text_zero": top1_logprob_text_zero,
+                    "target_text_logit_drop": (
+                        target_logit_original - target_logit_text_zero
+                        if target_logit_text_zero is not None else None
+                    ),
+                    "target_text_logprob_drop": (
+                        target_logprob_original - target_logprob_text_zero
+                        if target_logprob_text_zero is not None else None
+                    ),
+                    "top1_text_logit_drop": (
+                        top1_logit_original - top1_logit_text_zero
+                        if top1_logit_text_zero is not None else None
+                    ),
+                    "top1_text_logprob_drop": (
+                        top1_logprob_original - top1_logprob_text_zero
+                        if top1_logprob_text_zero is not None else None
+                    ),
+                    "text_zero_top1_token_id": text_zero_top1_id,
+                    "text_zero_top1_token": tokenizer.decode([text_zero_top1_id]) if text_zero_top1_id is not None else None,
+                    "target_rank_text_zero": text_zero_target_rank,
                 }
                 all_rows.append(out_row)
                 if writer is None:
@@ -603,8 +846,10 @@ def main():
     correlation_rows = summarize_correlations(all_rows)
     top_ks = [int(item) for item in str(args.top_k_summary).replace(" ", ",").split(",") if item.strip()]
     topk_rows = summarize_topk(all_rows, top_ks)
+    mention_feature_rows = aggregate_mention_features(all_rows)
     write_csv(os.path.join(args.output_dir, "head_logit_proxy_ablation_correlations.csv"), correlation_rows)
     write_csv(os.path.join(args.output_dir, "head_logit_proxy_ablation_topk_overlap.csv"), topk_rows)
+    write_csv(os.path.join(args.output_dir, "contribution_gap_mention_features.csv"), mention_feature_rows)
 
     summary = {
         "eval_results": args.eval_results,
@@ -616,6 +861,7 @@ def main():
             "rows": rows_path,
             "correlations": os.path.join(args.output_dir, "head_logit_proxy_ablation_correlations.csv"),
             "topk_overlap": os.path.join(args.output_dir, "head_logit_proxy_ablation_topk_overlap.csv"),
+            "mention_features": os.path.join(args.output_dir, "contribution_gap_mention_features.csv"),
         },
         "top_correlations": correlation_rows[:10],
         "topk_overlap": topk_rows[:10],

@@ -298,7 +298,7 @@ def _record_query_diagnostics(config, layer_idx, query_states, num_heads):
         })
 
 
-def _record_head_output_diagnostics(config, layer_idx, head_outputs, num_heads):
+def _record_head_output_diagnostics(config, layer_idx, head_outputs, num_heads, attn_weights=None, value_states=None):
     if not getattr(config, "record_head_output_diagnostics", False):
         return
     records = getattr(config, "head_output_diagnostics", None)
@@ -329,16 +329,59 @@ def _record_head_output_diagnostics(config, layer_idx, head_outputs, num_heads):
     if batch_idx < 0 or batch_idx >= output_last.shape[0]:
         return
     output_last = output_last[batch_idx]
+    record_components = bool(getattr(config, "head_output_record_components", False))
+    component_records = {}
+    if record_components and attn_weights is not None and value_states is not None:
+        img_start = int(getattr(config, "img_start_pos", 0))
+        img_len = int(getattr(config, "img_length", 0))
+        img_end = img_start + img_len
+        kv_len = int(attn_weights.shape[-1])
+        text_start = min(max(img_end, 0), kv_len)
+        img_start = min(max(img_start, 0), kv_len)
+        img_end = min(max(img_end, img_start), kv_len)
+        weights_last = attn_weights[:, :, -1, :].detach().float().cpu()
+        values_cpu = value_states.detach().float().cpu()
+        if batch_idx < weights_last.shape[0] and batch_idx < values_cpu.shape[0]:
+            weights_last = weights_last[batch_idx]
+            values_cpu = values_cpu[batch_idx]
+            for head in diag_heads:
+                head = int(head)
+                if head < 0 or head >= num_heads or head >= values_cpu.shape[0]:
+                    continue
+                head_weights = weights_last[head]
+                head_values = values_cpu[head]
+                text_attention = head_weights[text_start:]
+                img_attention = head_weights[img_start:img_end]
+                text_value = torch.matmul(text_attention, head_values[text_start:]) if text_attention.numel() else torch.zeros_like(output_last[head])
+                img_value = torch.matmul(img_attention, head_values[img_start:img_end]) if img_attention.numel() else torch.zeros_like(output_last[head])
+                full_prob = head_weights / torch.clamp(torch.sum(head_weights), min=1e-6)
+                full_entropy = -torch.sum(full_prob * torch.log(torch.clamp(full_prob, min=1e-6)))
+                full_entropy_norm = full_entropy / math.log(max(int(head_weights.numel()), 2))
+                text_entropy_norm = torch.tensor(0.0)
+                if text_attention.numel() and torch.sum(text_attention).item() > 1e-6:
+                    text_prob = text_attention / torch.clamp(torch.sum(text_attention), min=1e-6)
+                    text_entropy = -torch.sum(text_prob * torch.log(torch.clamp(text_prob, min=1e-6)))
+                    text_entropy_norm = text_entropy / math.log(max(int(text_attention.numel()), 2))
+                component_records[head] = {
+                    "text_value": text_value.clone(),
+                    "img_value": img_value.clone(),
+                    "text_mass": float(torch.sum(text_attention).item()),
+                    "img_mass": float(torch.sum(img_attention).item()),
+                    "full_entropy_norm": float(full_entropy_norm.item()),
+                    "text_entropy_norm": float(text_entropy_norm.item()),
+                }
     for head in diag_heads:
         head = int(head)
         if head < 0 or head >= num_heads:
             continue
-        records.append({
+        record = {
             "layer": layer,
             "head": head,
             "head_key": f"{layer}:{head}",
             "head_output": output_last[head].clone(),
-        })
+        }
+        record.update(component_records.get(head, {}))
+        records.append(record)
 
 
 def _record_residual_diagnostics(config, layer_idx, hidden_states):
@@ -3630,7 +3673,14 @@ class LlamaAttention(nn.Module):
 
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         attn_output = torch.matmul(attn_weights, value_states)
-        _record_head_output_diagnostics(self.config, self.layer_idx, attn_output, self.num_heads)
+        _record_head_output_diagnostics(
+            self.config,
+            self.layer_idx,
+            attn_output,
+            self.num_heads,
+            attn_weights=attn_weights,
+            value_states=value_states,
+        )
         attn_output = _apply_head_output_direction_projection(self.config, self.layer_idx, attn_output, self.num_heads)
         attn_output = _apply_query_gated_head_output_suppression(
             self.config,
@@ -3798,7 +3848,14 @@ class LlamaFlashAttention2(LlamaAttention):
             )
             attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
             attn_output_heads = torch.matmul(attn_weights, manual_value_states)
-            _record_head_output_diagnostics(self.config, self.layer_idx, attn_output_heads, self.num_heads)
+            _record_head_output_diagnostics(
+                self.config,
+                self.layer_idx,
+                attn_output_heads,
+                self.num_heads,
+                attn_weights=attn_weights,
+                value_states=manual_value_states,
+            )
             attn_output_heads = _apply_head_output_direction_projection(
                 self.config,
                 self.layer_idx,
@@ -3874,7 +3931,44 @@ class LlamaFlashAttention2(LlamaAttention):
             query_states, key_states, value_states, attention_mask, q_len, dropout=dropout_rate
         )
         attn_output_heads = attn_output.transpose(1, 2).contiguous()
-        _record_head_output_diagnostics(self.config, self.layer_idx, attn_output_heads, self.num_heads)
+        component_weights_for_record = None
+        component_value_for_record = None
+        if bool(getattr(self.config, "head_output_record_components", False)):
+            component_query = query_states.transpose(1, 2)
+            component_key = key_states.transpose(1, 2)
+            component_value = value_states.transpose(1, 2)
+            if component_key.shape[1] != self.num_heads:
+                component_key = repeat_kv(component_key, self.num_key_value_groups)
+                component_value = repeat_kv(component_value, self.num_key_value_groups)
+            component_scores = torch.matmul(component_query, component_key.transpose(2, 3)) / math.sqrt(self.head_dim)
+            if attention_mask is not None and attention_mask.dim() == 2:
+                component_scores = component_scores.masked_fill(
+                    attention_mask[:, None, None, :].to(torch.bool) == 0,
+                    torch.finfo(component_scores.dtype).min,
+                )
+            if q_len > 1 and component_scores.shape[-2] == component_scores.shape[-1]:
+                causal_mask = torch.triu(
+                    torch.ones(q_len, q_len, dtype=torch.bool, device=component_scores.device),
+                    diagonal=1,
+                )
+                component_scores = component_scores.masked_fill(
+                    causal_mask[None, None, :, :],
+                    torch.finfo(component_scores.dtype).min,
+                )
+            component_weights_for_record = nn.functional.softmax(
+                component_scores,
+                dim=-1,
+                dtype=torch.float32,
+            ).to(component_query.dtype)
+            component_value_for_record = component_value
+        _record_head_output_diagnostics(
+            self.config,
+            self.layer_idx,
+            attn_output_heads,
+            self.num_heads,
+            attn_weights=component_weights_for_record,
+            value_states=component_value_for_record,
+        )
         attn_output_heads = _apply_head_output_direction_projection(
             self.config,
             self.layer_idx,
@@ -4142,7 +4236,14 @@ class LlamaSdpaAttention(LlamaAttention):
             )
             attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
             attn_output = torch.matmul(attn_weights, value_states)
-            _record_head_output_diagnostics(self.config, self.layer_idx, attn_output, self.num_heads)
+            _record_head_output_diagnostics(
+                self.config,
+                self.layer_idx,
+                attn_output,
+                self.num_heads,
+                attn_weights=attn_weights,
+                value_states=value_states,
+            )
             attn_output = _apply_head_output_direction_projection(self.config, self.layer_idx, attn_output, self.num_heads)
             attn_output = _apply_query_gated_head_output_suppression(
                 self.config,
@@ -4192,7 +4293,33 @@ class LlamaSdpaAttention(LlamaAttention):
             # The q_len > 1 is necessary to match with AttentionMaskConverter.to_causal_4d that does not create a causal mask in case q_len == 1.
             is_causal=self.is_causal and attention_mask is None and q_len > 1,
         )
-        _record_head_output_diagnostics(self.config, self.layer_idx, attn_output, self.num_heads)
+        component_weights_for_record = None
+        if bool(getattr(self.config, "head_output_record_components", False)):
+            component_scores = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+            if attention_mask is not None:
+                component_scores = component_scores + attention_mask
+            if attention_mask is None and self.is_causal and q_len > 1:
+                causal_mask = torch.triu(
+                    torch.ones(q_len, kv_seq_len, dtype=torch.bool, device=component_scores.device),
+                    diagonal=1,
+                )
+                component_scores = component_scores.masked_fill(
+                    causal_mask[None, None, :, :],
+                    torch.finfo(component_scores.dtype).min,
+                )
+            component_weights_for_record = nn.functional.softmax(
+                component_scores,
+                dim=-1,
+                dtype=torch.float32,
+            ).to(query_states.dtype)
+        _record_head_output_diagnostics(
+            self.config,
+            self.layer_idx,
+            attn_output,
+            self.num_heads,
+            attn_weights=component_weights_for_record,
+            value_states=value_states,
+        )
         attn_output = _apply_head_output_direction_projection(self.config, self.layer_idx, attn_output, self.num_heads)
         attn_output = _apply_query_gated_head_output_suppression(
             self.config,
