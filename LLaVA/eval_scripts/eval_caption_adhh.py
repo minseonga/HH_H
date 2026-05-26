@@ -454,6 +454,7 @@ def eval_model(args):
         or args.wide_gate_deactivate
         or args.online_value_selector_deactivate
         or args.unsupported_component_deactivate
+        or args.adhh_query_gate_calibration
     ):
         if model_path == 'liuhaotian/llava-v1.5-7b':
             model.config.img_start_pos = 35
@@ -483,6 +484,46 @@ def eval_model(args):
             model.config.soft_deactivate = True
             model.config.soft_gamma = args.soft_gamma
             model.config.soft_temperature = args.soft_temperature
+        if args.adhh_query_gate_calibration:
+            if not os.path.exists(args.adhh_query_gate_calibration):
+                raise FileNotFoundError(args.adhh_query_gate_calibration)
+            directions, thresholds, direction_rows = load_query_direction_gate(
+                args.adhh_query_gate_calibration,
+                top_k=args.adhh_query_gate_top_k,
+                min_auroc=args.adhh_query_gate_min_auroc,
+            )
+            if not directions:
+                raise ValueError(
+                    "No AD-HH query gate directions selected; lower "
+                    "--adhh_query_gate_min_auroc or increase --adhh_query_gate_top_k."
+                )
+            model.config.adhh_query_gate = True
+            model.config.adhh_query_gate_directions = directions
+            model.config.adhh_query_gate_thresholds = thresholds
+            model.config.adhh_query_gate_risk_mode = args.adhh_query_gate_risk_mode
+            model.config.adhh_query_gate_temperature = args.adhh_query_gate_temperature
+            model.config.adhh_query_gate_detector_aggregation = args.adhh_query_gate_detector_aggregation
+            model.config.adhh_query_gate_global_aggregation = args.adhh_query_gate_global_aggregation
+            model.config.adhh_query_gate_detector_phase = args.adhh_query_gate_detector_phase
+            model.config.adhh_query_gate_source = args.adhh_query_gate_source
+            model.config.adhh_query_gate_min_scale = args.adhh_query_gate_min_scale
+            model.config.adhh_query_gate_max_scale = args.adhh_query_gate_max_scale
+            model.config.adhh_query_gate_risk_scale = args.adhh_query_gate_risk_scale
+            model.config.adhh_query_gate_max_risk = args.adhh_query_gate_max_risk
+            model.config.adhh_query_gate_previous_risk = None
+            model.config.adhh_query_gate_risk_values = []
+            print(
+                f"[info] AD-HH query gate directions: {len(directions)} "
+                f"from {args.adhh_query_gate_calibration}"
+            )
+            for row in direction_rows[:10]:
+                print(
+                    "[info] AD-HH query gate "
+                    f"rank={row['rank']} head={row['head_key']} "
+                    f"auc={row['test_auroc']:.4f} threshold={row['threshold']:.4f}"
+                )
+        else:
+            model.config.adhh_query_gate = False
         if args.dynamic_deactivate:
             model.config.dynamic_deactivate = True
             model.config.dynamic_gamma = args.dynamic_gamma
@@ -957,6 +998,9 @@ def eval_model(args):
         if args.unsupported_component_deactivate:
             model.config.unsupported_component_prefill_protect_heads = {}
             model.config.unsupported_component_query_gate_state = {}
+        if args.adhh_query_gate_calibration:
+            model.config.adhh_query_gate_previous_risk = None
+            model.config.adhh_query_gate_risk_values = []
         if args.record_layer_contrastive_diagnostics:
             model.config.layer_contrastive_diagnostics = []
             model.config.layer_contrastive_call_index = 0
@@ -1159,6 +1203,39 @@ if __name__ == "__main__":
     parser.add_argument("--head_prior_mode", type=str, default="auto", choices=["auto", "score", "rank", "uniform"])
     parser.add_argument("--soft_gamma", type=float, default=0.5)
     parser.add_argument("--soft_temperature", type=float, default=0.05)
+    parser.add_argument("--adhh_query_gate_calibration", type=str, default="")
+    parser.add_argument("--adhh_query_gate_top_k", type=int, default=1)
+    parser.add_argument("--adhh_query_gate_min_auroc", type=float, default=0.0)
+    parser.add_argument(
+        "--adhh_query_gate_risk_mode",
+        type=str,
+        default="margin",
+        choices=["margin", "score", "hard", "sigmoid"],
+    )
+    parser.add_argument(
+        "--adhh_query_gate_detector_aggregation",
+        type=str,
+        default="max",
+        choices=["max", "mean", "sum"],
+    )
+    parser.add_argument(
+        "--adhh_query_gate_global_aggregation",
+        type=str,
+        default="max",
+        choices=["max", "mean", "sum"],
+    )
+    parser.add_argument("--adhh_query_gate_temperature", type=float, default=0.05)
+    parser.add_argument("--adhh_query_gate_risk_scale", type=float, default=0.03)
+    parser.add_argument("--adhh_query_gate_max_risk", type=float, default=1.0)
+    parser.add_argument("--adhh_query_gate_min_scale", type=float, default=0.25)
+    parser.add_argument("--adhh_query_gate_max_scale", type=float, default=1.0)
+    parser.add_argument("--adhh_query_gate_detector_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
+    parser.add_argument(
+        "--adhh_query_gate_source",
+        type=str,
+        default="current_or_previous",
+        choices=["current_or_previous", "current", "previous"],
+    )
     parser.add_argument("--dynamic_gamma", type=float, default=1.0)
     parser.add_argument("--dynamic_temperature", type=float, default=0.05)
     parser.add_argument("--dynamic_margin_weight", type=float, default=1.0)

@@ -836,6 +836,188 @@ def _update_query_logit_correction_risk(config, layer_idx, query_states, num_hea
         })
 
 
+def _risk_from_query_direction(
+    config,
+    query_states,
+    num_heads,
+    layer,
+    direction_attr,
+    threshold_attr,
+    risk_mode_attr,
+    temperature_attr,
+    detector_aggregation_attr,
+    eps_attr,
+):
+    directions = getattr(config, direction_attr, None)
+    if not directions or query_states is None:
+        return None
+
+    risk_mode = getattr(config, risk_mode_attr, "margin")
+    temperature = max(float(getattr(config, temperature_attr, 0.05)), 1e-6)
+    thresholds = getattr(config, threshold_attr, {})
+    eps = float(getattr(config, eps_attr, 1e-6))
+
+    layer_risks = []
+    score_values = []
+    margin_values = []
+    for head in range(num_heads):
+        key = f"{layer}:{head}"
+        direction = directions.get(key)
+        if direction is None:
+            continue
+        if not isinstance(direction, torch.Tensor):
+            direction = torch.tensor(direction)
+        direction = direction.to(device=query_states.device, dtype=query_states.dtype)
+        direction = direction / torch.clamp(torch.linalg.vector_norm(direction), min=eps)
+
+        q = query_states[:, head, -1, :]
+        q_norm = q / torch.clamp(torch.linalg.vector_norm(q, dim=-1, keepdim=True), min=eps)
+        score = torch.sum(q_norm * direction, dim=-1, keepdim=True)
+        threshold = float(thresholds.get(key, 0.0))
+        margin = score - threshold
+        if risk_mode == "score":
+            risk = torch.clamp(score, min=0.0)
+        elif risk_mode == "hard":
+            risk = (margin >= 0).to(query_states.dtype)
+        elif risk_mode == "sigmoid":
+            risk = torch.sigmoid(margin / temperature).to(query_states.dtype)
+        else:
+            risk = torch.clamp(margin, min=0.0)
+        layer_risks.append(risk)
+        score_values.append(score)
+        margin_values.append(margin)
+
+    if not layer_risks:
+        return None
+
+    stacked = torch.stack(layer_risks, dim=0)
+    aggregation = getattr(config, detector_aggregation_attr, "max")
+    if aggregation == "mean":
+        layer_risk = torch.mean(stacked, dim=0)
+    elif aggregation == "sum":
+        layer_risk = torch.sum(stacked, dim=0)
+    else:
+        layer_risk = torch.max(stacked, dim=0).values
+    return layer_risk, score_values, margin_values, aggregation, risk_mode
+
+
+def _update_adhh_query_gate_risk(config, layer_idx, query_states, num_heads):
+    if not getattr(config, "adhh_query_gate", False):
+        return
+
+    layer = int(layer_idx) if layer_idx is not None else -1
+    q_len = int(query_states.shape[2])
+    phase = "decode" if q_len == 1 else "prefill"
+    phase_mode = getattr(config, "adhh_query_gate_detector_phase", "decode")
+    if phase_mode == "both":
+        phase_mode = "all"
+    if phase_mode not in ("all", "prefill", "decode"):
+        phase_mode = "decode"
+    if phase_mode != "all" and phase_mode != phase:
+        return
+
+    result = _risk_from_query_direction(
+        config,
+        query_states,
+        num_heads,
+        layer,
+        "adhh_query_gate_directions",
+        "adhh_query_gate_thresholds",
+        "adhh_query_gate_risk_mode",
+        "adhh_query_gate_temperature",
+        "adhh_query_gate_detector_aggregation",
+        "adhh_query_gate_eps",
+    )
+    if result is None:
+        return
+
+    layer_risk, score_values, margin_values, aggregation, risk_mode = result
+    risk_values = getattr(config, "adhh_query_gate_risk_values", None)
+    if risk_values is None:
+        risk_values = []
+        config.adhh_query_gate_risk_values = risk_values
+    risk_values.append(layer_risk)
+
+    records = getattr(config, "adhh_query_gate_diagnostics", None)
+    if getattr(config, "record_adhh_query_gate_diagnostics", False) and records is not None:
+        scores = torch.stack(score_values, dim=0)
+        margins = torch.stack(margin_values, dim=0)
+        records.append({
+            "kind": "adhh_query_gate_risk",
+            "phase": phase,
+            "q_len": q_len,
+            "layer": layer,
+            "n_heads": int(len(score_values)),
+            "aggregation": aggregation,
+            "risk_mode": risk_mode,
+            "risk": layer_risk.detach().float().mean().cpu().item(),
+            "active_risk": (layer_risk > float(getattr(config, "adhh_query_gate_eps", 1e-6))).detach().float().mean().cpu().item(),
+            "mean_score": scores.detach().float().mean().cpu().item(),
+            "mean_margin": margins.detach().float().mean().cpu().item(),
+            "max_margin": margins.detach().float().max().cpu().item(),
+        })
+
+
+def _aggregate_adhh_query_gate_risk(config, risk_values):
+    if not risk_values:
+        return None
+    aggregation = getattr(config, "adhh_query_gate_global_aggregation", "max")
+    risks = torch.stack(risk_values, dim=0)
+    if aggregation == "mean":
+        risk = torch.mean(risks, dim=0)
+    elif aggregation == "sum":
+        risk = torch.sum(risks, dim=0)
+    else:
+        risk = torch.max(risks, dim=0).values
+    risk = torch.clamp(risk, min=0.0)
+    risk_scale = max(float(getattr(config, "adhh_query_gate_risk_scale", 1.0)), 1e-6)
+    risk = risk / risk_scale
+    max_risk = float(getattr(config, "adhh_query_gate_max_risk", 1.0))
+    if max_risk > 0.0:
+        risk = torch.clamp(risk, max=max_risk)
+    return risk
+
+
+def _finalize_adhh_query_gate_risk(config):
+    if not getattr(config, "adhh_query_gate", False):
+        return
+    current = _aggregate_adhh_query_gate_risk(
+        config,
+        getattr(config, "adhh_query_gate_risk_values", None),
+    )
+    if current is not None:
+        config.adhh_query_gate_previous_risk = current.detach()
+
+
+def _get_adhh_query_gate_scale(config, attn_weights):
+    if not getattr(config, "adhh_query_gate", False):
+        return None
+    if int(attn_weights.shape[2]) != 1:
+        return None
+    source = getattr(config, "adhh_query_gate_source", "current_or_previous")
+    current = _aggregate_adhh_query_gate_risk(
+        config,
+        getattr(config, "adhh_query_gate_risk_values", None),
+    )
+    previous = getattr(config, "adhh_query_gate_previous_risk", None)
+    risk = None
+    if source == "current":
+        risk = current
+    elif source == "previous":
+        risk = previous
+    else:
+        risk = current if current is not None else previous
+    if risk is None:
+        min_scale = float(getattr(config, "adhh_query_gate_min_scale", 1.0))
+        return torch.full((attn_weights.shape[0], 1), min_scale, device=attn_weights.device, dtype=attn_weights.dtype)
+    risk = risk.to(device=attn_weights.device, dtype=attn_weights.dtype)
+    min_scale = float(getattr(config, "adhh_query_gate_min_scale", 0.25))
+    max_scale = float(getattr(config, "adhh_query_gate_max_scale", 1.0))
+    risk = torch.clamp(risk, min=0.0, max=1.0)
+    scale = min_scale + (max_scale - min_scale) * risk
+    return torch.clamp(scale, min=0.0, max=1.0).to(attn_weights.dtype)
+
+
 def _maybe_apply_query_logit_correction(config, logits, phase):
     if not getattr(config, "query_logit_correction", False):
         return logits
@@ -2786,6 +2968,7 @@ class LlamaAttention(nn.Module):
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         _update_query_logit_correction_risk(self.config, self.layer_idx, query_states, self.num_heads)
+        _update_adhh_query_gate_risk(self.config, self.layer_idx, query_states, self.num_heads)
         _update_query_visual_attention_boost_risk(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
@@ -2848,10 +3031,15 @@ class LlamaAttention(nn.Module):
         # TODO: adaptive deactivate of hallucination heads
         if getattr(self.config, "adaptive_deactivate", False):
             if head_list is not None:
+                query_gate_scale = _get_adhh_query_gate_scale(self.config, attn_weights)
                 for head in head_list:
                     aggre_attention = torch.sum(attn_weights[:, head, -1, self.config.img_start_pos+self.config.img_length:])
                     if aggre_attention >= self.config.adhh_threshold:
-                        attn_weights[:, head, -1, self.config.img_start_pos+self.config.img_length:] = 0
+                        text_attention = attn_weights[:, head, -1, self.config.img_start_pos+self.config.img_length:]
+                        if query_gate_scale is None:
+                            text_attention *= 0
+                        else:
+                            text_attention *= (1.0 - query_gate_scale)
 
         # Soft routing variant of AD-HH: keep the same fixed heads and threshold,
         # but continuously downscale text attention instead of zeroing it.
@@ -2861,11 +3049,15 @@ class LlamaAttention(nn.Module):
                 temperature = max(float(getattr(self.config, "soft_temperature", 0.05)), 1e-6)
                 gamma = float(getattr(self.config, "soft_gamma", 0.5))
                 threshold = float(getattr(self.config, "adhh_threshold", 0.0))
+                query_gate_scale = _get_adhh_query_gate_scale(self.config, attn_weights)
                 for head in head_list:
                     text_attention = attn_weights[:, head, -1, text_start_idx:]
                     text_mass = torch.sum(text_attention, dim=-1, keepdim=True)
                     alpha = torch.sigmoid((text_mass - threshold) / temperature).to(attn_weights.dtype)
-                    text_attention *= (1.0 - gamma * alpha)
+                    strength = gamma * alpha
+                    if query_gate_scale is not None:
+                        strength = strength * query_gate_scale
+                    text_attention *= (1.0 - strength)
 
         if getattr(self.config, "fixed_strength_deactivate", False):
             if head_list is not None:
@@ -3478,6 +3670,7 @@ class LlamaFlashAttention2(LlamaAttention):
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         _update_query_logit_correction_risk(self.config, self.layer_idx, query_states, self.num_heads)
+        _update_adhh_query_gate_risk(self.config, self.layer_idx, query_states, self.num_heads)
         _update_query_visual_attention_boost_risk(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
@@ -3819,6 +4012,7 @@ class LlamaSdpaAttention(LlamaAttention):
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         _update_query_logit_correction_risk(self.config, self.layer_idx, query_states, self.num_heads)
+        _update_adhh_query_gate_risk(self.config, self.layer_idx, query_states, self.num_heads)
         _update_query_visual_attention_boost_risk(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
@@ -4452,6 +4646,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
 
         if getattr(self.config, "query_logit_correction", False):
             self.config.query_logit_correction_risk_values = []
+        if getattr(self.config, "adhh_query_gate", False):
+            self.config.adhh_query_gate_risk_values = []
         if getattr(self.config, "query_visual_attention_boost", False):
             self.config.query_visual_attention_boost_risk_state = None
 
@@ -4521,6 +4717,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
                 logits,
                 phase,
             )
+            _finalize_adhh_query_gate_risk(self.config)
 
             loss = None
             if labels is not None:
