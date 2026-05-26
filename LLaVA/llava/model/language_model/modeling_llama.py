@@ -3841,6 +3841,55 @@ class LlamaSdpaAttention(LlamaAttention):
                     f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
                 )
 
+        if getattr(self.config, "query_visual_attention_boost", False):
+            attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+            if attention_mask is not None:
+                attn_weights = attn_weights + attention_mask
+            if attention_mask is None and self.is_causal and q_len > 1:
+                causal_mask = torch.triu(
+                    torch.ones(q_len, kv_seq_len, dtype=torch.bool, device=attn_weights.device),
+                    diagonal=1,
+                )
+                attn_weights = attn_weights.masked_fill(
+                    causal_mask[None, None, :, :],
+                    torch.finfo(attn_weights.dtype).min,
+                )
+            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+            attn_weights = _maybe_apply_query_visual_attention_boost(
+                self.config,
+                self.layer_idx,
+                attn_weights,
+                kv_seq_len,
+                self.num_heads,
+            )
+            attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+            attn_output = torch.matmul(attn_weights, value_states)
+            _record_head_output_diagnostics(self.config, self.layer_idx, attn_output, self.num_heads)
+            attn_output = _apply_head_output_direction_projection(self.config, self.layer_idx, attn_output, self.num_heads)
+            attn_output = _apply_query_gated_head_output_suppression(
+                self.config,
+                self.layer_idx,
+                query_states_for_qgated_head_output,
+                attn_output,
+                self.num_heads,
+            )
+            if getattr(self.config, "unsupported_component_deactivate", False):
+                attn_output = _apply_unsupported_component_suppression(
+                    self.config,
+                    self.layer_idx,
+                    attn_weights,
+                    value_states,
+                    attn_output,
+                    self.num_heads,
+                    head_list,
+                    self.o_proj,
+                    query_states_for_unsupported_gate,
+                )
+            attn_output = attn_output.transpose(1, 2).contiguous()
+            attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+            attn_output = self.o_proj(attn_output)
+            return attn_output, None, past_key_value, None, None, None, None
+
         # SDPA with memory-efficient backend is currently (torch==2.1.2) bugged with non-contiguous inputs with custom attn_mask,
         # Reference: https://github.com/pytorch/pytorch/issues/112577.
         if query_states.device.type == "cuda" and attention_mask is not None:
