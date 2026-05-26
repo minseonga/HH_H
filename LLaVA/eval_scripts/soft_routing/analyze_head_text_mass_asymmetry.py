@@ -272,6 +272,10 @@ def compact_mention_row(row):
         "generated_mass": row["generated_mass"],
         "recent_generated_mass": row["recent_generated_mass"],
         "prefix_before_image_mass": row["prefix_before_image_mass"],
+        "max_attention": row["max_attention"],
+        "top1_index": row["top1_index"],
+        "top1_is_image": row["top1_is_image"],
+        "top1_is_generated": row["top1_is_generated"],
     }
 
 
