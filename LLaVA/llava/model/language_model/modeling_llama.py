@@ -312,7 +312,12 @@ def _record_head_output_diagnostics(config, layer_idx, head_outputs, num_heads):
     if max_layer is not None and layer > int(max_layer):
         return
 
-    if getattr(config, "head_output_record_all_heads", False):
+    heads_by_layer = getattr(config, "head_output_record_heads_by_layer", None)
+    if heads_by_layer is not None:
+        diag_heads = heads_by_layer.get(layer, heads_by_layer.get(str(layer), None))
+        if diag_heads is None:
+            return
+    elif getattr(config, "head_output_record_all_heads", False):
         diag_heads = list(range(num_heads))
     else:
         diag_heads = getattr(config, "head_output_record_heads", None)
