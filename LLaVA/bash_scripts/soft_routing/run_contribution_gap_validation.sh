@@ -22,6 +22,8 @@ QUERY_CALIBRATION="${QUERY_CALIBRATION:-}"
 QUERY_TOP_K="${QUERY_TOP_K:-0}"
 QUERY_MIN_AUROC="${QUERY_MIN_AUROC:-0.0}"
 RESUME="${RESUME:-0}"
+AGGREGATE_ONLY="${AGGREGATE_ONLY:-0}"
+SKIP_FULL_HEAD_ABLATION="${SKIP_FULL_HEAD_ABLATION:-1}"
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -42,6 +44,12 @@ if [ -n "${QUERY_CALIBRATION}" ]; then
 fi
 if [ "${RESUME}" = "1" ]; then
     extra_args+=(--resume)
+fi
+if [ "${AGGREGATE_ONLY}" = "1" ]; then
+    extra_args+=(--aggregate-only)
+fi
+if [ "${SKIP_FULL_HEAD_ABLATION}" = "1" ]; then
+    extra_args+=(--skip-full-head-ablation)
 fi
 
 CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.validate_head_logit_contribution_proxy \

@@ -563,10 +563,59 @@ def aggregate_mention_features(rows):
     return output
 
 
+def write_summaries(args, rows_path, all_rows, candidate_heads=None, mentions=None):
+    correlation_rows = summarize_correlations(all_rows)
+    top_ks = [int(item) for item in str(args.top_k_summary).replace(" ", ",").split(",") if item.strip()]
+    topk_rows = summarize_topk(all_rows, top_ks)
+    mention_feature_rows = aggregate_mention_features(all_rows)
+    correlations_path = os.path.join(args.output_dir, "head_logit_proxy_ablation_correlations.csv")
+    topk_path = os.path.join(args.output_dir, "head_logit_proxy_ablation_topk_overlap.csv")
+    mention_features_path = os.path.join(args.output_dir, "contribution_gap_mention_features.csv")
+    write_csv(correlations_path, correlation_rows)
+    write_csv(topk_path, topk_rows)
+    write_csv(mention_features_path, mention_feature_rows)
+
+    if candidate_heads is None:
+        head_keys = sorted({row.get("head_key") for row in all_rows if row.get("head_key")})
+        candidate_heads = [parse_head_key(key) for key in head_keys]
+    label_counts = Counter(row.get("label_family") for row in all_rows)
+    if not label_counts:
+        label_counts = Counter(row.get("label_name") for row in all_rows)
+    summary = {
+        "eval_results": args.eval_results,
+        "n_mentions": len(mentions) if mentions is not None else len({row.get("step_id") for row in all_rows}),
+        "n_rows": len(all_rows),
+        "candidate_heads": [
+            {"layer": layer, "head": head, "head_key": head_key(layer, head)}
+            for layer, head in candidate_heads
+        ],
+        "label_counts": dict(label_counts),
+        "outputs": {
+            "rows": rows_path,
+            "correlations": correlations_path,
+            "topk_overlap": topk_path,
+            "mention_features": mention_features_path,
+        },
+        "top_correlations": correlation_rows[:10],
+        "topk_overlap": topk_rows[:10],
+    }
+    with open(os.path.join(args.output_dir, "head_logit_proxy_ablation_summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+    print("[summary] head logit contribution proxy validation")
+    print(json.dumps({
+        "n_mentions": summary["n_mentions"],
+        "n_rows": summary["n_rows"],
+        "label_counts": summary["label_counts"],
+        "top_correlations": summary["top_correlations"][:5],
+        "topk_overlap": summary["topk_overlap"][:5],
+    }, indent=2))
+    return summary
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--eval-results", required=True)
-    parser.add_argument("--image-folder", required=True)
+    parser.add_argument("--eval-results", default="")
+    parser.add_argument("--image-folder", default="")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--model-path", default="liuhaotian/llava-v1.5-7b")
     parser.add_argument("--model-base", default=None)
@@ -586,10 +635,23 @@ def main():
     parser.add_argument("--include-adhh-top-k", type=int, default=20)
     parser.add_argument("--top-k-summary", default="1,3,5")
     parser.add_argument("--resume", action="store_true", default=False)
+    parser.add_argument("--aggregate-only", action="store_true", default=False)
+    parser.add_argument("--skip-full-head-ablation", action="store_true", default=False)
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
     rows_path = os.path.join(args.output_dir, "head_logit_proxy_ablation_rows.csv")
+    if args.aggregate_only:
+        if not os.path.exists(rows_path):
+            raise FileNotFoundError(rows_path)
+        with open(rows_path, newline="") as f:
+            all_rows = list(csv.DictReader(f))
+        write_summaries(args, rows_path, all_rows)
+        return
+    if not args.eval_results:
+        raise ValueError("--eval-results is required unless --aggregate-only is set")
+    if not args.image_folder:
+        raise ValueError("--image-folder is required unless --aggregate-only is set")
     done = set()
     if args.resume and os.path.exists(rows_path):
         with open(rows_path, newline="") as f:
@@ -712,15 +774,17 @@ def main():
                     proxy_text_top1 - proxy_img_top1
                     if proxy_text_top1 is not None and proxy_img_top1 is not None else None
                 )
-                ablated = one_step_scores(
-                    model,
-                    prompt_ids,
-                    prefix_ids,
-                    image_tensor,
-                    image_size,
-                    zero_head=(layer, head),
-                    record_head_outputs=False,
-                )
+                ablated = None
+                if not args.skip_full_head_ablation:
+                    ablated = one_step_scores(
+                        model,
+                        prompt_ids,
+                        prefix_ids,
+                        image_tensor,
+                        image_size,
+                        zero_head=(layer, head),
+                        record_head_outputs=False,
+                    )
                 text_ablated = None
                 if text_value is not None:
                     text_ablated = one_step_scores(
@@ -732,10 +796,20 @@ def main():
                         subtract_head_component=(layer, head, text_value),
                         record_head_outputs=False,
                     )
-                target_logit_zero = float(ablated["score"][target_token_id].item())
-                target_logprob_zero = float(ablated["log_probs"][target_token_id].item())
-                top1_logit_zero = float(ablated["score"][top1_id].item())
-                top1_logprob_zero = float(ablated["log_probs"][top1_id].item())
+                if ablated is not None:
+                    target_logit_zero = float(ablated["score"][target_token_id].item())
+                    target_logprob_zero = float(ablated["log_probs"][target_token_id].item())
+                    top1_logit_zero = float(ablated["score"][top1_id].item())
+                    top1_logprob_zero = float(ablated["log_probs"][top1_id].item())
+                    zero_top1_id = int(ablated["top1_id"])
+                    zero_target_rank = target_rank(ablated["sorted_ids"], target_token_id)
+                else:
+                    target_logit_zero = None
+                    target_logprob_zero = None
+                    top1_logit_zero = None
+                    top1_logprob_zero = None
+                    zero_top1_id = None
+                    zero_target_rank = None
                 if text_ablated is not None:
                     target_logit_text_zero = float(text_ablated["score"][target_token_id].item())
                     target_logprob_text_zero = float(text_ablated["log_probs"][target_token_id].item())
@@ -799,13 +873,25 @@ def main():
                     "target_logprob_zero": target_logprob_zero,
                     "top1_logit_zero": top1_logit_zero,
                     "top1_logprob_zero": top1_logprob_zero,
-                    "target_logit_drop": target_logit_original - target_logit_zero,
-                    "target_logprob_drop": target_logprob_original - target_logprob_zero,
-                    "top1_logit_drop": top1_logit_original - top1_logit_zero,
-                    "top1_logprob_drop": top1_logprob_original - top1_logprob_zero,
-                    "zero_top1_token_id": int(ablated["top1_id"]),
-                    "zero_top1_token": tokenizer.decode([int(ablated["top1_id"])]),
-                    "target_rank_zero": target_rank(ablated["sorted_ids"], target_token_id),
+                    "target_logit_drop": (
+                        target_logit_original - target_logit_zero
+                        if target_logit_zero is not None else None
+                    ),
+                    "target_logprob_drop": (
+                        target_logprob_original - target_logprob_zero
+                        if target_logprob_zero is not None else None
+                    ),
+                    "top1_logit_drop": (
+                        top1_logit_original - top1_logit_zero
+                        if top1_logit_zero is not None else None
+                    ),
+                    "top1_logprob_drop": (
+                        top1_logprob_original - top1_logprob_zero
+                        if top1_logprob_zero is not None else None
+                    ),
+                    "zero_top1_token_id": zero_top1_id,
+                    "zero_top1_token": tokenizer.decode([zero_top1_id]) if zero_top1_id is not None else None,
+                    "target_rank_zero": zero_target_rank,
                     "target_logit_text_zero": target_logit_text_zero,
                     "target_logprob_text_zero": target_logprob_text_zero,
                     "top1_logit_text_zero": top1_logit_text_zero,
@@ -843,39 +929,7 @@ def main():
         with open(rows_path, newline="") as f:
             all_rows = list(csv.DictReader(f))
 
-    correlation_rows = summarize_correlations(all_rows)
-    top_ks = [int(item) for item in str(args.top_k_summary).replace(" ", ",").split(",") if item.strip()]
-    topk_rows = summarize_topk(all_rows, top_ks)
-    mention_feature_rows = aggregate_mention_features(all_rows)
-    write_csv(os.path.join(args.output_dir, "head_logit_proxy_ablation_correlations.csv"), correlation_rows)
-    write_csv(os.path.join(args.output_dir, "head_logit_proxy_ablation_topk_overlap.csv"), topk_rows)
-    write_csv(os.path.join(args.output_dir, "contribution_gap_mention_features.csv"), mention_feature_rows)
-
-    summary = {
-        "eval_results": args.eval_results,
-        "n_mentions": len(mentions),
-        "n_rows": len(all_rows),
-        "candidate_heads": [{"layer": layer, "head": head, "head_key": head_key(layer, head)} for layer, head in candidate_heads],
-        "label_counts": dict(Counter(row.get("label_family") for row in all_rows)),
-        "outputs": {
-            "rows": rows_path,
-            "correlations": os.path.join(args.output_dir, "head_logit_proxy_ablation_correlations.csv"),
-            "topk_overlap": os.path.join(args.output_dir, "head_logit_proxy_ablation_topk_overlap.csv"),
-            "mention_features": os.path.join(args.output_dir, "contribution_gap_mention_features.csv"),
-        },
-        "top_correlations": correlation_rows[:10],
-        "topk_overlap": topk_rows[:10],
-    }
-    with open(os.path.join(args.output_dir, "head_logit_proxy_ablation_summary.json"), "w") as f:
-        json.dump(summary, f, indent=2)
-    print("[summary] head logit contribution proxy validation")
-    print(json.dumps({
-        "n_mentions": summary["n_mentions"],
-        "n_rows": summary["n_rows"],
-        "label_counts": summary["label_counts"],
-        "top_correlations": summary["top_correlations"][:5],
-        "topk_overlap": summary["topk_overlap"][:5],
-    }, indent=2))
+    write_summaries(args, rows_path, all_rows, candidate_heads=candidate_heads, mentions=mentions)
 
 
 if __name__ == "__main__":
