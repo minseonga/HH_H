@@ -1462,6 +1462,7 @@ def _maybe_apply_concentrated_visual_boost(config, layer_idx, attn_weights, kv_s
         return attn_weights
 
     target_heads = getattr(config, "concentrated_visual_boost_target_heads", "all")
+    use_all_heads = target_heads != "adhh"
     if target_heads == "adhh":
         head_list = getattr(config, "hal_attention_heads", None)
         if head_list is None:
@@ -1478,6 +1479,35 @@ def _maybe_apply_concentrated_visual_boost(config, layer_idx, attn_weights, kv_s
 
     adjusted = attn_weights.clone()
     entropy_den = math.log(max(int(kv_seq_len - text_start), 2))
+
+    if use_all_heads:
+        head_attention = adjusted[:, :, -1, :]
+        text_attention = head_attention[:, :, text_start:]
+        text_mass = torch.sum(text_attention, dim=-1, keepdim=True).float()
+        probs = text_attention.float() / torch.clamp(text_mass, min=eps)
+        text_entropy = -torch.sum(
+            probs * torch.log(torch.clamp(probs, min=eps)),
+            dim=-1,
+            keepdim=True,
+        )
+        text_entropy_norm = torch.clamp(text_entropy / max(entropy_den, eps), min=0.0, max=1.0)
+        concentrated = torch.clamp(1.0 - text_entropy_norm, min=0.0, max=1.0)
+        strength = gamma * torch.pow(torch.clamp(text_mass, min=0.0, max=1.0), text_power)
+        strength = strength * torch.pow(concentrated, entropy_power)
+        strength = torch.clamp(strength, min=0.0, max=strength_cap).to(attn_weights.dtype)
+
+        if mode in ("suppress", "hybrid") and text_alpha > 0.0:
+            text_factor = torch.clamp(1.0 - text_alpha * strength, min=0.0)
+            text_attention *= text_factor
+        if mode in ("boost", "hybrid") and visual_beta > 0.0:
+            image_factor = 1.0 + visual_beta * strength
+            if max_image_factor > 0.0:
+                image_factor = torch.clamp(image_factor, max=max_image_factor)
+            head_attention[:, :, img_start:img_end] *= image_factor
+        if renormalize:
+            norm = torch.sum(head_attention, dim=-1, keepdim=True)
+            head_attention /= torch.clamp(norm, min=eps)
+        return adjusted
 
     for head in head_indices:
         head_attention = adjusted[:, head, -1, :]
@@ -3262,9 +3292,9 @@ class LlamaAttention(nn.Module):
                     if strength_cap == 0.0:
                         strength_cap = 1.0
 
-                    for head in selected_heads:
-                        head_attention = attn_weights[:, head, -1, :]
-                        text_attention = head_attention[:, text_start_idx:]
+                    if target_heads == "all":
+                        head_attention = attn_weights[:, :, -1, :]
+                        text_attention = head_attention[:, :, text_start_idx:]
                         text_mass = torch.sum(text_attention, dim=-1, keepdim=True).float()
 
                         if entropy_source == "text":
@@ -3290,12 +3320,51 @@ class LlamaAttention(nn.Module):
                         strength = gamma * torch.pow(torch.clamp(text_mass, min=0.0, max=1.0), text_power)
                         strength = strength * torch.pow(entropy_factor, entropy_power)
                         if query_gate_scale is not None:
-                            strength = strength.to(query_gate_scale.dtype) * query_gate_scale
+                            strength = strength.to(query_gate_scale.dtype) * query_gate_scale.view(query_gate_scale.shape[0], 1, 1)
                         strength = torch.clamp(strength, min=0.0, max=strength_cap).to(attn_weights.dtype)
                         text_attention *= (1.0 - strength)
                         if renormalize:
                             norm = torch.sum(head_attention, dim=-1, keepdim=True)
                             head_attention /= torch.clamp(norm, min=eps)
+                        selected_heads = None
+
+                    if selected_heads is None:
+                        pass
+                    else:
+                        for head in selected_heads:
+                            head_attention = attn_weights[:, head, -1, :]
+                            text_attention = head_attention[:, text_start_idx:]
+                            text_mass = torch.sum(text_attention, dim=-1, keepdim=True).float()
+
+                            if entropy_source == "text":
+                                probs = text_attention.float() / torch.clamp(text_mass, min=eps)
+                                entropy_den = math.log(max(int(text_attention.shape[-1]), 2))
+                            else:
+                                mass = torch.sum(head_attention.float(), dim=-1, keepdim=True)
+                                probs = head_attention.float() / torch.clamp(mass, min=eps)
+                                entropy_den = math.log(max(int(head_attention.shape[-1]), 2))
+                            entropy = -torch.sum(
+                                probs * torch.log(torch.clamp(probs, min=eps)),
+                                dim=-1,
+                                keepdim=True,
+                            )
+                            entropy_norm = torch.clamp(entropy / max(entropy_den, eps), min=0.0, max=1.0)
+                            if entropy_transform in ("none", "constant"):
+                                entropy_factor = torch.ones_like(entropy_norm)
+                            elif entropy_transform in ("inverse", "low", "concentration"):
+                                entropy_factor = torch.clamp(1.0 - entropy_norm, min=0.0, max=1.0)
+                            else:
+                                entropy_factor = entropy_norm
+
+                            strength = gamma * torch.pow(torch.clamp(text_mass, min=0.0, max=1.0), text_power)
+                            strength = strength * torch.pow(entropy_factor, entropy_power)
+                            if query_gate_scale is not None:
+                                strength = strength.to(query_gate_scale.dtype) * query_gate_scale
+                            strength = torch.clamp(strength, min=0.0, max=strength_cap).to(attn_weights.dtype)
+                            text_attention *= (1.0 - strength)
+                            if renormalize:
+                                norm = torch.sum(head_attention, dim=-1, keepdim=True)
+                                head_attention /= torch.clamp(norm, min=eps)
 
         if getattr(self.config, "fixed_strength_deactivate", False):
             if head_list is not None:
