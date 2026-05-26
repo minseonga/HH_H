@@ -74,5 +74,8 @@ python -m eval_scripts.soft_routing.analyze_adhh_fragility_features \
 echo "[summary] proxy vs text-side ablation"
 column -s, -t "${OUTPUT_DIR}/head_logit_proxy_ablation_correlations.csv" | head -60
 
+echo "[summary] mention-level proxy vs text-side teacher"
+column -s, -t "${OUTPUT_DIR}/mention_proxy_teacher_correlations.csv" | head -80
+
 echo "[summary] contribution-gap outcome AUC"
 column -s, -t "${OUTPUT_DIR}/fragility_outcomes/adhh_fragility_feature_auc.csv" | head -80

@@ -563,17 +563,106 @@ def aggregate_mention_features(rows):
     return output
 
 
+def summarize_mention_teacher_proxy(mention_rows):
+    if not mention_rows:
+        return []
+
+    groups = ["all", "hallucinated", "grounded"]
+    teachers = [
+        "max_target_text_logprob_drop",
+        "mean_target_text_logprob_drop",
+        "sum_target_text_logprob_drop",
+        "sum_positive_target_text_logprob_drop",
+        "max_target_text_logit_drop",
+        "mean_target_text_logit_drop",
+        "sum_positive_target_text_logit_drop",
+        "max_target_logprob_drop",
+        "mean_target_logprob_drop",
+        "sum_positive_target_logprob_drop",
+    ]
+    proxies = [
+        "min_proxy_text_target_logit",
+        "mean_proxy_text_target_logit",
+        "sum_proxy_text_target_logit",
+        "max_proxy_text_target_logit",
+        "mean_positive_proxy_text_target_logit",
+        "sum_positive_proxy_text_target_logit",
+        "min_proxy_evidence_gap_target",
+        "mean_proxy_evidence_gap_target",
+        "sum_proxy_evidence_gap_target",
+        "max_proxy_evidence_gap_target",
+        "mean_positive_proxy_evidence_gap_target",
+        "sum_positive_proxy_evidence_gap_target",
+        "min_proxy_img_target_logit",
+        "mean_proxy_img_target_logit",
+        "sum_proxy_img_target_logit",
+        "max_proxy_img_target_logit",
+        "mean_positive_proxy_img_target_logit",
+        "sum_positive_proxy_img_target_logit",
+        "mean_text_mass",
+        "max_text_mass",
+        "sum_text_mass",
+        "mean_img_mass",
+        "max_img_mass",
+        "sum_img_mass",
+        "mean_full_entropy_norm",
+        "max_full_entropy_norm",
+        "sum_full_entropy_norm",
+        "mean_text_entropy_norm",
+        "max_text_entropy_norm",
+        "sum_text_entropy_norm",
+        "sum_positive_text_minus_img_target",
+        "sum_positive_text_over_img_target",
+        "occurrence_idx",
+        "target_rank_original",
+    ]
+
+    output = []
+    for group in groups:
+        group_rows = mention_rows if group == "all" else [
+            row for row in mention_rows if row.get("label_name") == group
+        ]
+        if not group_rows:
+            continue
+        for proxy in proxies:
+            for teacher in teachers:
+                pairs = [
+                    (safe_float(row.get(proxy)), safe_float(row.get(teacher)))
+                    for row in group_rows
+                ]
+                pairs = [(x, y) for x, y in pairs if x is not None and y is not None]
+                if not pairs:
+                    continue
+                x = [item[0] for item in pairs]
+                y = [item[1] for item in pairs]
+                output.append({
+                    "group": group,
+                    "proxy": proxy,
+                    "teacher": teacher,
+                    "n_mentions": len(pairs),
+                    "pearson": pearson(x, y),
+                    "spearman": spearman(x, y),
+                    "mean_proxy": mean(x),
+                    "mean_teacher": mean(y),
+                })
+    output.sort(key=lambda row: abs(row["spearman"] or 0.0), reverse=True)
+    return output
+
+
 def write_summaries(args, rows_path, all_rows, candidate_heads=None, mentions=None):
     correlation_rows = summarize_correlations(all_rows)
     top_ks = [int(item) for item in str(args.top_k_summary).replace(" ", ",").split(",") if item.strip()]
     topk_rows = summarize_topk(all_rows, top_ks)
     mention_feature_rows = aggregate_mention_features(all_rows)
+    mention_teacher_proxy_rows = summarize_mention_teacher_proxy(mention_feature_rows)
     correlations_path = os.path.join(args.output_dir, "head_logit_proxy_ablation_correlations.csv")
     topk_path = os.path.join(args.output_dir, "head_logit_proxy_ablation_topk_overlap.csv")
     mention_features_path = os.path.join(args.output_dir, "contribution_gap_mention_features.csv")
+    mention_teacher_proxy_path = os.path.join(args.output_dir, "mention_proxy_teacher_correlations.csv")
     write_csv(correlations_path, correlation_rows)
     write_csv(topk_path, topk_rows)
     write_csv(mention_features_path, mention_feature_rows)
+    write_csv(mention_teacher_proxy_path, mention_teacher_proxy_rows)
 
     if candidate_heads is None:
         head_keys = sorted({row.get("head_key") for row in all_rows if row.get("head_key")})
@@ -595,9 +684,11 @@ def write_summaries(args, rows_path, all_rows, candidate_heads=None, mentions=No
             "correlations": correlations_path,
             "topk_overlap": topk_path,
             "mention_features": mention_features_path,
+            "mention_proxy_teacher_correlations": mention_teacher_proxy_path,
         },
         "top_correlations": correlation_rows[:10],
         "topk_overlap": topk_rows[:10],
+        "top_mention_proxy_teacher_correlations": mention_teacher_proxy_rows[:10],
     }
     with open(os.path.join(args.output_dir, "head_logit_proxy_ablation_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -608,6 +699,7 @@ def write_summaries(args, rows_path, all_rows, candidate_heads=None, mentions=No
         "label_counts": summary["label_counts"],
         "top_correlations": summary["top_correlations"][:5],
         "topk_overlap": summary["topk_overlap"][:5],
+        "top_mention_proxy_teacher_correlations": summary["top_mention_proxy_teacher_correlations"][:5],
     }, indent=2))
     return summary
 
