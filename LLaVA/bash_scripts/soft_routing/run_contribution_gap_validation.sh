@@ -25,6 +25,7 @@ QUERY_MIN_AUROC="${QUERY_MIN_AUROC:-0.0}"
 RESUME="${RESUME:-0}"
 AGGREGATE_ONLY="${AGGREGATE_ONLY:-0}"
 SKIP_FULL_HEAD_ABLATION="${SKIP_FULL_HEAD_ABLATION:-1}"
+SKIP_TEXT_ABLATION="${SKIP_TEXT_ABLATION:-0}"
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -35,6 +36,7 @@ echo "[info] max mentions: ${MAX_MENTIONS}"
 echo "[info] max per label: ${MAX_PER_LABEL}"
 echo "[info] include AD-HH top-k: ${INCLUDE_ADHH_TOP_K}"
 echo "[info] explicit candidate heads: ${CANDIDATE_HEADS:-<none>}"
+echo "[info] skip text ablation: ${SKIP_TEXT_ABLATION}"
 
 extra_args=()
 if [ -n "${CANDIDATE_HEADS}" ]; then
@@ -55,6 +57,9 @@ if [ "${AGGREGATE_ONLY}" = "1" ]; then
 fi
 if [ "${SKIP_FULL_HEAD_ABLATION}" = "1" ]; then
     extra_args+=(--skip-full-head-ablation)
+fi
+if [ "${SKIP_TEXT_ABLATION}" = "1" ]; then
+    extra_args+=(--skip-text-ablation)
 fi
 
 CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.validate_head_logit_contribution_proxy \

@@ -729,6 +729,7 @@ def main():
     parser.add_argument("--resume", action="store_true", default=False)
     parser.add_argument("--aggregate-only", action="store_true", default=False)
     parser.add_argument("--skip-full-head-ablation", action="store_true", default=False)
+    parser.add_argument("--skip-text-ablation", action="store_true", default=False)
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -878,7 +879,7 @@ def main():
                         record_head_outputs=False,
                     )
                 text_ablated = None
-                if text_value is not None:
+                if text_value is not None and not args.skip_text_ablation:
                     text_ablated = one_step_scores(
                         model,
                         prompt_ids,
