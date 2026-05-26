@@ -74,6 +74,81 @@ def load_first_subtoken_ids(tokenizer, vocab_path):
     return token_ids
 
 
+def normalize_image_id(value):
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if digits:
+        try:
+            return str(int(digits[-12:]))
+        except ValueError:
+            return digits.lstrip("0") or "0"
+    return text
+
+
+def load_image_id_set(path):
+    ids = set()
+    if not path:
+        return ids
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    if path.endswith(".json"):
+        with open(path) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            if "image_ids" in data:
+                raw_items = data["image_ids"]
+            elif "sentences" in data:
+                raw_items = [
+                    item.get("image_id", item.get("question_id", item.get("image")))
+                    for item in data["sentences"]
+                ]
+            else:
+                raw_items = data.values()
+        else:
+            raw_items = data
+        for item in raw_items:
+            if isinstance(item, dict):
+                item = item.get("image_id", item.get("question_id", item.get("image")))
+            image_id = normalize_image_id(item)
+            if image_id:
+                ids.add(image_id)
+        return ids
+
+    with open(path) as f:
+        for line in f:
+            for item in line.replace(",", " ").split():
+                image_id = normalize_image_id(item)
+                if image_id:
+                    ids.add(image_id)
+    return ids
+
+
+def collect_cli_image_ids(items):
+    ids = set()
+    for item in items or []:
+        image_id = normalize_image_id(item)
+        if image_id:
+            ids.add(image_id)
+    return ids
+
+
+def filter_image_ids(raw_ids, args):
+    include_ids = load_image_id_set(args.include_image_ids_path) | collect_cli_image_ids(args.include_image_ids)
+    exclude_ids = load_image_id_set(args.exclude_image_ids_path) | collect_cli_image_ids(args.exclude_image_ids)
+    filtered = [item for item in raw_ids if not include_ids or normalize_image_id(item) in include_ids]
+    filtered = [item for item in filtered if normalize_image_id(item) not in exclude_ids]
+    if not filtered:
+        raise ValueError(
+            "No images left after include/exclude filtering: "
+            f"include={len(include_ids)} exclude={len(exclude_ids)}"
+        )
+    return filtered
+
+
 def load_query_direction_gate(calibration_npz, top_k=0, min_auroc=0.0):
     data = np.load(calibration_npz)
     layers = data["layers"].astype(int)
@@ -261,7 +336,9 @@ def eval_model(args):
         caption_file_path = args.caption_file_path
         coco = COCO(caption_file_path)
         img_ids = coco.getImgIds()
-        sampled_img_ids = random.sample(img_ids, args.num_samples)
+        img_ids = filter_image_ids(img_ids, args)
+        sample_n = len(img_ids) if args.num_samples <= 0 else min(args.num_samples, len(img_ids))
+        sampled_img_ids = random.sample(img_ids, sample_n)
 
         questions = []
         dest_image_folder = os.path.join(os.path.split(os.path.split(os.path.dirname(args.answers_file))[0])[0], 'images', f'seed{args.seed}_{args.num_samples}')
@@ -281,7 +358,14 @@ def eval_model(args):
         val_caps = json.load(open(caption_file_path))
         image_infos = val_caps["images"]
         out_image_infos = [image_info for image_info in image_infos if image_info['domain'] == 'out-domain']
-        sampled_img_infos = random.sample(out_image_infos, args.num_samples)
+        allowed_ids = filter_image_ids([image_info["id"] for image_info in out_image_infos], args)
+        allowed_ids = {normalize_image_id(item) for item in allowed_ids}
+        out_image_infos = [
+            image_info for image_info in out_image_infos
+            if normalize_image_id(image_info["id"]) in allowed_ids
+        ]
+        sample_n = len(out_image_infos) if args.num_samples <= 0 else min(args.num_samples, len(out_image_infos))
+        sampled_img_infos = random.sample(out_image_infos, sample_n)
 
         questions = []
         dest_image_folder = os.path.join(os.path.split(os.path.split(os.path.dirname(args.answers_file))[0])[0], 'images', f'seed{args.seed}_{args.num_samples}')
@@ -838,6 +922,10 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples", type=int, default=500)
     parser.add_argument("--max_new_tokens", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--include_image_ids_path", type=str, default="")
+    parser.add_argument("--exclude_image_ids_path", type=str, default="")
+    parser.add_argument("--include_image_ids", nargs="*", default=[])
+    parser.add_argument("--exclude_image_ids", nargs="*", default=[])
     parser.add_argument("--adaptive_deactivate", action='store_true', default=False)
     parser.add_argument("--soft_deactivate", action='store_true', default=False)
     parser.add_argument("--dynamic_deactivate", action='store_true', default=False)
