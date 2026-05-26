@@ -18,6 +18,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-${BASE_RESULT_PATH}/contribution_gap_validation}"
 MAX_MENTIONS="${MAX_MENTIONS:-80}"
 MAX_PER_LABEL="${MAX_PER_LABEL:-40}"
 INCLUDE_ADHH_TOP_K="${INCLUDE_ADHH_TOP_K:-20}"
+CANDIDATE_HEADS="${CANDIDATE_HEADS:-}"
 QUERY_CALIBRATION="${QUERY_CALIBRATION:-}"
 QUERY_TOP_K="${QUERY_TOP_K:-0}"
 QUERY_MIN_AUROC="${QUERY_MIN_AUROC:-0.0}"
@@ -33,8 +34,12 @@ echo "[info] AD-HH eval: ${ADHH_EVAL}"
 echo "[info] max mentions: ${MAX_MENTIONS}"
 echo "[info] max per label: ${MAX_PER_LABEL}"
 echo "[info] include AD-HH top-k: ${INCLUDE_ADHH_TOP_K}"
+echo "[info] explicit candidate heads: ${CANDIDATE_HEADS:-<none>}"
 
 extra_args=()
+if [ -n "${CANDIDATE_HEADS}" ]; then
+    extra_args+=(--candidate-heads "${CANDIDATE_HEADS}")
+fi
 if [ -n "${QUERY_CALIBRATION}" ]; then
     extra_args+=(
         --query-calibration "${QUERY_CALIBRATION}"
