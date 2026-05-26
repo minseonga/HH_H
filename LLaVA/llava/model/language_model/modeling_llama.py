@@ -382,7 +382,9 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
     strength = float(getattr(config, "query_direction_strength", 0.0))
     if abs(strength) <= 0.0:
         return query_states
-    strength = min(max(strength, -1.0), 1.0)
+    strength_cap = abs(float(getattr(config, "query_direction_strength_cap", 1.0)))
+    strength_cap = max(strength_cap, 1e-6)
+    strength = min(max(strength, -strength_cap), strength_cap)
 
     gate_mode = getattr(config, "query_direction_gate_mode", "threshold")
     projection_coeff_mode = getattr(config, "query_direction_projection_coeff", "raw")

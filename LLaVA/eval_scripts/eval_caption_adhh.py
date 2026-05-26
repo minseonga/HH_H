@@ -531,6 +531,7 @@ def eval_model(args):
         model.config.query_direction_directions = directions
         model.config.query_direction_thresholds = thresholds
         model.config.query_direction_strength = args.query_direction_strength
+        model.config.query_direction_strength_cap = args.query_direction_strength_cap
         model.config.query_direction_gate_mode = args.query_direction_gate_mode
         model.config.query_direction_projection_coeff = args.query_direction_projection_coeff
         model.config.query_direction_temperature = args.query_direction_temperature
@@ -551,6 +552,7 @@ def eval_model(args):
         )
         print(
             f"[info] query projection: strength={args.query_direction_strength} "
+            f"cap={args.query_direction_strength_cap} "
             f"phase={args.query_direction_phase} gate={args.query_direction_gate_mode} "
             f"coeff={args.query_direction_projection_coeff} "
             f"positive_only={not args.query_direction_allow_negative} "
@@ -849,6 +851,7 @@ if __name__ == "__main__":
     parser.add_argument("--query_direction_top_k", type=int, default=1)
     parser.add_argument("--query_direction_min_auroc", type=float, default=0.0)
     parser.add_argument("--query_direction_strength", type=float, default=0.5)
+    parser.add_argument("--query_direction_strength_cap", type=float, default=1.0)
     parser.add_argument(
         "--query_direction_gate_mode",
         type=str,
