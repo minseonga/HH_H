@@ -184,6 +184,58 @@ def load_query_direction_gate(calibration_npz, top_k=0, min_auroc=0.0):
     return direction_dict, threshold_dict, rows
 
 
+def load_query_direction_gate_with_stats(calibration_npz, top_k=0, min_auroc=0.0):
+    data = np.load(calibration_npz)
+    layers = data["layers"].astype(int)
+    heads = data["heads"].astype(int)
+    directions = data["directions"].astype(np.float32)
+    thresholds = data["threshold_midpoint"].astype(np.float32)
+    test_auroc = data["test_auroc"].astype(np.float32)
+    train_pos = data["train_mean_positive"].astype(np.float32) if "train_mean_positive" in data else thresholds
+    train_neg = data["train_mean_negative"].astype(np.float32) if "train_mean_negative" in data else np.zeros_like(thresholds)
+
+    candidates = []
+    for idx, auc in enumerate(test_auroc.tolist()):
+        if float(auc) < float(min_auroc):
+            continue
+        candidates.append((float(auc), idx))
+    candidates.sort(reverse=True)
+    if top_k > 0:
+        candidates = candidates[:top_k]
+
+    direction_dict = {}
+    threshold_dict = {}
+    stats_dict = {}
+    rows = []
+    for rank, (_, idx) in enumerate(candidates, start=1):
+        layer = int(layers[idx])
+        head = int(heads[idx])
+        key = f"{layer}:{head}"
+        pos = float(train_pos[idx])
+        neg = float(train_neg[idx])
+        center = float(thresholds[idx])
+        scale = max(abs(pos - neg), 1e-6)
+        direction_dict[key] = torch.from_numpy(directions[idx].copy())
+        threshold_dict[key] = center
+        stats_dict[key] = {
+            "center": center,
+            "scale": scale,
+            "train_mean_positive": pos,
+            "train_mean_negative": neg,
+        }
+        rows.append({
+            "rank": rank,
+            "head_key": key,
+            "test_auroc": float(test_auroc[idx]),
+            "threshold": center,
+            "center": center,
+            "scale": scale,
+            "train_mean_positive": pos,
+            "train_mean_negative": neg,
+        })
+    return direction_dict, threshold_dict, stats_dict, rows
+
+
 def _top2_margin(logits):
     top_vals, top_ids = torch.topk(logits, k=2)
     return top_vals, top_ids, top_vals[0] - top_vals[1]
@@ -751,6 +803,63 @@ def eval_model(args):
     else:
         model.config.query_logit_correction = False
 
+    if args.query_visual_attention_boost:
+        if not args.query_visual_attention_boost_calibration:
+            raise ValueError("--query_visual_attention_boost_calibration is required with --query_visual_attention_boost")
+        if not os.path.exists(args.query_visual_attention_boost_calibration):
+            raise FileNotFoundError(args.query_visual_attention_boost_calibration)
+        directions, thresholds, stats, direction_rows = load_query_direction_gate_with_stats(
+            args.query_visual_attention_boost_calibration,
+            top_k=args.query_visual_attention_boost_detector_top_k,
+            min_auroc=args.query_visual_attention_boost_min_auroc,
+        )
+        if not directions:
+            raise ValueError(
+                "No query visual-attention boost directions selected; lower "
+                "--query_visual_attention_boost_min_auroc or increase "
+                "--query_visual_attention_boost_detector_top_k."
+            )
+        model.config.query_visual_attention_boost = True
+        model.config.query_visual_attention_boost_directions = directions
+        model.config.query_visual_attention_boost_thresholds = thresholds
+        model.config.query_visual_attention_boost_stats = stats
+        model.config.query_visual_attention_boost_detector_aggregation = args.query_visual_attention_boost_detector_aggregation
+        model.config.query_visual_attention_boost_accumulation = args.query_visual_attention_boost_accumulation
+        model.config.query_visual_attention_boost_risk_mode = args.query_visual_attention_boost_risk_mode
+        model.config.query_visual_attention_boost_temperature = args.query_visual_attention_boost_temperature
+        model.config.query_visual_attention_boost_alpha = args.query_visual_attention_boost_alpha
+        model.config.query_visual_attention_boost_text_beta = args.query_visual_attention_boost_text_beta
+        model.config.query_visual_attention_boost_risk_scale = args.query_visual_attention_boost_risk_scale
+        model.config.query_visual_attention_boost_max_risk = args.query_visual_attention_boost_max_risk
+        model.config.query_visual_attention_boost_max_factor = args.query_visual_attention_boost_max_factor
+        model.config.query_visual_attention_boost_detector_phase = args.query_visual_attention_boost_detector_phase
+        model.config.query_visual_attention_boost_phase = args.query_visual_attention_boost_phase
+        model.config.query_visual_attention_boost_target_heads = args.query_visual_attention_boost_target_heads
+        model.config.query_visual_attention_boost_min_layer = args.query_visual_attention_boost_min_layer
+        model.config.query_visual_attention_boost_max_layer = args.query_visual_attention_boost_max_layer
+        model.config.record_query_visual_attention_boost_diagnostics = args.record_query_visual_attention_boost_diagnostics
+        model.config.query_visual_attention_boost_diagnostics = []
+        print(
+            f"[info] query visual-attention boost directions: {len(directions)} "
+            f"from {args.query_visual_attention_boost_calibration}"
+        )
+        print(
+            f"[info] query visual-attention boost: detector_top_k={args.query_visual_attention_boost_detector_top_k} "
+            f"alpha={args.query_visual_attention_boost_alpha} "
+            f"text_beta={args.query_visual_attention_boost_text_beta} "
+            f"risk={args.query_visual_attention_boost_risk_mode} "
+            f"phase={args.query_visual_attention_boost_phase} "
+            f"target_heads={args.query_visual_attention_boost_target_heads}"
+        )
+        for row in direction_rows[:10]:
+            print(
+                "[info] query visual-attention boost direction "
+                f"rank={row['rank']} head={row['head_key']} "
+                f"auc={row['test_auroc']:.4f} center={row['center']:.4f} scale={row['scale']:.4f}"
+            )
+    else:
+        model.config.query_visual_attention_boost = False
+
     unsupported_diag_file = None
     if args.record_unsupported_component_diagnostics:
         unsupported_diag_path = args.unsupported_component_diagnostics_file
@@ -821,6 +930,20 @@ def eval_model(args):
         query_logit_correction_diag_file = open(query_logit_correction_diag_path, "w")
         print(f"[info] query-logit correction diagnostics: {query_logit_correction_diag_path}")
 
+    query_visual_attention_boost_diag_file = None
+    if args.record_query_visual_attention_boost_diagnostics:
+        query_visual_attention_boost_diag_path = args.query_visual_attention_boost_diagnostics_file
+        if not query_visual_attention_boost_diag_path:
+            query_visual_attention_boost_diag_path = os.path.join(
+                os.path.dirname(answers_file),
+                "query_visual_attention_boost_diagnostics.jsonl",
+            )
+        query_visual_attention_boost_diag_dir = os.path.dirname(query_visual_attention_boost_diag_path)
+        if query_visual_attention_boost_diag_dir:
+            os.makedirs(query_visual_attention_boost_diag_dir, exist_ok=True)
+        query_visual_attention_boost_diag_file = open(query_visual_attention_boost_diag_path, "w")
+        print(f"[info] query visual-attention boost diagnostics: {query_visual_attention_boost_diag_path}")
+
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
         count += 1
@@ -846,6 +969,8 @@ def eval_model(args):
             model.config.query_gated_head_output_diagnostics = []
         if args.record_query_logit_correction_diagnostics:
             model.config.query_logit_correction_diagnostics = []
+        if args.record_query_visual_attention_boost_diagnostics:
+            model.config.query_visual_attention_boost_diagnostics = []
 
         input_ids = input_ids.to(device='cuda', non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True)
@@ -969,6 +1094,15 @@ def eval_model(args):
                 query_logit_correction_diag_file.write(json.dumps(record) + "\n")
             query_logit_correction_diag_file.flush()
 
+        if query_visual_attention_boost_diag_file is not None:
+            for record in getattr(model.config, "query_visual_attention_boost_diagnostics", []):
+                record = dict(record)
+                record["question_id"] = question_id
+                record["image"] = image_file
+                record["caption"] = outputs
+                query_visual_attention_boost_diag_file.write(json.dumps(record) + "\n")
+            query_visual_attention_boost_diag_file.flush()
+
     if unsupported_diag_file is not None:
         unsupported_diag_file.close()
     if layer_contrastive_diag_file is not None:
@@ -979,6 +1113,8 @@ def eval_model(args):
         query_gated_head_output_diag_file.close()
     if query_logit_correction_diag_file is not None:
         query_logit_correction_diag_file.close()
+    if query_visual_attention_boost_diag_file is not None:
+        query_visual_attention_boost_diag_file.close()
 
 
 
@@ -1178,6 +1314,46 @@ if __name__ == "__main__":
     parser.add_argument("--query_logit_correction_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
     parser.add_argument("--record_query_logit_correction_diagnostics", action="store_true", default=False)
     parser.add_argument("--query_logit_correction_diagnostics_file", type=str, default="")
+    parser.add_argument("--query_visual_attention_boost", action="store_true", default=False)
+    parser.add_argument("--query_visual_attention_boost_calibration", type=str, default="")
+    parser.add_argument("--query_visual_attention_boost_detector_top_k", type=int, default=5)
+    parser.add_argument("--query_visual_attention_boost_min_auroc", type=float, default=0.0)
+    parser.add_argument("--query_visual_attention_boost_alpha", type=float, default=1.0)
+    parser.add_argument("--query_visual_attention_boost_text_beta", type=float, default=0.0)
+    parser.add_argument(
+        "--query_visual_attention_boost_risk_mode",
+        type=str,
+        default="z_softplus",
+        choices=["z_softplus", "z_sigmoid", "margin", "score", "hard", "sigmoid"],
+    )
+    parser.add_argument(
+        "--query_visual_attention_boost_detector_aggregation",
+        type=str,
+        default="max",
+        choices=["max", "mean", "sum"],
+    )
+    parser.add_argument(
+        "--query_visual_attention_boost_accumulation",
+        type=str,
+        default="max",
+        choices=["max", "mean", "sum"],
+    )
+    parser.add_argument(
+        "--query_visual_attention_boost_target_heads",
+        type=str,
+        default="all",
+        choices=["all", "detector"],
+    )
+    parser.add_argument("--query_visual_attention_boost_temperature", type=float, default=1.0)
+    parser.add_argument("--query_visual_attention_boost_risk_scale", type=float, default=1.0)
+    parser.add_argument("--query_visual_attention_boost_max_risk", type=float, default=0.0)
+    parser.add_argument("--query_visual_attention_boost_max_factor", type=float, default=0.0)
+    parser.add_argument("--query_visual_attention_boost_detector_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
+    parser.add_argument("--query_visual_attention_boost_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
+    parser.add_argument("--query_visual_attention_boost_min_layer", type=int, default=None)
+    parser.add_argument("--query_visual_attention_boost_max_layer", type=int, default=None)
+    parser.add_argument("--record_query_visual_attention_boost_diagnostics", action="store_true", default=False)
+    parser.add_argument("--query_visual_attention_boost_diagnostics_file", type=str, default="")
     parser.add_argument("--unsupported_component_mode", type=str, default="continuous", choices=["hard", "continuous", "hybrid"])
     parser.add_argument("--unsupported_component_layer_top_k", type=int, default=1)
     parser.add_argument("--unsupported_component_gamma", type=float, default=0.5)

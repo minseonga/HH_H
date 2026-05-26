@@ -904,6 +904,247 @@ def _maybe_apply_query_logit_correction(config, logits, phase):
     return corrected_logits
 
 
+def _update_query_visual_attention_boost_risk(config, layer_idx, query_states, num_heads):
+    if not getattr(config, "query_visual_attention_boost", False):
+        return
+    directions = getattr(config, "query_visual_attention_boost_directions", None)
+    if not directions or query_states is None:
+        return
+
+    layer = int(layer_idx) if layer_idx is not None else -1
+    q_len = int(query_states.shape[2])
+    phase = "decode" if q_len == 1 else "prefill"
+    phase_mode = getattr(config, "query_visual_attention_boost_detector_phase", "decode")
+    if phase_mode == "both":
+        phase_mode = "all"
+    if phase_mode not in ("all", "prefill", "decode"):
+        phase_mode = "decode"
+    if phase_mode != "all" and phase_mode != phase:
+        return
+
+    risk_mode = getattr(config, "query_visual_attention_boost_risk_mode", "z_softplus")
+    temperature = max(float(getattr(config, "query_visual_attention_boost_temperature", 0.05)), 1e-6)
+    thresholds = getattr(config, "query_visual_attention_boost_thresholds", {})
+    stats = getattr(config, "query_visual_attention_boost_stats", {})
+    eps = float(getattr(config, "query_visual_attention_boost_eps", 1e-6))
+
+    risks = []
+    score_values = []
+    margin_values = []
+    z_values = []
+    active_heads = []
+    for head in range(num_heads):
+        key = f"{layer}:{head}"
+        direction = directions.get(key)
+        if direction is None:
+            continue
+        if not isinstance(direction, torch.Tensor):
+            direction = torch.tensor(direction)
+        direction = direction.to(device=query_states.device, dtype=query_states.dtype)
+        direction = direction / torch.clamp(torch.linalg.vector_norm(direction), min=eps)
+
+        q = query_states[:, head, -1, :]
+        q_norm = q / torch.clamp(torch.linalg.vector_norm(q, dim=-1, keepdim=True), min=eps)
+        score = torch.sum(q_norm * direction, dim=-1, keepdim=True)
+        threshold = float(thresholds.get(key, 0.0))
+        margin = score - threshold
+        stat = stats.get(key, {})
+        center = float(stat.get("center", threshold))
+        scale = max(float(stat.get("scale", 1.0)), eps)
+        z_score = (score - center) / scale
+
+        if risk_mode == "score":
+            risk = torch.clamp(score, min=0.0)
+        elif risk_mode == "margin":
+            risk = torch.clamp(margin, min=0.0)
+        elif risk_mode == "hard":
+            risk = (margin >= 0).to(query_states.dtype)
+        elif risk_mode == "sigmoid":
+            risk = torch.sigmoid(margin / temperature).to(query_states.dtype)
+        elif risk_mode == "z_sigmoid":
+            risk = torch.sigmoid(z_score / temperature).to(query_states.dtype)
+        else:
+            risk = F.softplus(z_score).to(query_states.dtype)
+        risks.append(risk)
+        score_values.append(score)
+        margin_values.append(margin)
+        z_values.append(z_score)
+        active_heads.append(key)
+
+    if not risks:
+        return
+
+    stacked = torch.stack(risks, dim=0)
+    aggregation = getattr(config, "query_visual_attention_boost_detector_aggregation", "max")
+    if aggregation == "mean":
+        layer_risk = torch.mean(stacked, dim=0)
+    elif aggregation == "sum":
+        layer_risk = torch.sum(stacked, dim=0)
+    else:
+        layer_risk = torch.max(stacked, dim=0).values
+
+    accumulation = getattr(config, "query_visual_attention_boost_accumulation", "max")
+    state = getattr(config, "query_visual_attention_boost_risk_state", None)
+    if state is None:
+        state = {
+            "risk": None,
+            "risk_sum": None,
+            "risk_count": 0,
+            "detector_layers": [],
+            "detector_heads": [],
+        }
+        config.query_visual_attention_boost_risk_state = state
+
+    if accumulation == "sum":
+        state["risk"] = layer_risk if state["risk"] is None else state["risk"] + layer_risk
+    elif accumulation == "mean":
+        state["risk_sum"] = layer_risk if state["risk_sum"] is None else state["risk_sum"] + layer_risk
+        state["risk_count"] = int(state.get("risk_count", 0)) + 1
+        state["risk"] = state["risk_sum"] / max(int(state["risk_count"]), 1)
+    else:
+        state["risk"] = layer_risk if state["risk"] is None else torch.maximum(state["risk"], layer_risk)
+    state["detector_layers"].append(layer)
+    state["detector_heads"].extend(active_heads)
+
+    records = getattr(config, "query_visual_attention_boost_diagnostics", None)
+    if getattr(config, "record_query_visual_attention_boost_diagnostics", False) and records is not None:
+        scores = torch.stack(score_values, dim=0)
+        margins = torch.stack(margin_values, dim=0)
+        z_scores = torch.stack(z_values, dim=0)
+        records.append({
+            "kind": "query_visual_attention_boost_risk",
+            "phase": phase,
+            "q_len": q_len,
+            "layer": layer,
+            "n_heads": int(len(risks)),
+            "heads": ",".join(active_heads),
+            "risk_mode": risk_mode,
+            "detector_aggregation": aggregation,
+            "accumulation": accumulation,
+            "layer_risk": layer_risk.detach().float().mean().cpu().item(),
+            "state_risk": state["risk"].detach().float().mean().cpu().item(),
+            "active_risk": (state["risk"] > eps).detach().float().mean().cpu().item(),
+            "mean_score": scores.detach().float().mean().cpu().item(),
+            "mean_margin": margins.detach().float().mean().cpu().item(),
+            "mean_z_score": z_scores.detach().float().mean().cpu().item(),
+            "max_z_score": z_scores.detach().float().max().cpu().item(),
+        })
+
+
+def _maybe_apply_query_visual_attention_boost(config, layer_idx, attn_weights, kv_seq_len, num_heads):
+    if not getattr(config, "query_visual_attention_boost", False):
+        return attn_weights
+    state = getattr(config, "query_visual_attention_boost_risk_state", None)
+    if not state or state.get("risk") is None:
+        return attn_weights
+
+    layer = int(layer_idx) if layer_idx is not None else -1
+    q_len = int(attn_weights.shape[-2])
+    phase = "decode" if q_len == 1 else "prefill"
+    phase_mode = getattr(config, "query_visual_attention_boost_phase", "decode")
+    if phase_mode == "both":
+        phase_mode = "all"
+    if phase_mode not in ("all", "prefill", "decode"):
+        phase_mode = "decode"
+    if phase_mode != "all" and phase_mode != phase:
+        return attn_weights
+
+    min_layer = getattr(config, "query_visual_attention_boost_min_layer", None)
+    max_layer = getattr(config, "query_visual_attention_boost_max_layer", None)
+    if min_layer is not None and layer < int(min_layer):
+        return attn_weights
+    if max_layer is not None and layer > int(max_layer):
+        return attn_weights
+
+    img_start = int(getattr(config, "img_start_pos", 0))
+    img_length = int(getattr(config, "img_length", 0))
+    if img_length <= 0:
+        return attn_weights
+    img_start = max(0, min(img_start, kv_seq_len))
+    img_end = max(img_start, min(img_start + img_length, kv_seq_len))
+    if img_start >= img_end:
+        return attn_weights
+
+    risk = state["risk"].to(device=attn_weights.device, dtype=attn_weights.dtype)
+    risk_scale = max(float(getattr(config, "query_visual_attention_boost_risk_scale", 1.0)), 1e-6)
+    risk = torch.clamp(risk / risk_scale, min=0.0)
+    max_risk = float(getattr(config, "query_visual_attention_boost_max_risk", 0.0))
+    if max_risk > 0.0:
+        risk = torch.clamp(risk, max=max_risk)
+
+    alpha = max(float(getattr(config, "query_visual_attention_boost_alpha", 1.0)), 0.0)
+    beta = max(float(getattr(config, "query_visual_attention_boost_text_beta", 0.0)), 0.0)
+    if alpha <= 0.0 and beta <= 0.0:
+        return attn_weights
+
+    target_heads = getattr(config, "query_visual_attention_boost_target_heads", "all")
+    if target_heads == "detector":
+        directions = getattr(config, "query_visual_attention_boost_directions", {}) or {}
+        head_indices = [
+            int(key.split(":", 1)[1])
+            for key in directions
+            if key.startswith(f"{layer}:")
+        ]
+        head_indices = sorted(set(head for head in head_indices if 0 <= head < num_heads))
+        if not head_indices:
+            return attn_weights
+    else:
+        head_indices = None
+
+    boosted = attn_weights.clone()
+    risk_factor = risk.view(risk.shape[0], 1, 1, 1)
+    img_factor = 1.0 + alpha * risk_factor
+    max_factor = float(getattr(config, "query_visual_attention_boost_max_factor", 0.0))
+    if max_factor > 0.0:
+        img_factor = torch.clamp(img_factor, max=max_factor)
+
+    if head_indices is None:
+        target_weights = boosted
+    else:
+        target_weights = boosted[:, head_indices, :, :]
+
+    before_img_mass = target_weights[:, :, -1:, img_start:img_end].sum(dim=-1, keepdim=True)
+    target_weights[:, :, :, img_start:img_end] = target_weights[:, :, :, img_start:img_end] * img_factor
+
+    text_start = img_end
+    if beta > 0.0 and text_start < kv_seq_len:
+        text_factor = torch.clamp(1.0 - beta * risk_factor, min=0.0)
+        target_weights[:, :, :, text_start:] = target_weights[:, :, :, text_start:] * text_factor
+
+    denom = torch.clamp(target_weights.sum(dim=-1, keepdim=True), min=1e-6)
+    target_weights = target_weights / denom
+    if head_indices is None:
+        boosted = target_weights
+    else:
+        boosted[:, head_indices, :, :] = target_weights
+
+    records = getattr(config, "query_visual_attention_boost_diagnostics", None)
+    if getattr(config, "record_query_visual_attention_boost_diagnostics", False) and records is not None:
+        after_target = boosted if head_indices is None else boosted[:, head_indices, :, :]
+        after_img_mass = after_target[:, :, -1:, img_start:img_end].sum(dim=-1, keepdim=True)
+        before_total = before_img_mass.detach().float().mean()
+        after_total = after_img_mass.detach().float().mean()
+        records.append({
+            "kind": "query_visual_attention_boost_attention",
+            "phase": phase,
+            "q_len": q_len,
+            "layer": layer,
+            "target_heads": target_heads,
+            "n_target_heads": int(num_heads if head_indices is None else len(head_indices)),
+            "risk": risk.detach().float().mean().cpu().item(),
+            "active_risk": (risk > 0).detach().float().mean().cpu().item(),
+            "alpha": alpha,
+            "text_beta": beta,
+            "img_factor": img_factor.detach().float().mean().cpu().item(),
+            "img_mass_before": before_total.cpu().item(),
+            "img_mass_after": after_total.cpu().item(),
+            "img_mass_delta": (after_total - before_total).cpu().item(),
+            "detector_layers": ",".join(str(item) for item in state.get("detector_layers", [])),
+            "detector_heads": ",".join(str(item) for item in state.get("detector_heads", [])),
+        })
+    return boosted
+
+
 def _compute_query_direction_gate_for_layer(config, layer_idx, query_states, num_heads):
     if query_states is None:
         return None
@@ -2527,6 +2768,7 @@ class LlamaAttention(nn.Module):
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         _update_query_logit_correction_risk(self.config, self.layer_idx, query_states, self.num_heads)
+        _update_query_visual_attention_boost_risk(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
         kv_seq_len = key_states.shape[-2]
@@ -2577,6 +2819,13 @@ class LlamaAttention(nn.Module):
 
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attn_weights = _maybe_apply_query_visual_attention_boost(
+            self.config,
+            self.layer_idx,
+            attn_weights,
+            kv_seq_len,
+            self.num_heads,
+        )
         
         # TODO: adaptive deactivate of hallucination heads
         if getattr(self.config, "adaptive_deactivate", False):
@@ -3211,6 +3460,7 @@ class LlamaFlashAttention2(LlamaAttention):
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         _update_query_logit_correction_risk(self.config, self.layer_idx, query_states, self.num_heads)
+        _update_query_visual_attention_boost_risk(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
         kv_seq_len = key_states.shape[-2]
@@ -3489,6 +3739,7 @@ class LlamaSdpaAttention(LlamaAttention):
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         _update_query_logit_correction_risk(self.config, self.layer_idx, query_states, self.num_heads)
+        _update_query_visual_attention_boost_risk(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
         kv_seq_len = key_states.shape[-2]
@@ -4072,6 +4323,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
 
         if getattr(self.config, "query_logit_correction", False):
             self.config.query_logit_correction_risk_values = []
+        if getattr(self.config, "query_visual_attention_boost", False):
+            self.config.query_visual_attention_boost_risk_state = None
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
