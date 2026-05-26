@@ -3490,6 +3490,68 @@ class LlamaFlashAttention2(LlamaAttention):
             self.head_dim,
         )
 
+        if getattr(self.config, "query_visual_attention_boost", False):
+            manual_key_states = repeat_kv(key_states, self.num_key_value_groups)
+            manual_value_states = repeat_kv(value_states, self.num_key_value_groups)
+            attn_weights = torch.matmul(query_states, manual_key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+            if attention_mask is not None:
+                if attention_mask.dim() == 4:
+                    attn_weights = attn_weights + attention_mask
+                elif attention_mask.dim() == 2:
+                    attn_weights = attn_weights.masked_fill(
+                        attention_mask[:, None, None, :].to(torch.bool) == 0,
+                        torch.finfo(attn_weights.dtype).min,
+                    )
+            if q_len > 1 and attn_weights.shape[-2] == attn_weights.shape[-1]:
+                causal_mask = torch.triu(
+                    torch.ones(q_len, q_len, dtype=torch.bool, device=attn_weights.device),
+                    diagonal=1,
+                )
+                attn_weights = attn_weights.masked_fill(
+                    causal_mask[None, None, :, :],
+                    torch.finfo(attn_weights.dtype).min,
+                )
+            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+            attn_weights = _maybe_apply_query_visual_attention_boost(
+                self.config,
+                self.layer_idx,
+                attn_weights,
+                manual_key_states.shape[-2],
+                self.num_heads,
+            )
+            attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+            attn_output_heads = torch.matmul(attn_weights, manual_value_states)
+            _record_head_output_diagnostics(self.config, self.layer_idx, attn_output_heads, self.num_heads)
+            attn_output_heads = _apply_head_output_direction_projection(
+                self.config,
+                self.layer_idx,
+                attn_output_heads,
+                self.num_heads,
+            )
+            attn_output_heads = _apply_query_gated_head_output_suppression(
+                self.config,
+                self.layer_idx,
+                query_states_for_qgated_head_output,
+                attn_output_heads,
+                self.num_heads,
+            )
+            if getattr(self.config, "unsupported_component_deactivate", False):
+                attn_output_heads = _apply_unsupported_component_suppression(
+                    self.config,
+                    self.layer_idx,
+                    attn_weights,
+                    manual_value_states,
+                    attn_output_heads,
+                    self.num_heads,
+                    head_list,
+                    self.o_proj,
+                    query_states_for_unsupported_gate,
+                )
+            attn_output = attn_output_heads.transpose(1, 2).contiguous()
+            attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
+            attn_output = self.o_proj(attn_output)
+            return attn_output, None, past_key_value, None, None, None, None
+
         # TODO: These transpose are quite inefficient but Flash Attention requires the layout [batch_size, sequence_length, num_heads, head_dim]. We would need to refactor the KV cache
         # to be able to avoid many of these transpose/reshape/view.
         query_states = query_states.transpose(1, 2)
