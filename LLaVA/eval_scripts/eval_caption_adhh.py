@@ -447,6 +447,7 @@ def eval_model(args):
     if (
         args.adaptive_deactivate
         or args.soft_deactivate
+        or args.entropy_aware_deactivate
         or args.dynamic_deactivate
         or args.attribution_soft_deactivate
         or args.retention_aware_deactivate
@@ -484,10 +485,20 @@ def eval_model(args):
             model.config.soft_deactivate = True
             model.config.soft_gamma = args.soft_gamma
             model.config.soft_temperature = args.soft_temperature
+        if args.entropy_aware_deactivate:
+            model.config.entropy_aware_deactivate = True
+            model.config.entropy_aware_gamma = args.entropy_aware_gamma
+            model.config.entropy_aware_entropy_source = args.entropy_aware_entropy_source
+            model.config.entropy_aware_text_power = args.entropy_aware_text_power
+            model.config.entropy_aware_entropy_power = args.entropy_aware_entropy_power
+            model.config.entropy_aware_strength_cap = args.entropy_aware_strength_cap
+            model.config.entropy_aware_phase = args.entropy_aware_phase
+            model.config.entropy_aware_use_query_gate = args.entropy_aware_use_query_gate
+            model.config.entropy_aware_renormalize = args.entropy_aware_renormalize
         if args.adhh_query_gate_calibration:
             if not os.path.exists(args.adhh_query_gate_calibration):
                 raise FileNotFoundError(args.adhh_query_gate_calibration)
-            directions, thresholds, direction_rows = load_query_direction_gate(
+            directions, thresholds, stats, direction_rows = load_query_direction_gate_with_stats(
                 args.adhh_query_gate_calibration,
                 top_k=args.adhh_query_gate_top_k,
                 min_auroc=args.adhh_query_gate_min_auroc,
@@ -500,6 +511,7 @@ def eval_model(args):
             model.config.adhh_query_gate = True
             model.config.adhh_query_gate_directions = directions
             model.config.adhh_query_gate_thresholds = thresholds
+            model.config.adhh_query_gate_stats = stats
             model.config.adhh_query_gate_risk_mode = args.adhh_query_gate_risk_mode
             model.config.adhh_query_gate_temperature = args.adhh_query_gate_temperature
             model.config.adhh_query_gate_detector_aggregation = args.adhh_query_gate_detector_aggregation
@@ -1189,6 +1201,7 @@ if __name__ == "__main__":
     parser.add_argument("--exclude_image_ids", nargs="*", default=[])
     parser.add_argument("--adaptive_deactivate", action='store_true', default=False)
     parser.add_argument("--soft_deactivate", action='store_true', default=False)
+    parser.add_argument("--entropy_aware_deactivate", action='store_true', default=False)
     parser.add_argument("--dynamic_deactivate", action='store_true', default=False)
     parser.add_argument("--attribution_soft_deactivate", action='store_true', default=False)
     parser.add_argument("--retention_aware_deactivate", action='store_true', default=False)
@@ -1203,6 +1216,14 @@ if __name__ == "__main__":
     parser.add_argument("--head_prior_mode", type=str, default="auto", choices=["auto", "score", "rank", "uniform"])
     parser.add_argument("--soft_gamma", type=float, default=0.5)
     parser.add_argument("--soft_temperature", type=float, default=0.05)
+    parser.add_argument("--entropy_aware_gamma", type=float, default=1.0)
+    parser.add_argument("--entropy_aware_entropy_source", type=str, default="full", choices=["full", "text"])
+    parser.add_argument("--entropy_aware_text_power", type=float, default=1.0)
+    parser.add_argument("--entropy_aware_entropy_power", type=float, default=1.0)
+    parser.add_argument("--entropy_aware_strength_cap", type=float, default=1.0)
+    parser.add_argument("--entropy_aware_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
+    parser.add_argument("--entropy_aware_use_query_gate", action="store_true", default=False)
+    parser.add_argument("--entropy_aware_renormalize", action="store_true", default=False)
     parser.add_argument("--adhh_query_gate_calibration", type=str, default="")
     parser.add_argument("--adhh_query_gate_top_k", type=int, default=1)
     parser.add_argument("--adhh_query_gate_min_auroc", type=float, default=0.0)
@@ -1210,7 +1231,7 @@ if __name__ == "__main__":
         "--adhh_query_gate_risk_mode",
         type=str,
         default="margin",
-        choices=["margin", "score", "hard", "sigmoid"],
+        choices=["z_softplus", "z_sigmoid", "margin", "score", "hard", "sigmoid"],
     )
     parser.add_argument(
         "--adhh_query_gate_detector_aggregation",

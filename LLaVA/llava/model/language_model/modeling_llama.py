@@ -843,6 +843,7 @@ def _risk_from_query_direction(
     layer,
     direction_attr,
     threshold_attr,
+    stats_attr,
     risk_mode_attr,
     temperature_attr,
     detector_aggregation_attr,
@@ -855,11 +856,13 @@ def _risk_from_query_direction(
     risk_mode = getattr(config, risk_mode_attr, "margin")
     temperature = max(float(getattr(config, temperature_attr, 0.05)), 1e-6)
     thresholds = getattr(config, threshold_attr, {})
+    stats = getattr(config, stats_attr, {})
     eps = float(getattr(config, eps_attr, 1e-6))
 
     layer_risks = []
     score_values = []
     margin_values = []
+    z_values = []
     for head in range(num_heads):
         key = f"{layer}:{head}"
         direction = directions.get(key)
@@ -875,17 +878,26 @@ def _risk_from_query_direction(
         score = torch.sum(q_norm * direction, dim=-1, keepdim=True)
         threshold = float(thresholds.get(key, 0.0))
         margin = score - threshold
+        stat = stats.get(key, {})
+        center = float(stat.get("center", threshold))
+        scale = max(float(stat.get("scale", 1.0)), eps)
+        z_score = (score - center) / scale
         if risk_mode == "score":
             risk = torch.clamp(score, min=0.0)
         elif risk_mode == "hard":
             risk = (margin >= 0).to(query_states.dtype)
         elif risk_mode == "sigmoid":
             risk = torch.sigmoid(margin / temperature).to(query_states.dtype)
+        elif risk_mode == "z_sigmoid":
+            risk = torch.sigmoid(z_score / temperature).to(query_states.dtype)
+        elif risk_mode == "z_softplus":
+            risk = F.softplus(z_score).to(query_states.dtype)
         else:
             risk = torch.clamp(margin, min=0.0)
         layer_risks.append(risk)
         score_values.append(score)
         margin_values.append(margin)
+        z_values.append(z_score)
 
     if not layer_risks:
         return None
@@ -898,7 +910,7 @@ def _risk_from_query_direction(
         layer_risk = torch.sum(stacked, dim=0)
     else:
         layer_risk = torch.max(stacked, dim=0).values
-    return layer_risk, score_values, margin_values, aggregation, risk_mode
+    return layer_risk, score_values, margin_values, z_values, aggregation, risk_mode
 
 
 def _update_adhh_query_gate_risk(config, layer_idx, query_states, num_heads):
@@ -923,6 +935,7 @@ def _update_adhh_query_gate_risk(config, layer_idx, query_states, num_heads):
         layer,
         "adhh_query_gate_directions",
         "adhh_query_gate_thresholds",
+        "adhh_query_gate_stats",
         "adhh_query_gate_risk_mode",
         "adhh_query_gate_temperature",
         "adhh_query_gate_detector_aggregation",
@@ -931,7 +944,7 @@ def _update_adhh_query_gate_risk(config, layer_idx, query_states, num_heads):
     if result is None:
         return
 
-    layer_risk, score_values, margin_values, aggregation, risk_mode = result
+    layer_risk, score_values, margin_values, z_values, aggregation, risk_mode = result
     risk_values = getattr(config, "adhh_query_gate_risk_values", None)
     if risk_values is None:
         risk_values = []
@@ -942,6 +955,7 @@ def _update_adhh_query_gate_risk(config, layer_idx, query_states, num_heads):
     if getattr(config, "record_adhh_query_gate_diagnostics", False) and records is not None:
         scores = torch.stack(score_values, dim=0)
         margins = torch.stack(margin_values, dim=0)
+        z_scores = torch.stack(z_values, dim=0)
         records.append({
             "kind": "adhh_query_gate_risk",
             "phase": phase,
@@ -955,6 +969,8 @@ def _update_adhh_query_gate_risk(config, layer_idx, query_states, num_heads):
             "mean_score": scores.detach().float().mean().cpu().item(),
             "mean_margin": margins.detach().float().mean().cpu().item(),
             "max_margin": margins.detach().float().max().cpu().item(),
+            "mean_z_score": z_scores.detach().float().mean().cpu().item(),
+            "max_z_score": z_scores.detach().float().max().cpu().item(),
         })
 
 
@@ -3058,6 +3074,61 @@ class LlamaAttention(nn.Module):
                     if query_gate_scale is not None:
                         strength = strength * query_gate_scale
                     text_attention *= (1.0 - strength)
+
+        # Entropy-aware AD-HH variant. This uses AD-HH's causal head set as the
+        # actuator, but replaces the binary text-mass threshold with continuous
+        # text-mass x attention-entropy strength and optional query-risk gating.
+        if getattr(self.config, "entropy_aware_deactivate", False):
+            if head_list is not None:
+                phase = "decode" if q_len == 1 else "prefill"
+                phase_mode = getattr(self.config, "entropy_aware_phase", "decode")
+                if phase_mode == "both":
+                    phase_mode = "all"
+                if phase_mode not in ("all", "prefill", "decode"):
+                    phase_mode = "decode"
+                if phase_mode == "all" or phase_mode == phase:
+                    text_start_idx = self.config.img_start_pos + self.config.img_length
+                    gamma = float(getattr(self.config, "entropy_aware_gamma", 1.0))
+                    eps = float(getattr(self.config, "entropy_aware_eps", 1e-6))
+                    entropy_source = getattr(self.config, "entropy_aware_entropy_source", "full")
+                    text_power = float(getattr(self.config, "entropy_aware_text_power", 1.0))
+                    entropy_power = float(getattr(self.config, "entropy_aware_entropy_power", 1.0))
+                    strength_cap = float(getattr(self.config, "entropy_aware_strength_cap", 1.0))
+                    use_query_gate = bool(getattr(self.config, "entropy_aware_use_query_gate", False))
+                    renormalize = bool(getattr(self.config, "entropy_aware_renormalize", False))
+                    query_gate_scale = _get_adhh_query_gate_scale(self.config, attn_weights) if use_query_gate else None
+                    strength_cap = min(max(strength_cap, 0.0), 1.0)
+                    if strength_cap == 0.0:
+                        strength_cap = 1.0
+
+                    for head in head_list:
+                        head_attention = attn_weights[:, head, -1, :]
+                        text_attention = head_attention[:, text_start_idx:]
+                        text_mass = torch.sum(text_attention, dim=-1, keepdim=True).float()
+
+                        if entropy_source == "text":
+                            probs = text_attention.float() / torch.clamp(text_mass, min=eps)
+                            entropy_den = math.log(max(int(text_attention.shape[-1]), 2))
+                        else:
+                            mass = torch.sum(head_attention.float(), dim=-1, keepdim=True)
+                            probs = head_attention.float() / torch.clamp(mass, min=eps)
+                            entropy_den = math.log(max(int(head_attention.shape[-1]), 2))
+                        entropy = -torch.sum(
+                            probs * torch.log(torch.clamp(probs, min=eps)),
+                            dim=-1,
+                            keepdim=True,
+                        )
+                        entropy_norm = torch.clamp(entropy / max(entropy_den, eps), min=0.0, max=1.0)
+
+                        strength = gamma * torch.pow(torch.clamp(text_mass, min=0.0, max=1.0), text_power)
+                        strength = strength * torch.pow(entropy_norm, entropy_power)
+                        if query_gate_scale is not None:
+                            strength = strength.to(query_gate_scale.dtype) * query_gate_scale
+                        strength = torch.clamp(strength, min=0.0, max=strength_cap).to(attn_weights.dtype)
+                        text_attention *= (1.0 - strength)
+                        if renormalize:
+                            norm = torch.sum(head_attention, dim=-1, keepdim=True)
+                            head_attention /= torch.clamp(norm, min=eps)
 
         if getattr(self.config, "fixed_strength_deactivate", False):
             if head_list is not None:
