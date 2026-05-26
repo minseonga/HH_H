@@ -636,6 +636,105 @@ def _apply_head_output_direction_projection(config, layer_idx, head_outputs, num
     return head_outputs
 
 
+def _apply_query_gated_head_output_suppression(config, layer_idx, query_states, head_outputs, num_heads):
+    if not getattr(config, "query_gated_head_output_suppress", False):
+        return head_outputs
+    directions = getattr(config, "query_gated_head_output_directions", None)
+    if not directions or query_states is None:
+        return head_outputs
+
+    layer = int(layer_idx) if layer_idx is not None else -1
+    q_len = int(head_outputs.shape[-2])
+    phase = "decode" if q_len == 1 else "prefill"
+    phase_mode = getattr(config, "query_gated_head_output_phase", "decode")
+    if phase_mode == "both":
+        phase_mode = "all"
+    if phase_mode not in ("all", "prefill", "decode"):
+        phase_mode = "decode"
+    if phase_mode != "all" and phase_mode != phase:
+        return head_outputs
+
+    strength = max(float(getattr(config, "query_gated_head_output_strength", 0.5)), 0.0)
+    if strength <= 0.0:
+        return head_outputs
+
+    gate_mode = getattr(config, "query_gated_head_output_gate_mode", "margin")
+    temperature = max(float(getattr(config, "query_gated_head_output_temperature", 0.05)), 1e-6)
+    margin_scale = max(float(getattr(config, "query_gated_head_output_margin_scale", 0.1)), 1e-6)
+    min_gate = float(getattr(config, "query_gated_head_output_min_gate", 0.0))
+    max_gate = float(getattr(config, "query_gated_head_output_max_gate", 1.0))
+    max_gate = max(max_gate, min_gate)
+    thresholds = getattr(config, "query_gated_head_output_thresholds", {})
+    records = getattr(config, "query_gated_head_output_diagnostics", None)
+    record_diagnostics = bool(
+        getattr(config, "record_query_gated_head_output_diagnostics", False)
+        and records is not None
+    )
+    eps = float(getattr(config, "query_gated_head_output_eps", 1e-6))
+
+    for head in range(num_heads):
+        key = f"{layer}:{head}"
+        direction = directions.get(key)
+        if direction is None:
+            continue
+        if not isinstance(direction, torch.Tensor):
+            direction = torch.tensor(direction)
+        direction = direction.to(device=head_outputs.device, dtype=head_outputs.dtype)
+        direction = direction / torch.clamp(torch.linalg.vector_norm(direction), min=eps)
+
+        q = query_states[:, head, -1, :].to(dtype=head_outputs.dtype)
+        q_norm_value = torch.linalg.vector_norm(q, dim=-1, keepdim=True)
+        q_norm = q / torch.clamp(q_norm_value, min=eps)
+        raw_score = torch.sum(q * direction, dim=-1, keepdim=True)
+        norm_score = torch.sum(q_norm * direction, dim=-1, keepdim=True)
+        threshold = float(thresholds.get(key, 0.0))
+        margin = norm_score - threshold
+
+        if gate_mode == "score":
+            gate = torch.clamp(norm_score, min=0.0, max=1.0)
+        elif gate_mode == "hard":
+            gate = (margin >= 0).to(head_outputs.dtype)
+        elif gate_mode == "sigmoid":
+            gate = torch.sigmoid(margin / temperature).to(head_outputs.dtype)
+        else:
+            gate = torch.clamp(margin / margin_scale, min=0.0, max=1.0)
+        gate = torch.clamp(gate, min=min_gate, max=max_gate).to(head_outputs.dtype)
+        suppress_strength = torch.clamp(strength * gate, min=0.0, max=1.0).to(head_outputs.dtype)
+
+        output = head_outputs[:, head, -1, :]
+        output_norm = torch.linalg.vector_norm(output.float(), dim=-1, keepdim=True)
+        projected_output = output * (1.0 - suppress_strength)
+        if record_diagnostics:
+            output_delta = projected_output - output
+            output_delta_norm = torch.linalg.vector_norm(output_delta.float(), dim=-1, keepdim=True)
+            records.append({
+                "kind": "query_gated_head_output_suppression",
+                "phase": phase,
+                "q_len": q_len,
+                "layer": layer,
+                "head": head,
+                "head_key": key,
+                "strength": strength,
+                "gate_mode": gate_mode,
+                "gate": gate.detach().float().mean().cpu().item(),
+                "suppress_strength": suppress_strength.detach().float().mean().cpu().item(),
+                "active_suppression": (suppress_strength > eps).detach().float().mean().cpu().item(),
+                "threshold": threshold,
+                "margin_scale": margin_scale,
+                "raw_score": raw_score.detach().float().mean().cpu().item(),
+                "normalized_score": norm_score.detach().float().mean().cpu().item(),
+                "normalized_margin": margin.detach().float().mean().cpu().item(),
+                "q_norm": q_norm_value.detach().float().mean().cpu().item(),
+                "head_output_norm": output_norm.detach().float().mean().cpu().item(),
+                "head_output_delta_norm": output_delta_norm.detach().float().mean().cpu().item(),
+                "relative_head_output_delta": (
+                    output_delta_norm / torch.clamp(output_norm, min=eps)
+                ).detach().float().mean().cpu().item(),
+            })
+        head_outputs[:, head, -1, :] = projected_output
+    return head_outputs
+
+
 def _compute_query_direction_gate_for_layer(config, layer_idx, query_states, num_heads):
     if query_states is None:
         return None
@@ -2251,6 +2350,11 @@ class LlamaAttention(nn.Module):
             if getattr(self.config, "unsupported_component_query_gate_mode", "off") not in ("", "off", "none")
             else None
         )
+        query_states_for_qgated_head_output = (
+            query_states.clone()
+            if getattr(self.config, "query_gated_head_output_suppress", False)
+            else None
+        )
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
@@ -2828,6 +2932,13 @@ class LlamaAttention(nn.Module):
         attn_output = torch.matmul(attn_weights, value_states)
         _record_head_output_diagnostics(self.config, self.layer_idx, attn_output, self.num_heads)
         attn_output = _apply_head_output_direction_projection(self.config, self.layer_idx, attn_output, self.num_heads)
+        attn_output = _apply_query_gated_head_output_suppression(
+            self.config,
+            self.layer_idx,
+            query_states_for_qgated_head_output,
+            attn_output,
+            self.num_heads,
+        )
         attn_output = _apply_unsupported_component_suppression(
             self.config,
             self.layer_idx,
@@ -2922,6 +3033,11 @@ class LlamaFlashAttention2(LlamaAttention):
             if getattr(self.config, "unsupported_component_query_gate_mode", "off") not in ("", "off", "none")
             else None
         )
+        query_states_for_qgated_head_output = (
+            query_states.clone()
+            if getattr(self.config, "query_gated_head_output_suppress", False)
+            else None
+        )
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
@@ -2997,6 +3113,13 @@ class LlamaFlashAttention2(LlamaAttention):
         attn_output_heads = _apply_head_output_direction_projection(
             self.config,
             self.layer_idx,
+            attn_output_heads,
+            self.num_heads,
+        )
+        attn_output_heads = _apply_query_gated_head_output_suppression(
+            self.config,
+            self.layer_idx,
+            query_states_for_qgated_head_output,
             attn_output_heads,
             self.num_heads,
         )
@@ -3187,6 +3310,11 @@ class LlamaSdpaAttention(LlamaAttention):
             if getattr(self.config, "unsupported_component_query_gate_mode", "off") not in ("", "off", "none")
             else None
         )
+        query_states_for_qgated_head_output = (
+            query_states.clone()
+            if getattr(self.config, "query_gated_head_output_suppress", False)
+            else None
+        )
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
@@ -3249,6 +3377,13 @@ class LlamaSdpaAttention(LlamaAttention):
         )
         _record_head_output_diagnostics(self.config, self.layer_idx, attn_output, self.num_heads)
         attn_output = _apply_head_output_direction_projection(self.config, self.layer_idx, attn_output, self.num_heads)
+        attn_output = _apply_query_gated_head_output_suppression(
+            self.config,
+            self.layer_idx,
+            query_states_for_qgated_head_output,
+            attn_output,
+            self.num_heads,
+        )
         if getattr(self.config, "unsupported_component_deactivate", False):
             component_scores = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
             if attention_mask is not None:

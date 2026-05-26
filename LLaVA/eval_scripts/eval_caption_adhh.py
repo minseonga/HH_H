@@ -567,6 +567,53 @@ def eval_model(args):
     else:
         model.config.query_direction_project = False
 
+    if args.query_gated_head_output_suppress:
+        if not args.query_gated_head_output_calibration:
+            raise ValueError("--query_gated_head_output_calibration is required with --query_gated_head_output_suppress")
+        if not os.path.exists(args.query_gated_head_output_calibration):
+            raise FileNotFoundError(args.query_gated_head_output_calibration)
+        directions, thresholds, direction_rows = load_query_direction_gate(
+            args.query_gated_head_output_calibration,
+            top_k=args.query_gated_head_output_top_k,
+            min_auroc=args.query_gated_head_output_min_auroc,
+        )
+        if not directions:
+            raise ValueError(
+                "No query-gated head-output directions selected; lower "
+                "--query_gated_head_output_min_auroc or increase "
+                "--query_gated_head_output_top_k."
+            )
+        model.config.query_gated_head_output_suppress = True
+        model.config.query_gated_head_output_directions = directions
+        model.config.query_gated_head_output_thresholds = thresholds
+        model.config.query_gated_head_output_strength = args.query_gated_head_output_strength
+        model.config.query_gated_head_output_gate_mode = args.query_gated_head_output_gate_mode
+        model.config.query_gated_head_output_temperature = args.query_gated_head_output_temperature
+        model.config.query_gated_head_output_margin_scale = args.query_gated_head_output_margin_scale
+        model.config.query_gated_head_output_min_gate = args.query_gated_head_output_min_gate
+        model.config.query_gated_head_output_max_gate = args.query_gated_head_output_max_gate
+        model.config.query_gated_head_output_phase = args.query_gated_head_output_phase
+        model.config.record_query_gated_head_output_diagnostics = args.record_query_gated_head_output_diagnostics
+        model.config.query_gated_head_output_diagnostics = []
+        print(
+            f"[info] query-gated head output directions: {len(directions)} "
+            f"from {args.query_gated_head_output_calibration}"
+        )
+        print(
+            f"[info] query-gated head output: strength={args.query_gated_head_output_strength} "
+            f"phase={args.query_gated_head_output_phase} "
+            f"gate={args.query_gated_head_output_gate_mode} "
+            f"margin_scale={args.query_gated_head_output_margin_scale}"
+        )
+        for row in direction_rows[:10]:
+            print(
+                "[info] query-gated head output direction "
+                f"rank={row['rank']} head={row['head_key']} "
+                f"auc={row['test_auroc']:.4f} threshold={row['threshold']:.4f}"
+            )
+    else:
+        model.config.query_gated_head_output_suppress = False
+
     unsupported_diag_file = None
     if args.record_unsupported_component_diagnostics:
         unsupported_diag_path = args.unsupported_component_diagnostics_file
@@ -609,6 +656,20 @@ def eval_model(args):
         query_projection_diag_file = open(query_projection_diag_path, "w")
         print(f"[info] query projection diagnostics: {query_projection_diag_path}")
 
+    query_gated_head_output_diag_file = None
+    if args.record_query_gated_head_output_diagnostics:
+        query_gated_head_output_diag_path = args.query_gated_head_output_diagnostics_file
+        if not query_gated_head_output_diag_path:
+            query_gated_head_output_diag_path = os.path.join(
+                os.path.dirname(answers_file),
+                "query_gated_head_output_diagnostics.jsonl",
+            )
+        query_gated_head_output_diag_dir = os.path.dirname(query_gated_head_output_diag_path)
+        if query_gated_head_output_diag_dir:
+            os.makedirs(query_gated_head_output_diag_dir, exist_ok=True)
+        query_gated_head_output_diag_file = open(query_gated_head_output_diag_path, "w")
+        print(f"[info] query-gated head output diagnostics: {query_gated_head_output_diag_path}")
+
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
         count += 1
@@ -630,6 +691,8 @@ def eval_model(args):
             model.config.query_projection_diagnostics = []
         if args.query_direction_project:
             model.config.query_direction_sample_gate_state = {}
+        if args.record_query_gated_head_output_diagnostics:
+            model.config.query_gated_head_output_diagnostics = []
 
         input_ids = input_ids.to(device='cuda', non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True)
@@ -735,12 +798,23 @@ def eval_model(args):
                 query_projection_diag_file.write(json.dumps(record) + "\n")
             query_projection_diag_file.flush()
 
+        if query_gated_head_output_diag_file is not None:
+            for record in getattr(model.config, "query_gated_head_output_diagnostics", []):
+                record = dict(record)
+                record["question_id"] = question_id
+                record["image"] = image_file
+                record["caption"] = outputs
+                query_gated_head_output_diag_file.write(json.dumps(record) + "\n")
+            query_gated_head_output_diag_file.flush()
+
     if unsupported_diag_file is not None:
         unsupported_diag_file.close()
     if layer_contrastive_diag_file is not None:
         layer_contrastive_diag_file.close()
     if query_projection_diag_file is not None:
         query_projection_diag_file.close()
+    if query_gated_head_output_diag_file is not None:
+        query_gated_head_output_diag_file.close()
 
 
 
@@ -880,6 +954,24 @@ if __name__ == "__main__":
     parser.add_argument("--query_direction_sample_gate_max", type=float, default=1.0)
     parser.add_argument("--record_query_projection_diagnostics", action="store_true", default=False)
     parser.add_argument("--query_projection_diagnostics_file", type=str, default="")
+    parser.add_argument("--query_gated_head_output_suppress", action="store_true", default=False)
+    parser.add_argument("--query_gated_head_output_calibration", type=str, default="")
+    parser.add_argument("--query_gated_head_output_top_k", type=int, default=1)
+    parser.add_argument("--query_gated_head_output_min_auroc", type=float, default=0.0)
+    parser.add_argument("--query_gated_head_output_strength", type=float, default=0.5)
+    parser.add_argument(
+        "--query_gated_head_output_gate_mode",
+        type=str,
+        default="margin",
+        choices=["margin", "score", "hard", "sigmoid"],
+    )
+    parser.add_argument("--query_gated_head_output_temperature", type=float, default=0.05)
+    parser.add_argument("--query_gated_head_output_margin_scale", type=float, default=0.1)
+    parser.add_argument("--query_gated_head_output_min_gate", type=float, default=0.0)
+    parser.add_argument("--query_gated_head_output_max_gate", type=float, default=1.0)
+    parser.add_argument("--query_gated_head_output_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
+    parser.add_argument("--record_query_gated_head_output_diagnostics", action="store_true", default=False)
+    parser.add_argument("--query_gated_head_output_diagnostics_file", type=str, default="")
     parser.add_argument("--unsupported_component_mode", type=str, default="continuous", choices=["hard", "continuous", "hybrid"])
     parser.add_argument("--unsupported_component_layer_top_k", type=int, default=1)
     parser.add_argument("--unsupported_component_gamma", type=float, default=0.5)
