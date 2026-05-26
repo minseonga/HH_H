@@ -385,6 +385,7 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
     strength = min(max(strength, -1.0), 1.0)
 
     gate_mode = getattr(config, "query_direction_gate_mode", "threshold")
+    projection_coeff_mode = getattr(config, "query_direction_projection_coeff", "raw")
     temperature = max(float(getattr(config, "query_direction_temperature", 0.05)), 1e-6)
     positive_only = bool(getattr(config, "query_direction_positive_only", True))
     thresholds = getattr(config, "query_direction_thresholds", {})
@@ -468,20 +469,27 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
         positions = _position_indices(prefill_positions if phase == "prefill" else "last")
         q = query_states[:, head, positions, :]
         raw_coeff = torch.sum(q * direction, dim=-1, keepdim=True)
-        q_norm = q / torch.clamp(torch.linalg.vector_norm(q, dim=-1, keepdim=True), min=eps)
+        q_norm_value = torch.linalg.vector_norm(q, dim=-1, keepdim=True)
+        q_norm = q / torch.clamp(q_norm_value, min=eps)
         norm_score = torch.sum(q_norm * direction, dim=-1, keepdim=True)
+        if projection_coeff_mode == "normalized":
+            coeff = norm_score * q_norm_value
+        elif projection_coeff_mode == "normalized_margin":
+            coeff = (norm_score - threshold) * q_norm_value
+        else:
+            coeff = raw_coeff
 
         if gate_mode == "none":
             gate = torch.ones_like(raw_coeff)
         elif gate_mode == "positive":
-            gate = (raw_coeff > 0).to(query_states.dtype)
+            gate = (coeff > 0).to(query_states.dtype)
         elif gate_mode == "sigmoid":
             gate = torch.sigmoid((norm_score - threshold) / temperature).to(query_states.dtype)
         else:
             gate = (norm_score >= threshold).to(query_states.dtype)
 
-        positive_coeff = (raw_coeff > 0).to(query_states.dtype)
-        coeff = raw_coeff
+        positive_coeff = (coeff > 0).to(query_states.dtype)
+        coeff_before_clip = coeff
         if positive_only:
             coeff = torch.clamp(coeff, min=0.0)
         active_projection = (torch.abs(gate * coeff) > eps).to(query_states.dtype)
@@ -498,7 +506,6 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
             projected_norm_score = torch.sum(projected_q_norm * direction, dim=-1, keepdim=True)
             q_delta = projected_q - q
             q_delta_norm = torch.linalg.vector_norm(q_delta, dim=-1, keepdim=True)
-            q_norm_value = torch.linalg.vector_norm(q, dim=-1, keepdim=True)
             records.append({
                 "kind": "query_projection",
                 "phase": phase,
@@ -509,6 +516,7 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
                 "strength": strength,
                 "effective_strength": effective_strength,
                 "gate_mode": gate_mode,
+                "projection_coeff_mode": projection_coeff_mode,
                 "prefill_positions": prefill_positions if phase == "prefill" else "last",
                 "n_positions": int(positions.numel()),
                 "sample_gate_mode": sample_gate_mode,
@@ -517,6 +525,7 @@ def _apply_query_direction_projection(config, layer_idx, query_states, num_heads
                 "gate": gate.detach().float().mean().cpu().item(),
                 "positive_only": float(positive_only),
                 "positive_coeff": positive_coeff.detach().float().mean().cpu().item(),
+                "projection_coeff_before_clip": coeff_before_clip.detach().float().mean().cpu().item(),
                 "effective_coeff": coeff.detach().float().mean().cpu().item(),
                 "active_projection": active_projection.detach().float().mean().cpu().item(),
                 "threshold": threshold,

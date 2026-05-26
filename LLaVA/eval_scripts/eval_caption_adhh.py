@@ -532,6 +532,7 @@ def eval_model(args):
         model.config.query_direction_thresholds = thresholds
         model.config.query_direction_strength = args.query_direction_strength
         model.config.query_direction_gate_mode = args.query_direction_gate_mode
+        model.config.query_direction_projection_coeff = args.query_direction_projection_coeff
         model.config.query_direction_temperature = args.query_direction_temperature
         model.config.query_direction_positive_only = not args.query_direction_allow_negative
         model.config.query_direction_phase = args.query_direction_phase
@@ -551,6 +552,7 @@ def eval_model(args):
         print(
             f"[info] query projection: strength={args.query_direction_strength} "
             f"phase={args.query_direction_phase} gate={args.query_direction_gate_mode} "
+            f"coeff={args.query_direction_projection_coeff} "
             f"positive_only={not args.query_direction_allow_negative} "
             f"sample_gate={args.query_direction_sample_gate_mode}"
         )
@@ -854,6 +856,12 @@ if __name__ == "__main__":
         choices=["none", "positive", "threshold", "sigmoid"],
     )
     parser.add_argument("--query_direction_temperature", type=float, default=0.05)
+    parser.add_argument(
+        "--query_direction_projection_coeff",
+        type=str,
+        default="raw",
+        choices=["raw", "normalized", "normalized_margin"],
+    )
     parser.add_argument("--query_direction_allow_negative", action="store_true", default=False)
     parser.add_argument("--query_direction_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
     parser.add_argument("--query_direction_prefill_positions", type=str, default="last", choices=["last", "all", "image", "text"])

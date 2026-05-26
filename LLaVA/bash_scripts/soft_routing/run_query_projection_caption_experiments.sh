@@ -29,6 +29,7 @@ QUERY_DIRECTION_PHASES="${QUERY_DIRECTION_PHASES:-decode all}"
 QUERY_DIRECTION_STRENGTHS="${QUERY_DIRECTION_STRENGTHS:-0.5}"
 QUERY_DIRECTION_MIN_AUROC="${QUERY_DIRECTION_MIN_AUROC:-0.0}"
 QUERY_DIRECTION_GATE_MODE="${QUERY_DIRECTION_GATE_MODE:-none}"
+QUERY_DIRECTION_PROJECTION_COEFF="${QUERY_DIRECTION_PROJECTION_COEFF:-raw}"
 QUERY_DIRECTION_TEMPERATURE="${QUERY_DIRECTION_TEMPERATURE:-0.05}"
 QUERY_DIRECTION_ALLOW_NEGATIVE="${QUERY_DIRECTION_ALLOW_NEGATIVE:-0}"
 QUERY_DIRECTION_PREFILL_POSITIONS="${QUERY_DIRECTION_PREFILL_POSITIONS:-last}"
@@ -52,6 +53,7 @@ echo "[info] top ks: ${QUERY_DIRECTION_TOP_KS}"
 echo "[info] phases: ${QUERY_DIRECTION_PHASES}"
 echo "[info] strengths: ${QUERY_DIRECTION_STRENGTHS}"
 echo "[info] gate mode: ${QUERY_DIRECTION_GATE_MODE}"
+echo "[info] projection coeff: ${QUERY_DIRECTION_PROJECTION_COEFF}"
 echo "[info] sample gate modes: ${QUERY_DIRECTION_SAMPLE_GATE_MODES}"
 echo "[info] image folder: ${IMAGE_FOLDER}"
 echo "[info] num samples: ${NUM_SAMPLES}"
@@ -106,6 +108,7 @@ run_projection() {
         --query_direction_min_auroc "${QUERY_DIRECTION_MIN_AUROC}" \
         --query_direction_strength "${strength}" \
         --query_direction_gate_mode "${QUERY_DIRECTION_GATE_MODE}" \
+        --query_direction_projection_coeff "${QUERY_DIRECTION_PROJECTION_COEFF}" \
         --query_direction_temperature "${QUERY_DIRECTION_TEMPERATURE}" \
         --query_direction_phase "${phase}" \
         --query_direction_prefill_positions "${QUERY_DIRECTION_PREFILL_POSITIONS}" \
