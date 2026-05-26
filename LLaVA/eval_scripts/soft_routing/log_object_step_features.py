@@ -195,24 +195,41 @@ def find_next_subsequence(sequence, subsequence, start):
     return None
 
 
+def find_all_subsequences(sequence, subsequence):
+    if not subsequence:
+        return []
+    matches = []
+    for idx in range(0, len(sequence) - len(subsequence) + 1):
+        if sequence[idx:idx + len(subsequence)] == subsequence:
+            matches.append(idx)
+    return matches
+
+
 def align_mentions(tokenizer, caption, mentions):
     caption_ids = tokenizer(caption, add_special_tokens=False)["input_ids"]
-    cursor = 0
     aligned = []
+    used_starts = set()
     for mention in mentions:
         word_ids = []
         pos = None
         for candidate_ids in token_id_candidates_for_word(tokenizer, mention["word"]):
-            pos = find_next_subsequence(caption_ids, candidate_ids, cursor)
-            if pos is None and candidate_ids:
-                pos = find_next_subsequence(caption_ids, candidate_ids[-1:], cursor)
+            candidate_positions = find_all_subsequences(caption_ids, candidate_ids)
+            fallback = False
+            if not candidate_positions and candidate_ids:
+                candidate_positions = find_all_subsequences(caption_ids, candidate_ids[-1:])
+                fallback = True
+            for candidate_pos in candidate_positions:
+                if candidate_pos not in used_starts:
+                    pos = candidate_pos
+                    word_ids = candidate_ids[-1:] if fallback else candidate_ids
+                    break
             if pos is not None:
-                word_ids = candidate_ids
                 break
         if pos is None:
             continue
         aligned.append({**mention, "token_pos": pos, "token_ids": word_ids})
-        cursor = max(pos + 1, cursor)
+        used_starts.add(pos)
+    aligned.sort(key=lambda item: item["token_pos"])
     return caption_ids, aligned
 
 

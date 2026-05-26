@@ -138,6 +138,41 @@ def build_feature_index(feature_rows):
     return index, sorted(numeric_features)
 
 
+def add_derived_features(rows, numeric_features):
+    numeric_features = set(numeric_features)
+    specs = [
+        ("neg_top1_top2_margin", lambda row: -safe_float(row.get("top1_top2_margin"), 0.0)),
+        ("entropy_x_mean_i_text", lambda row: safe_float(row.get("entropy")) * safe_float(row.get("mean_i_text"))),
+        ("entropy_x_mean_excess", lambda row: safe_float(row.get("entropy")) * safe_float(row.get("mean_excess"))),
+        ("entropy_x_sum_excess", lambda row: safe_float(row.get("entropy")) * safe_float(row.get("sum_excess"))),
+        (
+            "entropy_x_mean_triggered_text_mass",
+            lambda row: safe_float(row.get("entropy")) * safe_float(row.get("mean_triggered_text_mass")),
+        ),
+        (
+            "entropy_x_weighted_percentile_active_count",
+            lambda row: safe_float(row.get("entropy")) * safe_float(row.get("weighted_percentile_active_count")),
+        ),
+        (
+            "mean_excess_x_neg_margin",
+            lambda row: safe_float(row.get("mean_excess")) * -safe_float(row.get("top1_top2_margin")),
+        ),
+    ]
+    for row in rows:
+        if not row["feature_available"]:
+            continue
+        for name, fn in specs:
+            try:
+                value = fn(row)
+            except (TypeError, ValueError):
+                value = None
+            value = safe_float(value)
+            if value is not None:
+                row[name] = value
+                numeric_features.add(name)
+    return sorted(numeric_features)
+
+
 def mention_list(sentence):
     mentions = []
     for label_name, key in (
@@ -263,6 +298,33 @@ def summarize_counts(rows, base_overall, target_overall, base_name, target_name)
     }]
 
 
+def coverage_summary(rows):
+    groups = [("all", rows)]
+    for label_name in sorted(set(row["base_label_name"] for row in rows)):
+        groups.append((f"label:{label_name}", [row for row in rows if row["base_label_name"] == label_name]))
+    for outcome in sorted(set(row["outcome"] for row in rows)):
+        groups.append((f"outcome:{outcome}", [row for row in rows if row["outcome"] == outcome]))
+    for target_status in sorted(set(row["target_status"] for row in rows)):
+        groups.append((f"target_status:{target_status}", [row for row in rows if row["target_status"] == target_status]))
+
+    output = []
+    for group, group_rows in groups:
+        n_total = len(group_rows)
+        n_feature = sum(int(row["feature_available"]) for row in group_rows)
+        missing = Counter(row["base_node_word"] for row in group_rows if not row["feature_available"])
+        output.append({
+            "group": group,
+            "n_total": n_total,
+            "n_feature_available": n_feature,
+            "feature_available_rate": safe_rate(n_feature, n_total),
+            "n_missing": n_total - n_feature,
+            "top_missing_node_words": ";".join(
+                f"{word}:{count}" for word, count in missing.most_common(20)
+            ),
+        })
+    return output
+
+
 def group_feature_summary(rows, numeric_features):
     output = []
     for group in sorted(set(row["outcome"] for row in rows)):
@@ -344,13 +406,16 @@ def main():
     feature_rows = load_feature_rows(args.object_step_features)
     feature_index, numeric_features = build_feature_index(feature_rows)
     rows = build_rows(base_by_id, target_by_id, feature_index, numeric_features)
+    numeric_features = add_derived_features(rows, numeric_features)
 
     summary = summarize_counts(rows, base_overall, target_overall, args.base_name, args.target_name)
+    coverage_rows = coverage_summary(rows)
     group_summary = group_feature_summary(rows, numeric_features)
     auc_rows = contrast_auc(rows, numeric_features)
 
     write_csv(os.path.join(args.output_dir, "adhh_fragility_mention_rows.csv"), rows)
     write_csv(os.path.join(args.output_dir, "adhh_fragility_summary.csv"), summary)
+    write_csv(os.path.join(args.output_dir, "adhh_fragility_feature_coverage.csv"), coverage_rows)
     write_csv(os.path.join(args.output_dir, "adhh_fragility_feature_group_summary.csv"), group_summary)
     write_csv(os.path.join(args.output_dir, "adhh_fragility_feature_auc.csv"), auc_rows)
     with open(os.path.join(args.output_dir, "adhh_fragility_summary.json"), "w") as f:

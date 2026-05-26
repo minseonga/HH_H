@@ -69,5 +69,8 @@ column -s, -t "${OUTPUT_DIR}/caption_runs/head_set_suppression_summary.csv"
 echo "[summary] AD-HH fragility"
 column -s, -t "${OUTPUT_DIR}/fragility_analysis/adhh_fragility_summary.csv"
 
+echo "[summary] feature coverage"
+column -s, -t "${OUTPUT_DIR}/fragility_analysis/adhh_fragility_feature_coverage.csv"
+
 echo "[top AUC] hallucinated removed/retained and grounded lost/retained"
 column -s, -t "${OUTPUT_DIR}/fragility_analysis/adhh_fragility_feature_auc.csv" | head -80
