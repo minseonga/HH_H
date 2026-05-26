@@ -698,6 +698,59 @@ def eval_model(args):
     else:
         model.config.query_gated_head_output_suppress = False
 
+    if args.query_logit_correction:
+        if not args.query_logit_correction_calibration:
+            raise ValueError("--query_logit_correction_calibration is required with --query_logit_correction")
+        if not os.path.exists(args.query_logit_correction_calibration):
+            raise FileNotFoundError(args.query_logit_correction_calibration)
+        directions, thresholds, direction_rows = load_query_direction_gate(
+            args.query_logit_correction_calibration,
+            top_k=args.query_logit_correction_detector_top_k,
+            min_auroc=args.query_logit_correction_min_auroc,
+        )
+        if not directions:
+            raise ValueError(
+                "No query-logit correction directions selected; lower "
+                "--query_logit_correction_min_auroc or increase "
+                "--query_logit_correction_detector_top_k."
+            )
+        model.config.query_logit_correction = True
+        model.config.query_logit_correction_directions = directions
+        model.config.query_logit_correction_thresholds = thresholds
+        model.config.query_logit_correction_detector_aggregation = args.query_logit_correction_detector_aggregation
+        model.config.query_logit_correction_global_aggregation = args.query_logit_correction_global_aggregation
+        model.config.query_logit_correction_risk_mode = args.query_logit_correction_risk_mode
+        model.config.query_logit_correction_temperature = args.query_logit_correction_temperature
+        model.config.query_logit_correction_strength = args.query_logit_correction_strength
+        model.config.query_logit_correction_top_k = args.query_logit_correction_top_k
+        model.config.query_logit_correction_rank_weight = args.query_logit_correction_rank_weight
+        model.config.query_logit_correction_risk_scale = args.query_logit_correction_risk_scale
+        model.config.query_logit_correction_max_risk = args.query_logit_correction_max_risk
+        model.config.query_logit_correction_max_penalty = args.query_logit_correction_max_penalty
+        model.config.query_logit_correction_detector_phase = args.query_logit_correction_detector_phase
+        model.config.query_logit_correction_phase = args.query_logit_correction_phase
+        model.config.record_query_logit_correction_diagnostics = args.record_query_logit_correction_diagnostics
+        model.config.query_logit_correction_diagnostics = []
+        print(
+            f"[info] query-logit correction directions: {len(directions)} "
+            f"from {args.query_logit_correction_calibration}"
+        )
+        print(
+            f"[info] query-logit correction: detector_top_k={args.query_logit_correction_detector_top_k} "
+            f"logit_top_k={args.query_logit_correction_top_k} "
+            f"strength={args.query_logit_correction_strength} "
+            f"risk={args.query_logit_correction_risk_mode} "
+            f"phase={args.query_logit_correction_phase}"
+        )
+        for row in direction_rows[:10]:
+            print(
+                "[info] query-logit correction direction "
+                f"rank={row['rank']} head={row['head_key']} "
+                f"auc={row['test_auroc']:.4f} threshold={row['threshold']:.4f}"
+            )
+    else:
+        model.config.query_logit_correction = False
+
     unsupported_diag_file = None
     if args.record_unsupported_component_diagnostics:
         unsupported_diag_path = args.unsupported_component_diagnostics_file
@@ -754,6 +807,20 @@ def eval_model(args):
         query_gated_head_output_diag_file = open(query_gated_head_output_diag_path, "w")
         print(f"[info] query-gated head output diagnostics: {query_gated_head_output_diag_path}")
 
+    query_logit_correction_diag_file = None
+    if args.record_query_logit_correction_diagnostics:
+        query_logit_correction_diag_path = args.query_logit_correction_diagnostics_file
+        if not query_logit_correction_diag_path:
+            query_logit_correction_diag_path = os.path.join(
+                os.path.dirname(answers_file),
+                "query_logit_correction_diagnostics.jsonl",
+            )
+        query_logit_correction_diag_dir = os.path.dirname(query_logit_correction_diag_path)
+        if query_logit_correction_diag_dir:
+            os.makedirs(query_logit_correction_diag_dir, exist_ok=True)
+        query_logit_correction_diag_file = open(query_logit_correction_diag_path, "w")
+        print(f"[info] query-logit correction diagnostics: {query_logit_correction_diag_path}")
+
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
         count += 1
@@ -777,6 +844,8 @@ def eval_model(args):
             model.config.query_direction_sample_gate_state = {}
         if args.record_query_gated_head_output_diagnostics:
             model.config.query_gated_head_output_diagnostics = []
+        if args.record_query_logit_correction_diagnostics:
+            model.config.query_logit_correction_diagnostics = []
 
         input_ids = input_ids.to(device='cuda', non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True)
@@ -891,6 +960,15 @@ def eval_model(args):
                 query_gated_head_output_diag_file.write(json.dumps(record) + "\n")
             query_gated_head_output_diag_file.flush()
 
+        if query_logit_correction_diag_file is not None:
+            for record in getattr(model.config, "query_logit_correction_diagnostics", []):
+                record = dict(record)
+                record["question_id"] = question_id
+                record["image"] = image_file
+                record["caption"] = outputs
+                query_logit_correction_diag_file.write(json.dumps(record) + "\n")
+            query_logit_correction_diag_file.flush()
+
     if unsupported_diag_file is not None:
         unsupported_diag_file.close()
     if layer_contrastive_diag_file is not None:
@@ -899,6 +977,8 @@ def eval_model(args):
         query_projection_diag_file.close()
     if query_gated_head_output_diag_file is not None:
         query_gated_head_output_diag_file.close()
+    if query_logit_correction_diag_file is not None:
+        query_logit_correction_diag_file.close()
 
 
 
@@ -1060,6 +1140,44 @@ if __name__ == "__main__":
     parser.add_argument("--query_gated_head_output_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
     parser.add_argument("--record_query_gated_head_output_diagnostics", action="store_true", default=False)
     parser.add_argument("--query_gated_head_output_diagnostics_file", type=str, default="")
+    parser.add_argument("--query_logit_correction", action="store_true", default=False)
+    parser.add_argument("--query_logit_correction_calibration", type=str, default="")
+    parser.add_argument("--query_logit_correction_detector_top_k", type=int, default=1)
+    parser.add_argument("--query_logit_correction_min_auroc", type=float, default=0.0)
+    parser.add_argument("--query_logit_correction_strength", type=float, default=1.0)
+    parser.add_argument("--query_logit_correction_top_k", type=int, default=1)
+    parser.add_argument(
+        "--query_logit_correction_risk_mode",
+        type=str,
+        default="margin",
+        choices=["margin", "score", "hard", "sigmoid"],
+    )
+    parser.add_argument(
+        "--query_logit_correction_detector_aggregation",
+        type=str,
+        default="max",
+        choices=["max", "mean", "sum"],
+    )
+    parser.add_argument(
+        "--query_logit_correction_global_aggregation",
+        type=str,
+        default="max",
+        choices=["max", "mean", "sum"],
+    )
+    parser.add_argument(
+        "--query_logit_correction_rank_weight",
+        type=str,
+        default="uniform",
+        choices=["uniform", "linear", "reciprocal"],
+    )
+    parser.add_argument("--query_logit_correction_temperature", type=float, default=0.05)
+    parser.add_argument("--query_logit_correction_risk_scale", type=float, default=1.0)
+    parser.add_argument("--query_logit_correction_max_risk", type=float, default=0.0)
+    parser.add_argument("--query_logit_correction_max_penalty", type=float, default=0.0)
+    parser.add_argument("--query_logit_correction_detector_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
+    parser.add_argument("--query_logit_correction_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
+    parser.add_argument("--record_query_logit_correction_diagnostics", action="store_true", default=False)
+    parser.add_argument("--query_logit_correction_diagnostics_file", type=str, default="")
     parser.add_argument("--unsupported_component_mode", type=str, default="continuous", choices=["hard", "continuous", "hybrid"])
     parser.add_argument("--unsupported_component_layer_top_k", type=int, default=1)
     parser.add_argument("--unsupported_component_gamma", type=float, default=0.5)

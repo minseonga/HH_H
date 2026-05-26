@@ -735,6 +735,175 @@ def _apply_query_gated_head_output_suppression(config, layer_idx, query_states, 
     return head_outputs
 
 
+def _update_query_logit_correction_risk(config, layer_idx, query_states, num_heads):
+    if not getattr(config, "query_logit_correction", False):
+        return
+    directions = getattr(config, "query_logit_correction_directions", None)
+    if not directions or query_states is None:
+        return
+
+    layer = int(layer_idx) if layer_idx is not None else -1
+    q_len = int(query_states.shape[2])
+    phase = "decode" if q_len == 1 else "prefill"
+    phase_mode = getattr(config, "query_logit_correction_detector_phase", "decode")
+    if phase_mode == "both":
+        phase_mode = "all"
+    if phase_mode not in ("all", "prefill", "decode"):
+        phase_mode = "decode"
+    if phase_mode != "all" and phase_mode != phase:
+        return
+
+    risk_mode = getattr(config, "query_logit_correction_risk_mode", "margin")
+    temperature = max(float(getattr(config, "query_logit_correction_temperature", 0.05)), 1e-6)
+    thresholds = getattr(config, "query_logit_correction_thresholds", {})
+    eps = float(getattr(config, "query_logit_correction_eps", 1e-6))
+
+    layer_risks = []
+    score_values = []
+    margin_values = []
+    for head in range(num_heads):
+        key = f"{layer}:{head}"
+        direction = directions.get(key)
+        if direction is None:
+            continue
+        if not isinstance(direction, torch.Tensor):
+            direction = torch.tensor(direction)
+        direction = direction.to(device=query_states.device, dtype=query_states.dtype)
+        direction = direction / torch.clamp(torch.linalg.vector_norm(direction), min=eps)
+
+        q = query_states[:, head, -1, :]
+        q_norm = q / torch.clamp(torch.linalg.vector_norm(q, dim=-1, keepdim=True), min=eps)
+        score = torch.sum(q_norm * direction, dim=-1, keepdim=True)
+        threshold = float(thresholds.get(key, 0.0))
+        margin = score - threshold
+        if risk_mode == "score":
+            risk = torch.clamp(score, min=0.0)
+        elif risk_mode == "hard":
+            risk = (margin >= 0).to(query_states.dtype)
+        elif risk_mode == "sigmoid":
+            risk = torch.sigmoid(margin / temperature).to(query_states.dtype)
+        else:
+            risk = torch.clamp(margin, min=0.0)
+        layer_risks.append(risk)
+        score_values.append(score)
+        margin_values.append(margin)
+
+    if not layer_risks:
+        return
+
+    stacked = torch.stack(layer_risks, dim=0)
+    aggregation = getattr(config, "query_logit_correction_detector_aggregation", "max")
+    if aggregation == "mean":
+        layer_risk = torch.mean(stacked, dim=0)
+    elif aggregation == "sum":
+        layer_risk = torch.sum(stacked, dim=0)
+    else:
+        layer_risk = torch.max(stacked, dim=0).values
+
+    risk_values = getattr(config, "query_logit_correction_risk_values", None)
+    if risk_values is None:
+        risk_values = []
+        config.query_logit_correction_risk_values = risk_values
+    risk_values.append(layer_risk)
+
+    records = getattr(config, "query_logit_correction_diagnostics", None)
+    if getattr(config, "record_query_logit_correction_diagnostics", False) and records is not None:
+        scores = torch.stack(score_values, dim=0)
+        margins = torch.stack(margin_values, dim=0)
+        records.append({
+            "kind": "query_logit_correction_risk",
+            "phase": phase,
+            "q_len": q_len,
+            "layer": layer,
+            "n_heads": int(len(layer_risks)),
+            "aggregation": aggregation,
+            "risk_mode": risk_mode,
+            "risk": layer_risk.detach().float().mean().cpu().item(),
+            "active_risk": (layer_risk > eps).detach().float().mean().cpu().item(),
+            "mean_score": scores.detach().float().mean().cpu().item(),
+            "mean_margin": margins.detach().float().mean().cpu().item(),
+            "max_margin": margins.detach().float().max().cpu().item(),
+        })
+
+
+def _maybe_apply_query_logit_correction(config, logits, phase):
+    if not getattr(config, "query_logit_correction", False):
+        return logits
+    phase_mode = getattr(config, "query_logit_correction_phase", "decode")
+    if phase_mode == "both":
+        phase_mode = "all"
+    if phase_mode not in ("all", "prefill", "decode"):
+        phase_mode = "decode"
+    if phase_mode != "all" and phase_mode != phase:
+        return logits
+
+    risk_values = getattr(config, "query_logit_correction_risk_values", None)
+    if not risk_values:
+        return logits
+
+    strength = max(float(getattr(config, "query_logit_correction_strength", 1.0)), 0.0)
+    if strength <= 0.0:
+        return logits
+
+    risks = torch.stack([risk.to(device=logits.device, dtype=logits.dtype) for risk in risk_values], dim=0)
+    aggregation = getattr(config, "query_logit_correction_global_aggregation", "max")
+    if aggregation == "mean":
+        risk = torch.mean(risks, dim=0)
+    elif aggregation == "sum":
+        risk = torch.sum(risks, dim=0)
+    else:
+        risk = torch.max(risks, dim=0).values
+    risk = torch.clamp(risk, min=0.0)
+    risk_scale = max(float(getattr(config, "query_logit_correction_risk_scale", 1.0)), 1e-6)
+    risk = risk / risk_scale
+    max_risk = float(getattr(config, "query_logit_correction_max_risk", 0.0))
+    if max_risk > 0.0:
+        risk = torch.clamp(risk, max=max_risk)
+
+    top_k = max(int(getattr(config, "query_logit_correction_top_k", 1)), 1)
+    top_k = min(top_k, logits.shape[-1])
+    rank_weight_mode = getattr(config, "query_logit_correction_rank_weight", "uniform")
+    if rank_weight_mode == "linear":
+        weights = torch.linspace(1.0, 1.0 / float(top_k), steps=top_k, device=logits.device, dtype=logits.dtype)
+    elif rank_weight_mode == "reciprocal":
+        weights = 1.0 / torch.arange(1, top_k + 1, device=logits.device, dtype=logits.dtype)
+    else:
+        weights = torch.ones(top_k, device=logits.device, dtype=logits.dtype)
+    weights = weights.unsqueeze(0)
+
+    last_logits = logits[:, -1, :]
+    top_values, top_ids = torch.topk(last_logits, k=top_k, dim=-1)
+    penalty = strength * risk * weights
+    max_penalty = float(getattr(config, "query_logit_correction_max_penalty", 0.0))
+    if max_penalty > 0.0:
+        penalty = torch.clamp(penalty, max=max_penalty)
+
+    corrected_last_logits = last_logits.clone()
+    corrected_last_logits.scatter_add_(1, top_ids, -penalty)
+    corrected_logits = logits.clone()
+    corrected_logits[:, -1, :] = corrected_last_logits
+
+    records = getattr(config, "query_logit_correction_diagnostics", None)
+    if getattr(config, "record_query_logit_correction_diagnostics", False) and records is not None:
+        records.append({
+            "kind": "query_logit_correction_logits",
+            "phase": phase,
+            "top_k": int(top_k),
+            "strength": strength,
+            "risk": risk.detach().float().mean().cpu().item(),
+            "active_risk": (risk > 0).detach().float().mean().cpu().item(),
+            "penalty_mean": penalty.detach().float().mean().cpu().item(),
+            "penalty_max": penalty.detach().float().max().cpu().item(),
+            "top1_token_id": int(top_ids[0, 0].detach().cpu().item()) if top_ids.numel() else None,
+            "top1_logit_before": top_values[0, 0].detach().float().cpu().item() if top_values.numel() else None,
+            "top1_logit_after": corrected_last_logits[0, top_ids[0, 0]].detach().float().cpu().item() if top_ids.numel() else None,
+            "detector_aggregation": getattr(config, "query_logit_correction_detector_aggregation", "max"),
+            "global_aggregation": aggregation,
+            "rank_weight": rank_weight_mode,
+        })
+    return corrected_logits
+
+
 def _compute_query_direction_gate_for_layer(config, layer_idx, query_states, num_heads):
     if query_states is None:
         return None
@@ -2357,6 +2526,7 @@ class LlamaAttention(nn.Module):
         )
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
+        _update_query_logit_correction_risk(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
         kv_seq_len = key_states.shape[-2]
@@ -3040,6 +3210,7 @@ class LlamaFlashAttention2(LlamaAttention):
         )
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
+        _update_query_logit_correction_risk(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
         kv_seq_len = key_states.shape[-2]
@@ -3317,6 +3488,7 @@ class LlamaSdpaAttention(LlamaAttention):
         )
         original_query_states = query_states.clone() if getattr(self.config, "record_query_projection_diagnostics", False) else None
         _record_query_diagnostics(self.config, self.layer_idx, query_states, self.num_heads)
+        _update_query_logit_correction_risk(self.config, self.layer_idx, query_states, self.num_heads)
         query_states = _apply_query_direction_projection(self.config, self.layer_idx, query_states, self.num_heads)
 
         kv_seq_len = key_states.shape[-2]
@@ -3898,6 +4070,9 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        if getattr(self.config, "query_logit_correction", False):
+            self.config.query_logit_correction_risk_values = []
+
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
@@ -3956,6 +4131,11 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
                 self.config,
                 self.lm_head,
                 contrastive_hidden_states,
+                logits,
+                phase,
+            )
+            logits = _maybe_apply_query_logit_correction(
+                self.config,
                 logits,
                 phase,
             )
