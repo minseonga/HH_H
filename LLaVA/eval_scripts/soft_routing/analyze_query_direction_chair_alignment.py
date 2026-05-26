@@ -72,6 +72,16 @@ def parse_int_list(text):
     return values
 
 
+def parse_offsets(text):
+    offsets = []
+    for item in str(text).replace(" ", ",").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        offsets.append(int(item))
+    return offsets or [0]
+
+
 def normalize_image_id(value):
     if value is None:
         return ""
@@ -461,6 +471,27 @@ def add_ensemble_features(row, directions, head_scores, ensemble_top_ks, tempera
         row[f"{prefix}_sigmoid_mean"] = mean(sig)
 
 
+def add_offset_ensemble_features(row, directions, offset_head_scores, ensemble_top_ks, temperature):
+    for offset, head_scores in offset_head_scores.items():
+        suffix = f"offset_m{abs(offset)}" if offset < 0 else f"offset_p{offset}"
+        ranked = [item for item in directions if item["head_key"] in head_scores]
+        for k in ensemble_top_ks:
+            active = ranked[:min(k, len(ranked))]
+            if not active:
+                continue
+            scores = [head_scores[item["head_key"]]["score"] for item in active]
+            margins = [head_scores[item["head_key"]]["margin"] for item in active]
+            hard = [1.0 if margin > 0 else 0.0 for margin in margins]
+            sig = [sigmoid(margin / max(float(temperature), 1e-6)) for margin in margins]
+            prefix = f"top{k}_{suffix}"
+            row[f"{prefix}_score_mean"] = mean(scores)
+            row[f"{prefix}_score_max"] = max(scores)
+            row[f"{prefix}_margin_mean"] = mean(margins)
+            row[f"{prefix}_margin_max"] = max(margins)
+            row[f"{prefix}_hard_rate"] = mean(hard)
+            row[f"{prefix}_sigmoid_mean"] = mean(sig)
+
+
 def auc_rows_from_features(mention_rows, feature_names):
     rows = []
     labels = [int(row["label"]) for row in mention_rows]
@@ -592,6 +623,11 @@ def main():
     parser.add_argument("--gate-temperature", type=float, default=0.1)
     parser.add_argument("--score-span", choices=["first", "all"], default="first")
     parser.add_argument("--span-aggregation", choices=["max", "mean"], default="max")
+    parser.add_argument(
+        "--temporal-offsets",
+        default="0",
+        help="Comma/space separated token-position offsets relative to each scored object token, e.g. '0,-1,-2'.",
+    )
     parser.add_argument("--match-eval-results", default="")
     parser.add_argument("--exclude-eval-results", nargs="*", default=[])
     parser.add_argument("--exclude-image-ids", nargs="*", default=[])
@@ -662,6 +698,7 @@ def main():
         f"after_filter={len(sentences)} excluded_ids={len(exclude_ids)}"
     )
     ensemble_top_ks = parse_int_list(args.ensemble_top_ks)
+    temporal_offsets = parse_offsets(args.temporal_offsets)
 
     mention_rows = []
     head_score_rows = []
@@ -692,6 +729,8 @@ def main():
                 break
             span_scores = []
             target_token_ids = []
+            offset_span_scores = {offset: [] for offset in temporal_offsets}
+            offset_target_token_ids = {offset: [] for offset in temporal_offsets}
             for token_pos in mention["score_positions"]:
                 if token_pos < 0 or token_pos >= len(mention["caption_ids"]):
                     continue
@@ -709,6 +748,24 @@ def main():
                 scores, target_token_id = position_cache[token_pos]
                 span_scores.append(scores)
                 target_token_ids.append(target_token_id)
+                for offset in temporal_offsets:
+                    offset_pos = token_pos + int(offset)
+                    if offset_pos < 0 or offset_pos >= len(mention["caption_ids"]):
+                        continue
+                    if offset_pos not in position_cache:
+                        position_cache[offset_pos] = score_position(
+                            model,
+                            prompt_ids,
+                            image_tensor,
+                            image_size,
+                            mention["caption_ids"],
+                            offset_pos,
+                            directions,
+                            args.query_normalization,
+                        )
+                    offset_scores, offset_target_token_id = position_cache[offset_pos]
+                    offset_span_scores[offset].append(offset_scores)
+                    offset_target_token_ids[offset].append(offset_target_token_id)
             if not span_scores:
                 skipped["no_scored_positions"] += 1
                 continue
@@ -716,6 +773,13 @@ def main():
             if not head_scores:
                 skipped["no_direction_records"] += 1
                 continue
+            offset_head_scores = {}
+            for offset, scores_for_offset in offset_span_scores.items():
+                if not scores_for_offset:
+                    continue
+                offset_scores = aggregate_span_scores(scores_for_offset, directions, args.span_aggregation)
+                if offset_scores:
+                    offset_head_scores[offset] = offset_scores
 
             row = {
                 "question_id": sentence.get("question_id", sentence.get("image_id", "")),
@@ -733,12 +797,29 @@ def main():
                 "target_tokens": " ".join(tokenizer.decode([item]).replace("\n", "\\n") for item in target_token_ids),
             }
             add_ensemble_features(row, directions, head_scores, ensemble_top_ks, args.gate_temperature)
+            add_offset_ensemble_features(row, directions, offset_head_scores, ensemble_top_ks, args.gate_temperature)
+            for offset in temporal_offsets:
+                suffix = f"offset_m{abs(offset)}" if offset < 0 else f"offset_p{offset}"
+                row[f"{suffix}_target_token_ids"] = " ".join(
+                    str(item) for item in offset_target_token_ids.get(offset, [])
+                )
+                row[f"{suffix}_target_tokens"] = " ".join(
+                    tokenizer.decode([item]).replace("\n", "\\n")
+                    for item in offset_target_token_ids.get(offset, [])
+                )
             for item in directions:
                 score = head_scores.get(item["head_key"])
                 if score is None:
                     continue
                 row[f"{item['head_key']}_score"] = score["score"]
                 row[f"{item['head_key']}_margin"] = score["margin"]
+                for offset, offset_scores in offset_head_scores.items():
+                    offset_score = offset_scores.get(item["head_key"])
+                    if offset_score is None:
+                        continue
+                    suffix = f"offset_m{abs(offset)}" if offset < 0 else f"offset_p{offset}"
+                    row[f"{item['head_key']}_{suffix}_score"] = offset_score["score"]
+                    row[f"{item['head_key']}_{suffix}_margin"] = offset_score["margin"]
                 head_score_rows.append({
                     "question_id": row["question_id"],
                     "image_id": row["image_id"],
@@ -769,9 +850,16 @@ def main():
     for k in ensemble_top_ks:
         for suffix in ("score_mean", "score_max", "margin_mean", "margin_max", "hard_rate", "sigmoid_mean"):
             feature_names.append(f"top{k}_{suffix}")
+            for offset in temporal_offsets:
+                offset_suffix = f"offset_m{abs(offset)}" if offset < 0 else f"offset_p{offset}"
+                feature_names.append(f"top{k}_{offset_suffix}_{suffix}")
     for item in directions:
         feature_names.append(f"{item['head_key']}_score")
         feature_names.append(f"{item['head_key']}_margin")
+        for offset in temporal_offsets:
+            offset_suffix = f"offset_m{abs(offset)}" if offset < 0 else f"offset_p{offset}"
+            feature_names.append(f"{item['head_key']}_{offset_suffix}_score")
+            feature_names.append(f"{item['head_key']}_{offset_suffix}_margin")
 
     mention_auc_rows = auc_rows_from_features(mention_rows, feature_names)
     sample_rows, sample_feature_names = build_sample_rows(mention_rows, feature_names)
@@ -834,6 +922,7 @@ def main():
         "selected_direction_count": len(directions),
         "selected_directions": direction_rows,
         "ensemble_top_ks": ensemble_top_ks,
+        "temporal_offsets": temporal_offsets,
         "score_span": args.score_span,
         "span_aggregation": args.span_aggregation,
         "query_normalization": args.query_normalization,
