@@ -25,6 +25,12 @@ column -s, -t "${OUTPUT_DIR}/head_pool_rank_bucket_summary.csv"
 echo "[summary] AD-HH overlay"
 column -s, -t "${OUTPUT_DIR}/head_pool_adhh_overlay.csv"
 
+echo "[summary] architecture findings"
+column -s, -t "${OUTPUT_DIR}/head_pool_architecture_findings.csv"
+
+echo "[summary] rejected AD-HH heads"
+column -s, -t "${OUTPUT_DIR}/rejected_adhh_heads_by_contrastive_pool.csv"
+
 echo "[summary] local eval metrics"
 column -s, -t "${OUTPUT_DIR}/local_eval_metrics.csv"
 

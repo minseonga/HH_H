@@ -32,6 +32,8 @@
     "component_overlap": "./results/coco/contrastive_dynamic_head_pool_analysis/head_pool_component_overlap.csv",
     "surrogate_correlations": "./results/coco/contrastive_dynamic_head_pool_analysis/head_pool_surrogate_correlations.csv",
     "layer_distribution": "./results/coco/contrastive_dynamic_head_pool_analysis/head_pool_layer_distribution.csv",
+    "architecture_findings": "./results/coco/contrastive_dynamic_head_pool_analysis/head_pool_architecture_findings.csv",
+    "rejected_adhh_heads": "./results/coco/contrastive_dynamic_head_pool_analysis/rejected_adhh_heads_by_contrastive_pool.csv",
     "eval_metrics": "./results/coco/contrastive_dynamic_head_pool_analysis/local_eval_metrics.csv"
   }
 }

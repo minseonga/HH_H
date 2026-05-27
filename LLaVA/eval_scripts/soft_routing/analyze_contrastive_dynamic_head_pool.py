@@ -322,6 +322,100 @@ def make_layer_rows(records, top_ks):
     return rows
 
 
+def make_architecture_rows(records, adhh_keys, top_ks):
+    rows = []
+    rank_by_key = {row["_key"]: row["_rank"] for row in records}
+    bands = [
+        ("L13-20", 13, 20),
+        ("L21-26", 21, 26),
+        ("L27-31", 27, 31),
+    ]
+
+    def band_name(layer):
+        for name, low, high in bands:
+            if low <= layer <= high:
+                return name
+        return "other"
+
+    for top_k in top_ks:
+        selected = records[:top_k]
+        layer_counts = Counter(int(row["layer"]) for row in selected)
+        band_counts = Counter(band_name(int(row["layer"])) for row in selected)
+        balanced = sum(
+            1
+            for row in selected
+            if safe_float(row.get("front_percentile"), 0.0) >= 0.8
+            and safe_float(row.get("back_percentile"), 0.0) >= 0.8
+        )
+        front_only = sum(
+            1
+            for row in selected
+            if safe_float(row.get("front_percentile"), 0.0) >= 0.8
+            and safe_float(row.get("back_percentile"), 0.0) < 0.8
+        )
+        back_only = sum(
+            1
+            for row in selected
+            if safe_float(row.get("front_percentile"), 0.0) < 0.8
+            and safe_float(row.get("back_percentile"), 0.0) >= 0.8
+        )
+        toi_gap_pos = sum(
+            1
+            for row in selected
+            if safe_float(row.get("RawTOI_hallucinated"), 0.0)
+            > safe_float(row.get("RawTOI_non_hallucinated"), 0.0)
+        )
+        img_drop_pos = sum(
+            1
+            for row in selected
+            if safe_float(row.get("Img_non_hallucinated"), 0.0)
+            > safe_float(row.get("Img_hallucinated"), 0.0)
+        )
+        prior_min = 1.0 - (top_k - 1) / float(max(len(records) - 1, 1))
+        rows.append({
+            "top_k": top_k,
+            "unique_layers": len(layer_counts),
+            "max_heads_per_layer": max(layer_counts.values()) if layer_counts else 0,
+            "band_L13_20": band_counts["L13-20"],
+            "band_L21_26": band_counts["L21-26"],
+            "band_L27_31": band_counts["L27-31"],
+            "frac_L13_20": band_counts["L13-20"] / max(top_k, 1),
+            "frac_L21_26": band_counts["L21-26"] / max(top_k, 1),
+            "frac_L27_31": band_counts["L27-31"] / max(top_k, 1),
+            "balanced_front_back_ge_0p8": balanced,
+            "front_only_ge_0p8": front_only,
+            "back_only_ge_0p8": back_only,
+            "toi_gap_positive": toi_gap_pos,
+            "img_drop_positive": img_drop_pos,
+            "rank_percentile_prior_min": prior_min,
+            "adhh_overlap": sum(1 for row in selected if row["_key"] in adhh_keys),
+        })
+
+    rejected_adhh_rows = []
+    for key in sorted(adhh_keys, key=lambda item: rank_by_key.get(item, 10**9)):
+        rank = rank_by_key.get(key)
+        if rank is None or rank <= max(top_ks):
+            continue
+        row = records[rank - 1]
+        rejected_adhh_rows.append({
+            "head_key": key,
+            "head_id": row["_lhh"],
+            "rank": rank,
+            "front_percentile": row.get("front_percentile"),
+            "back_percentile": row.get("back_percentile"),
+            "itext_all": row.get("Itext_all"),
+            "raw_toi_gap": (
+                safe_float(row.get("RawTOI_hallucinated"), 0.0)
+                - safe_float(row.get("RawTOI_non_hallucinated"), 0.0)
+            ),
+            "img_drop": (
+                safe_float(row.get("Img_non_hallucinated"), 0.0)
+                - safe_float(row.get("Img_hallucinated"), 0.0)
+            ),
+        })
+    return rows, rejected_adhh_rows
+
+
 def load_eval_metrics(paths):
     rows = []
     for label, path in paths:
@@ -363,11 +457,26 @@ def best_dynamic(metric_rows):
     return min(dynamic_rows, key=lambda row: safe_float(row.get("CHAIRs"), 999.0))
 
 
-def make_report(path, args, target_data, records, bucket_rows, overlay_rows, corr_rows, metric_rows, top_ks):
+def make_report(
+    path,
+    args,
+    target_data,
+    records,
+    bucket_rows,
+    overlay_rows,
+    corr_rows,
+    metric_rows,
+    top_ks,
+    architecture_rows,
+    rejected_adhh_rows,
+):
     top20 = " ".join(row["_lhh"] for row in records[:20])
     top100_layers = Counter(int(row["layer"]) for row in records[:100])
     layer_text = ", ".join(f"L{layer}:{count}" for layer, count in sorted(top100_layers.items()))
     top100 = next((row for row in bucket_rows if row["bucket"] == "top100"), {})
+    top150 = next((row for row in bucket_rows if row["bucket"] == "top150"), {})
+    arch100 = next((row for row in architecture_rows if int(row["top_k"]) == 100), {})
+    arch150 = next((row for row in architecture_rows if int(row["top_k"]) == 150), {})
     rest = next((row for row in bucket_rows if row["bucket"].startswith("rank>")), {})
     rest_label = rest.get("bucket", f"rank>{max(top_ks)}")
     ov100 = next((row for row in overlay_rows if int(row["top_k"]) == 100), {})
@@ -402,9 +511,49 @@ def make_report(path, args, target_data, records, bucket_rows, overlay_rows, cor
         f"- top100 mean RawTOI H-G gap={fmt(top100.get('mean_raw_toi_gap_hall_minus_nonhall'))}, {rest_label} gap={fmt(rest.get('mean_raw_toi_gap_hall_minus_nonhall'))}",
         f"- top100 mean image drop(nonhall-hall)={fmt(top100.get('mean_img_drop_hall_vs_nonhall'))}, {rest_label} image drop={fmt(rest.get('mean_img_drop_hall_vs_nonhall'))}",
         "",
+        "## Architecture-Level Findings",
+        "",
+        "### Finding 1: larger pool is a distributed actuator scaffold, not AD-HH copy",
+        "",
+        f"- top100 covers {arch100.get('unique_layers', 'NA')} layers with max {arch100.get('max_heads_per_layer', 'NA')} heads/layer; top150 covers {arch150.get('unique_layers', 'NA')} layers with max {arch150.get('max_heads_per_layer', 'NA')} heads/layer.",
+        f"- top100 band split: L13-20={arch100.get('band_L13_20', 'NA')}, L21-26={arch100.get('band_L21_26', 'NA')}, L27-31={arch100.get('band_L27_31', 'NA')}.",
+        f"- top150 band split: L13-20={arch150.get('band_L13_20', 'NA')}, L21-26={arch150.get('band_L21_26', 'NA')}, L27-31={arch150.get('band_L27_31', 'NA')}.",
+        "Interpretation: the pool spans mid-layer cross-modal competition and late language-readout layers, so the method is a distributed routing intervention rather than a small fixed head mask.",
+        "",
+        "### Finding 2: top100/top150 keep AD-HH's useful core but reject weak AD-HH heads",
+        "",
+        f"- top100 recovers {arch100.get('adhh_overlap', 'NA')}/20 AD-HH heads; top150 recovers {arch150.get('adhh_overlap', 'NA')}/20.",
+        "- The rejected AD-HH heads after top150 are mostly high text-mass but low/negative hallucination contrast:",
+    ]
+    for row in rejected_adhh_rows[:8]:
+        lines.append(
+            f"  - `{row['head_id']}` rank={row['rank']}, front={fmt(row['front_percentile'])}, "
+            f"back={fmt(row['back_percentile'])}, RawTOI gap={fmt(row['raw_toi_gap'])}"
+        )
+    lines.extend([
+        "Interpretation: this directly separates generic language-continuation heads from hallucination-specific text-over-image heads.",
+        "",
+        "### Finding 3: top100 is the balanced core; top150 is the aggressive contrast shell",
+        "",
+        f"- top100 balanced(front>=0.8 and back>=0.8) heads: {arch100.get('balanced_front_back_ge_0p8', 'NA')}; top150: {arch150.get('balanced_front_back_ge_0p8', 'NA')}.",
+        f"- top100 back-only contrast heads: {arch100.get('back_only_ge_0p8', 'NA')}; top150: {arch150.get('back_only_ge_0p8', 'NA')}.",
+        "Interpretation: top100 is the high-confidence intersection of text leverage and hallucination contrast. top150 adds more hallucination-contrast-heavy heads, which is more aggressive and can lower CHAIR further but risks recall.",
+        "",
+        "### Finding 4: the selected heads show hallucination-state visual dropout",
+        "",
+        f"- top100 heads have positive RawTOI H-G gap in {arch100.get('toi_gap_positive', 'NA')}/100 heads and positive image drop in {arch100.get('img_drop_positive', 'NA')}/100 heads.",
+        f"- top150 heads have positive RawTOI H-G gap in {arch150.get('toi_gap_positive', 'NA')}/150 heads and positive image drop in {arch150.get('img_drop_positive', 'NA')}/150 heads.",
+        f"- mean image drop is {fmt(top100.get('mean_img_drop_hall_vs_nonhall'))} for top100 and {fmt(top150.get('mean_img_drop_hall_vs_nonhall'))} for top150.",
+        "Interpretation: hallucination steps are not merely high-text; they are relatively lower-image and higher text-over-image in these selected heads.",
+        "",
+        "### Finding 5: dynamic rank prior keeps top100/top150 active but graded",
+        "",
+        f"- rank-percentile prior min is {fmt(arch100.get('rank_percentile_prior_min'))} for top100 and {fmt(arch150.get('rank_percentile_prior_min'))} for top150.",
+        "Interpretation: expansion to top100/top150 does not mean uniform hard suppression. Offline rank gives a graded where-prior, and online text ratio gives token-level strength.",
+        "",
         "## Surrogate Consistency",
         "",
-    ]
+    ])
     for row in corr_top:
         lines.append(
             f"- `{row['score_name']}`: Spearman with target rank percentile={fmt(row.get('spearman_with_target_rank_percentile'))}"
@@ -433,11 +582,12 @@ def make_report(path, args, target_data, records, bucket_rows, overlay_rows, cor
         "",
         "## 논문/보고서에 넣을 수 있는 주장",
         "",
-        "1. AD-HH는 fixed small actuator set이지만, teammate method는 larger hallucination-relevant text-leverage pool을 사용한다.",
+        "1. AD-HH는 fixed small actuator set이지만, teammate method는 larger distributed hallucination-relevant text-leverage scaffold를 사용한다.",
         "2. Head selection 자체가 suppression target과 정렬되어 있다. generated-prefix raw text attention이 아니라 image 이후 text-side slice를 쓰므로 실제 intervention slice와 같은 축이다.",
         "3. Contrastive term 때문에 단순 text-heavy head가 아니라 hallucinated object step에서 text-over-image reliance가 더 커지는 head를 우선한다.",
-        "4. Online gate는 head가 매 step 실제로 text-dominant일 때만 강하게 suppress한다. 즉 offline head pool은 `where`, online ratio는 `when/strength` 역할을 한다.",
-        "5. 우리 AD-HH 분석의 결론과 맞는다. text_mass는 hallucination evidence가 아니라 actuator leverage이고, dynamic method는 이 leverage를 hallucination contrast 및 online state와 결합한다.",
+        "4. Top100/top150은 AD-HH의 useful core를 포함하되, AD-HH 내부의 generic text heads를 contrast criterion으로 거른다.",
+        "5. Online gate는 head가 매 step 실제로 text-dominant일 때만 강하게 suppress한다. 즉 offline head pool은 `where`, online ratio는 `when/strength` 역할을 한다.",
+        "6. 우리 AD-HH 분석의 결론과 맞는다. text_mass는 hallucination evidence가 아니라 actuator leverage이고, dynamic method는 이 leverage를 hallucination contrast 및 online state와 결합한다.",
         "",
         "## 남는 약점",
         "",
@@ -485,6 +635,7 @@ def main():
     component_rows = make_component_overlap_rows(records, zoo_dir, top_ks)
     corr_rows = make_correlation_rows(records, zoo_dir)
     layer_rows = make_layer_rows(records, top_ks)
+    architecture_rows, rejected_adhh_rows = make_architecture_rows(records, adhh_keys, top_ks)
     metric_rows = load_eval_metrics(discover_eval_paths(args))
 
     write_csv(os.path.join(args.output_dir, "head_pool_rank_bucket_summary.csv"), bucket_rows)
@@ -493,10 +644,24 @@ def main():
     write_csv(os.path.join(args.output_dir, "head_pool_component_overlap.csv"), component_rows)
     write_csv(os.path.join(args.output_dir, "head_pool_surrogate_correlations.csv"), corr_rows)
     write_csv(os.path.join(args.output_dir, "head_pool_layer_distribution.csv"), layer_rows)
+    write_csv(os.path.join(args.output_dir, "head_pool_architecture_findings.csv"), architecture_rows)
+    write_csv(os.path.join(args.output_dir, "rejected_adhh_heads_by_contrastive_pool.csv"), rejected_adhh_rows)
     write_csv(os.path.join(args.output_dir, "local_eval_metrics.csv"), metric_rows)
 
     report_path = os.path.join(args.output_dir, "method_justification_report.md")
-    make_report(report_path, args, target_data, records, bucket_rows, overlay_rows, corr_rows, metric_rows, top_ks)
+    make_report(
+        report_path,
+        args,
+        target_data,
+        records,
+        bucket_rows,
+        overlay_rows,
+        corr_rows,
+        metric_rows,
+        top_ks,
+        architecture_rows,
+        rejected_adhh_rows,
+    )
 
     summary = {
         "ranked_heads": args.ranked_heads,
@@ -511,6 +676,8 @@ def main():
             "component_overlap": os.path.join(args.output_dir, "head_pool_component_overlap.csv"),
             "surrogate_correlations": os.path.join(args.output_dir, "head_pool_surrogate_correlations.csv"),
             "layer_distribution": os.path.join(args.output_dir, "head_pool_layer_distribution.csv"),
+            "architecture_findings": os.path.join(args.output_dir, "head_pool_architecture_findings.csv"),
+            "rejected_adhh_heads": os.path.join(args.output_dir, "rejected_adhh_heads_by_contrastive_pool.csv"),
             "eval_metrics": os.path.join(args.output_dir, "local_eval_metrics.csv"),
         },
     }
