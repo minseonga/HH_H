@@ -24,6 +24,12 @@ python -m eval_scripts.soft_routing.build_suppression_evidence_figures \
     --output-dir "${OUTPUT_DIR}" \
     --model-path "${MODEL_PATH}"
 
+python -m eval_scripts.soft_routing.build_method_claim_evidence \
+    --ranked-heads "${RANKED_HEADS}" \
+    --output-dir "${OUTPUT_DIR}/method_claim_evidence" \
+    --base-eval-json "${BASE_EVAL_JSON}" \
+    --method-eval-glob "${DYNAMIC_EVAL_GLOB}"
+
 echo "[summary] head-pool rank buckets"
 column -s, -t "${OUTPUT_DIR}/head_pool_rank_bucket_summary.csv"
 
@@ -42,5 +48,12 @@ column -s, -t "${OUTPUT_DIR}/local_eval_metrics.csv"
 echo "[summary] suppression evidence"
 column -s, -t "${OUTPUT_DIR}/suppression_evidence_summary.csv"
 
+echo "[summary] method claim component split"
+column -s, -t "${OUTPUT_DIR}/method_claim_evidence/component_category_summary.csv"
+
+echo "[summary] method claim object changes"
+column -s, -t "${OUTPUT_DIR}/method_claim_evidence/object_change_summary.csv"
+
 echo "[done] report: ${OUTPUT_DIR}/method_justification_report.md"
 echo "[done] evidence figures: ${OUTPUT_DIR}/suppression_evidence_figures.md"
+echo "[done] method claim evidence: ${OUTPUT_DIR}/method_claim_evidence/method_claim_evidence.md"
