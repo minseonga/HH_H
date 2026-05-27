@@ -1,0 +1,37 @@
+{
+  "ranked_heads": "../ADHH/LLaVA/results/coco/llava-v1.5-7b_base_original_qa_n3000/surrogate_hh_scores/surrogate_score_zoo/ranked_heads_global__itext_all__C_toi_HminusG.json",
+  "score_name": "global__itext_all__C_toi_HminusG",
+  "n_heads": 608,
+  "top20": [
+    "31:27",
+    "14:16",
+    "31:13",
+    "14:20",
+    "29:10",
+    "28:25",
+    "26:9",
+    "31:0",
+    "24:23",
+    "23:18",
+    "15:25",
+    "26:28",
+    "16:2",
+    "29:15",
+    "27:12",
+    "18:9",
+    "18:23",
+    "26:14",
+    "16:17",
+    "30:10"
+  ],
+  "outputs": {
+    "report": "./results/coco/contrastive_dynamic_head_pool_analysis/method_justification_report.md",
+    "bucket_summary": "./results/coco/contrastive_dynamic_head_pool_analysis/head_pool_rank_bucket_summary.csv",
+    "adhh_overlay": "./results/coco/contrastive_dynamic_head_pool_analysis/head_pool_adhh_overlay.csv",
+    "adhh_ranks": "./results/coco/contrastive_dynamic_head_pool_analysis/adhh_default_head_ranks_in_pool.csv",
+    "component_overlap": "./results/coco/contrastive_dynamic_head_pool_analysis/head_pool_component_overlap.csv",
+    "surrogate_correlations": "./results/coco/contrastive_dynamic_head_pool_analysis/head_pool_surrogate_correlations.csv",
+    "layer_distribution": "./results/coco/contrastive_dynamic_head_pool_analysis/head_pool_layer_distribution.csv",
+    "eval_metrics": "./results/coco/contrastive_dynamic_head_pool_analysis/local_eval_metrics.csv"
+  }
+}
