@@ -17,6 +17,7 @@ MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-128}"
 ADHH_THRESHOLD="${ADHH_THRESHOLD:-0.4}"
 TOP_K="${TOP_K:-20}"
 FORCE="${FORCE:-0}"
+ATTENTION_HEAD_PATH="${ATTENTION_HEAD_PATH:-}"
 
 BASE_RESULT_PATH="${BASE_RESULT_PATH:-./results/${DATASET}/soft_routing_smoke_n500_seed42_tau0.4_T0.05}"
 OUTPUT_DIR="${OUTPUT_DIR:-${BASE_RESULT_PATH}/concentrated_leverage_n${NUM_SAMPLES}}"
@@ -39,6 +40,7 @@ echo "[info] text-mass gammas: ${TEXT_MASS_GAMMAS}"
 echo "[info] concentrated gammas: ${CONCENTRATED_GAMMAS}"
 echo "[info] strength caps: ${STRENGTH_CAPS}"
 echo "[info] text suppress target heads: ${TEXT_SUPPRESS_TARGET_HEADS}"
+echo "[info] attention head path: ${ATTENTION_HEAD_PATH:-<default>}"
 
 eval_chair() {
     local answers_file="$1"
@@ -80,6 +82,10 @@ renorm_arg=()
 if [ "${TEXT_SUPPRESS_RENORMALIZE}" = "1" ]; then
     renorm_arg=(--entropy_aware_renormalize)
 fi
+head_path_arg=()
+if [ -n "${ATTENTION_HEAD_PATH}" ]; then
+    head_path_arg=(--attention_head_path "${ATTENTION_HEAD_PATH}")
+fi
 
 if [ "${RUN_BASELINES}" = "1" ]; then
     run_eval "greedy"
@@ -111,6 +117,7 @@ for cap in ${STRENGTH_CAPS}; do
             --entropy_aware_strength_cap "${cap}" \
             --entropy_aware_phase decode \
             --adhh_threshold "${ADHH_THRESHOLD}" \
+            "${head_path_arg[@]}" \
             --head_prior_mode uniform \
             --top_k "${TOP_K}" \
             "${renorm_arg[@]}"
@@ -134,6 +141,7 @@ for cap in ${STRENGTH_CAPS}; do
             --entropy_aware_strength_cap "${cap}" \
             --entropy_aware_phase decode \
             --adhh_threshold "${ADHH_THRESHOLD}" \
+            "${head_path_arg[@]}" \
             --head_prior_mode uniform \
             --top_k "${TOP_K}" \
             "${renorm_arg[@]}"
