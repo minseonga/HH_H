@@ -5,7 +5,7 @@ import math
 import os
 from collections import defaultdict
 
-from eval_scripts.soft_routing.head_prior_utils import head_key, parse_head_key
+from eval_scripts.soft_routing.head_prior_utils import default_heads_for_model, head_key, parse_head_key
 
 
 def safe_float(value, default=None):
@@ -145,6 +145,77 @@ def score_heads(rows, teacher):
     return sorted(scored, key=lambda row: int(row["rank_positive_mean"]))
 
 
+def head_pool_rows(raw_rows, model_path):
+    grouped = defaultdict(list)
+    labels_by_head = defaultdict(lambda: defaultdict(int))
+    mentions_by_head = defaultdict(set)
+    layers = defaultdict(set)
+    for row in raw_rows:
+        key = row.get("head_key") or head_key(row.get("layer"), row.get("head"))
+        grouped[key].append(row)
+        labels_by_head[key][label_name(row)] += 1
+        mentions_by_head[key].add(step_key(row))
+        try:
+            layer, head = parse_head_key(key)
+        except Exception:
+            continue
+        layers[layer].add(head)
+
+    default_set = {head_key(layer, head) for layer, head in default_heads_for_model(model_path)}
+    output = []
+    for key, items in sorted(grouped.items(), key=lambda item: parse_head_key(item[0])):
+        layer, head = parse_head_key(key)
+        output.append({
+            "layer": layer,
+            "head": head,
+            "head_key": key,
+            "n_rows": len(items),
+            "n_unique_mentions": len(mentions_by_head[key]),
+            "n_hallucinated_rows": labels_by_head[key].get("hallucinated", 0),
+            "n_grounded_rows": labels_by_head[key].get("grounded", 0),
+            "in_adhh_default": int(key in default_set),
+        })
+    layer_rows = []
+    for layer in sorted(layers):
+        keys = {head_key(layer, head) for head in layers[layer]}
+        layer_rows.append({
+            "layer": layer,
+            "n_heads": len(layers[layer]),
+            "n_adhh_default_heads": len(keys & default_set),
+            "heads": ",".join(str(head) for head in sorted(layers[layer])),
+        })
+    return output, layer_rows
+
+
+def head_pool_summary(raw_rows, model_path):
+    head_rows, layer_rows = head_pool_rows(raw_rows, model_path)
+    head_keys = {row["head_key"] for row in head_rows}
+    default_set = {head_key(layer, head) for layer, head in default_heads_for_model(model_path)}
+    label_counts = defaultdict(int)
+    mentions_by_label = defaultdict(set)
+    for row in raw_rows:
+        label = label_name(row)
+        label_counts[label] += 1
+        mentions_by_label[label].add(step_key(row))
+    row_counts = [safe_float(row["n_rows"]) for row in head_rows]
+    mention_counts = [safe_float(row["n_unique_mentions"]) for row in head_rows]
+    return {
+        "n_rows": len(raw_rows),
+        "n_candidate_heads": len(head_rows),
+        "n_candidate_layers": len(layer_rows),
+        "n_adhh_default_overlap": len(head_keys & default_set),
+        "adhh_default_overlap": sorted(head_keys & default_set, key=parse_head_key),
+        "label_row_counts": dict(label_counts),
+        "label_unique_mentions": {label: len(values) for label, values in mentions_by_label.items()},
+        "rows_per_head_min": min(row_counts) if row_counts else None,
+        "rows_per_head_median": percentile(row_counts, 50),
+        "rows_per_head_max": max(row_counts) if row_counts else None,
+        "mentions_per_head_min": min(mention_counts) if mention_counts else None,
+        "mentions_per_head_median": percentile(mention_counts, 50),
+        "mentions_per_head_max": max(mention_counts) if mention_counts else None,
+    }
+
+
 def distribution_rows(scored):
     output = []
     for field in (
@@ -225,11 +296,14 @@ def main():
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--teacher-feature", default="target_text_logprob_drop")
     parser.add_argument("--label-filter", default="hallucinated", choices=["hallucinated", "grounded", "all"])
+    parser.add_argument("--model-path", default="liuhaotian/llava-v1.5-7b")
     parser.add_argument("--top-ks", default="20,40")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
     raw_rows = read_rows(args.head_rows)
+    pool_rows, layer_rows = head_pool_rows(raw_rows, args.model_path)
+    pool_summary = head_pool_summary(raw_rows, args.model_path)
     if args.label_filter == "all":
         rows = raw_rows
     else:
@@ -245,17 +319,26 @@ def main():
     scores_path = os.path.join(args.output_dir, "hallucination_leverage_head_scores.csv")
     distribution_path = os.path.join(args.output_dir, "hallucination_leverage_head_distribution.csv")
     selection_path = os.path.join(args.output_dir, "hallucination_leverage_head_selection_summary.csv")
+    pool_path = os.path.join(args.output_dir, "head_candidate_pool.csv")
+    layer_pool_path = os.path.join(args.output_dir, "head_candidate_pool_by_layer.csv")
+    pool_summary_path = os.path.join(args.output_dir, "head_candidate_pool_summary.json")
     write_csv(scores_path, scored)
     write_csv(distribution_path, distribution_rows(scored))
     write_csv(selection_path, selection_rows(scored, top_ks))
+    write_csv(pool_path, pool_rows)
+    write_csv(layer_pool_path, layer_rows)
+    with open(pool_summary_path, "w") as f:
+        json.dump(pool_summary, f, indent=2)
 
     metadata = {
         "head_rows": args.head_rows,
         "teacher_feature": args.teacher_feature,
         "label_filter": args.label_filter,
+        "model_path": args.model_path,
         "n_rows_raw": len(raw_rows),
         "n_rows_used": len(rows),
         "n_heads_scored": len(scored),
+        "head_pool_summary": pool_summary,
     }
     for mode, rank_field, score_field in (
         ("positive_mean", "rank_positive_mean", "positive_mean_teacher"),
@@ -285,6 +368,9 @@ def main():
                 "scores": scores_path,
                 "distribution": distribution_path,
                 "selection_summary": selection_path,
+                "head_candidate_pool": pool_path,
+                "head_candidate_pool_by_layer": layer_pool_path,
+                "head_candidate_pool_summary": pool_summary_path,
             },
             "top_positive_mean": sorted(scored, key=lambda row: int(row["rank_positive_mean"]))[:20],
             "top_mean": sorted(scored, key=lambda row: int(row["rank_mean"]))[:20],

@@ -3,6 +3,7 @@
 set -euo pipefail
 
 DATASET="${DATASET:-coco}"
+MODEL_PATH="${MODEL_PATH:-liuhaotian/llava-v1.5-7b}"
 BASE_RESULT_PATH="${BASE_RESULT_PATH:-./results/${DATASET}/soft_routing_smoke_n500_seed42_tau0.4_T0.05}"
 CONTRIBUTION_DIR="${CONTRIBUTION_DIR:-${BASE_RESULT_PATH}/contribution_gap_validation_n80}"
 HEAD_ROWS="${HEAD_ROWS:-${CONTRIBUTION_DIR}/head_logit_proxy_ablation_rows.csv}"
@@ -25,7 +26,14 @@ python -m eval_scripts.soft_routing.discover_hallucination_leverage_heads \
     --output-dir "${OUTPUT_DIR}" \
     --teacher-feature "${TEACHER_FEATURE}" \
     --label-filter "${LABEL_FILTER}" \
+    --model-path "${MODEL_PATH}" \
     --top-ks "${TOP_KS}"
+
+echo "[summary] candidate pool"
+python -m json.tool "${OUTPUT_DIR}/head_candidate_pool_summary.json"
+
+echo "[summary] candidate pool by layer"
+column -s, -t "${OUTPUT_DIR}/head_candidate_pool_by_layer.csv"
 
 echo "[summary] score distribution"
 column -s, -t "${OUTPUT_DIR}/hallucination_leverage_head_distribution.csv"
