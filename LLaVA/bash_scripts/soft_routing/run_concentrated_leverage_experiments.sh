@@ -26,20 +26,10 @@ RUN_BASELINES="${RUN_BASELINES:-1}"
 
 TEXT_MASS_GAMMAS="${TEXT_MASS_GAMMAS:-0.5}"
 CONCENTRATED_GAMMAS="${CONCENTRATED_GAMMAS:-4}"
-VISUAL_BOOST_GAMMAS="${VISUAL_BOOST_GAMMAS:-4}"
-HYBRID_GAMMAS="${HYBRID_GAMMAS:-4}"
 STRENGTH_CAPS="${STRENGTH_CAPS:-1}"
 
 TEXT_SUPPRESS_TARGET_HEADS="${TEXT_SUPPRESS_TARGET_HEADS:-all}"
 TEXT_SUPPRESS_RENORMALIZE="${TEXT_SUPPRESS_RENORMALIZE:-0}"
-
-FCCT_MIN_LAYER="${FCCT_MIN_LAYER:-11}"
-FCCT_MAX_LAYER="${FCCT_MAX_LAYER:-20}"
-FCCT_TARGET_HEADS="${FCCT_TARGET_HEADS:-all}"
-VISUAL_BETA="${VISUAL_BETA:-1}"
-TEXT_ALPHA="${TEXT_ALPHA:-1}"
-FCCT_RENORMALIZE="${FCCT_RENORMALIZE:-1}"
-FCCT_MAX_IMAGE_FACTOR="${FCCT_MAX_IMAGE_FACTOR:-0}"
 
 mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
 
@@ -47,12 +37,8 @@ echo "[info] output dir: ${OUTPUT_DIR}"
 echo "[info] num samples: ${NUM_SAMPLES}"
 echo "[info] text-mass gammas: ${TEXT_MASS_GAMMAS}"
 echo "[info] concentrated gammas: ${CONCENTRATED_GAMMAS}"
-echo "[info] visual-boost gammas: ${VISUAL_BOOST_GAMMAS}"
-echo "[info] hybrid gammas: ${HYBRID_GAMMAS}"
 echo "[info] strength caps: ${STRENGTH_CAPS}"
 echo "[info] text suppress target heads: ${TEXT_SUPPRESS_TARGET_HEADS}"
-echo "[info] FCCT layers: ${FCCT_MIN_LAYER}-${FCCT_MAX_LAYER}"
-echo "[info] FCCT target heads: ${FCCT_TARGET_HEADS}"
 
 eval_chair() {
     local answers_file="$1"
@@ -93,11 +79,6 @@ run_eval() {
 renorm_arg=()
 if [ "${TEXT_SUPPRESS_RENORMALIZE}" = "1" ]; then
     renorm_arg=(--entropy_aware_renormalize)
-fi
-
-fcct_renorm_arg=()
-if [ "${FCCT_RENORMALIZE}" = "1" ]; then
-    fcct_renorm_arg=(--concentrated_visual_boost_renormalize)
 fi
 
 if [ "${RUN_BASELINES}" = "1" ]; then
@@ -156,53 +137,6 @@ for cap in ${STRENGTH_CAPS}; do
             --head_prior_mode uniform \
             --top_k "${TOP_K}" \
             "${renorm_arg[@]}"
-    done
-
-    for gamma in ${VISUAL_BOOST_GAMMAS}; do
-        gamma_tag="$(printf "%s" "${gamma}" | tr "." "p")"
-        tag="fcct_l${FCCT_MIN_LAYER}_${FCCT_MAX_LAYER}_visual_boost_g${gamma_tag}_cap${cap_tag}"
-        if [ "${FCCT_RENORMALIZE}" = "1" ]; then
-            tag="${tag}_renorm"
-        fi
-        run_eval "${tag}" \
-            --concentrated_visual_boost \
-            --concentrated_visual_boost_mode boost \
-            --concentrated_visual_boost_gamma "${gamma}" \
-            --concentrated_visual_boost_visual_beta "${VISUAL_BETA}" \
-            --concentrated_visual_boost_strength_cap "${cap}" \
-            --concentrated_visual_boost_max_image_factor "${FCCT_MAX_IMAGE_FACTOR}" \
-            --concentrated_visual_boost_min_layer "${FCCT_MIN_LAYER}" \
-            --concentrated_visual_boost_max_layer "${FCCT_MAX_LAYER}" \
-            --concentrated_visual_boost_target_heads "${FCCT_TARGET_HEADS}" \
-            --concentrated_visual_boost_phase decode \
-            --adhh_threshold "${ADHH_THRESHOLD}" \
-            --head_prior_mode uniform \
-            --top_k "${TOP_K}" \
-            "${fcct_renorm_arg[@]}"
-    done
-
-    for gamma in ${HYBRID_GAMMAS}; do
-        gamma_tag="$(printf "%s" "${gamma}" | tr "." "p")"
-        tag="fcct_l${FCCT_MIN_LAYER}_${FCCT_MAX_LAYER}_hybrid_g${gamma_tag}_cap${cap_tag}"
-        if [ "${FCCT_RENORMALIZE}" = "1" ]; then
-            tag="${tag}_renorm"
-        fi
-        run_eval "${tag}" \
-            --concentrated_visual_boost \
-            --concentrated_visual_boost_mode hybrid \
-            --concentrated_visual_boost_gamma "${gamma}" \
-            --concentrated_visual_boost_text_alpha "${TEXT_ALPHA}" \
-            --concentrated_visual_boost_visual_beta "${VISUAL_BETA}" \
-            --concentrated_visual_boost_strength_cap "${cap}" \
-            --concentrated_visual_boost_max_image_factor "${FCCT_MAX_IMAGE_FACTOR}" \
-            --concentrated_visual_boost_min_layer "${FCCT_MIN_LAYER}" \
-            --concentrated_visual_boost_max_layer "${FCCT_MAX_LAYER}" \
-            --concentrated_visual_boost_target_heads "${FCCT_TARGET_HEADS}" \
-            --concentrated_visual_boost_phase decode \
-            --adhh_threshold "${ADHH_THRESHOLD}" \
-            --head_prior_mode uniform \
-            --top_k "${TOP_K}" \
-            "${fcct_renorm_arg[@]}"
     done
 done
 

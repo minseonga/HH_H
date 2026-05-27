@@ -1404,142 +1404,6 @@ def _maybe_apply_query_visual_attention_boost(config, layer_idx, attn_weights, k
     return boosted
 
 
-def _maybe_apply_concentrated_visual_boost(config, layer_idx, attn_weights, kv_seq_len, num_heads):
-    if not getattr(config, "concentrated_visual_boost", False):
-        return attn_weights
-
-    layer = int(layer_idx) if layer_idx is not None else -1
-    q_len = int(attn_weights.shape[-2])
-    phase = "decode" if q_len == 1 else "prefill"
-    phase_mode = getattr(config, "concentrated_visual_boost_phase", "decode")
-    if phase_mode == "both":
-        phase_mode = "all"
-    if phase_mode not in ("all", "prefill", "decode"):
-        phase_mode = "decode"
-    if phase_mode != "all" and phase_mode != phase:
-        return attn_weights
-
-    min_layer = getattr(config, "concentrated_visual_boost_min_layer", None)
-    max_layer = getattr(config, "concentrated_visual_boost_max_layer", None)
-    if min_layer is not None and layer < int(min_layer):
-        return attn_weights
-    if max_layer is not None and layer > int(max_layer):
-        return attn_weights
-
-    img_start = int(getattr(config, "img_start_pos", 0))
-    img_length = int(getattr(config, "img_length", 0))
-    if img_length <= 0:
-        return attn_weights
-    img_start = max(0, min(img_start, kv_seq_len))
-    img_end = max(img_start, min(img_start + img_length, kv_seq_len))
-    text_start = img_end
-    if img_start >= img_end or text_start >= kv_seq_len:
-        return attn_weights
-
-    mode = getattr(config, "concentrated_visual_boost_mode", "boost")
-    if mode not in ("boost", "suppress", "hybrid"):
-        mode = "boost"
-    gamma = max(float(getattr(config, "concentrated_visual_boost_gamma", 1.0)), 0.0)
-    text_alpha = max(float(getattr(config, "concentrated_visual_boost_text_alpha", 1.0)), 0.0)
-    visual_beta = max(float(getattr(config, "concentrated_visual_boost_visual_beta", 1.0)), 0.0)
-    text_power = float(getattr(config, "concentrated_visual_boost_text_power", 1.0))
-    entropy_power = float(getattr(config, "concentrated_visual_boost_entropy_power", 1.0))
-    strength_cap = float(getattr(config, "concentrated_visual_boost_strength_cap", 1.0))
-    strength_cap = min(max(strength_cap, 0.0), 1.0)
-    if strength_cap == 0.0:
-        strength_cap = 1.0
-    max_image_factor = float(getattr(config, "concentrated_visual_boost_max_image_factor", 0.0))
-    renormalize = bool(getattr(config, "concentrated_visual_boost_renormalize", True))
-    eps = float(getattr(config, "concentrated_visual_boost_eps", 1e-6))
-
-    if gamma <= 0.0:
-        return attn_weights
-    if mode == "boost" and visual_beta <= 0.0:
-        return attn_weights
-    if mode == "suppress" and text_alpha <= 0.0:
-        return attn_weights
-    if mode == "hybrid" and text_alpha <= 0.0 and visual_beta <= 0.0:
-        return attn_weights
-
-    target_heads = getattr(config, "concentrated_visual_boost_target_heads", "all")
-    use_all_heads = target_heads != "adhh"
-    if target_heads == "adhh":
-        head_list = getattr(config, "hal_attention_heads", None)
-        if head_list is None:
-            return attn_weights
-        head_indices = sorted({
-            int(head)
-            for head_layer, head in head_list
-            if int(head_layer) == layer and 0 <= int(head) < num_heads
-        })
-        if not head_indices:
-            return attn_weights
-    else:
-        head_indices = list(range(num_heads))
-
-    adjusted = attn_weights.clone()
-    entropy_den = math.log(max(int(kv_seq_len - text_start), 2))
-
-    if use_all_heads:
-        head_attention = adjusted[:, :, -1, :]
-        text_attention = head_attention[:, :, text_start:]
-        text_mass = torch.sum(text_attention, dim=-1, keepdim=True).float()
-        probs = text_attention.float() / torch.clamp(text_mass, min=eps)
-        text_entropy = -torch.sum(
-            probs * torch.log(torch.clamp(probs, min=eps)),
-            dim=-1,
-            keepdim=True,
-        )
-        text_entropy_norm = torch.clamp(text_entropy / max(entropy_den, eps), min=0.0, max=1.0)
-        concentrated = torch.clamp(1.0 - text_entropy_norm, min=0.0, max=1.0)
-        strength = gamma * torch.pow(torch.clamp(text_mass, min=0.0, max=1.0), text_power)
-        strength = strength * torch.pow(concentrated, entropy_power)
-        strength = torch.clamp(strength, min=0.0, max=strength_cap).to(attn_weights.dtype)
-
-        if mode in ("suppress", "hybrid") and text_alpha > 0.0:
-            text_factor = torch.clamp(1.0 - text_alpha * strength, min=0.0)
-            text_attention *= text_factor
-        if mode in ("boost", "hybrid") and visual_beta > 0.0:
-            image_factor = 1.0 + visual_beta * strength
-            if max_image_factor > 0.0:
-                image_factor = torch.clamp(image_factor, max=max_image_factor)
-            head_attention[:, :, img_start:img_end] *= image_factor
-        if renormalize:
-            norm = torch.sum(head_attention, dim=-1, keepdim=True)
-            head_attention /= torch.clamp(norm, min=eps)
-        return adjusted
-
-    for head in head_indices:
-        head_attention = adjusted[:, head, -1, :]
-        text_attention = head_attention[:, text_start:]
-        text_mass = torch.sum(text_attention, dim=-1, keepdim=True).float()
-        probs = text_attention.float() / torch.clamp(text_mass, min=eps)
-        text_entropy = -torch.sum(
-            probs * torch.log(torch.clamp(probs, min=eps)),
-            dim=-1,
-            keepdim=True,
-        )
-        text_entropy_norm = torch.clamp(text_entropy / max(entropy_den, eps), min=0.0, max=1.0)
-        concentrated = torch.clamp(1.0 - text_entropy_norm, min=0.0, max=1.0)
-        strength = gamma * torch.pow(torch.clamp(text_mass, min=0.0, max=1.0), text_power)
-        strength = strength * torch.pow(concentrated, entropy_power)
-        strength = torch.clamp(strength, min=0.0, max=strength_cap).to(attn_weights.dtype)
-
-        if mode in ("suppress", "hybrid") and text_alpha > 0.0:
-            text_factor = torch.clamp(1.0 - text_alpha * strength, min=0.0)
-            text_attention *= text_factor
-        if mode in ("boost", "hybrid") and visual_beta > 0.0:
-            image_factor = 1.0 + visual_beta * strength
-            if max_image_factor > 0.0:
-                image_factor = torch.clamp(image_factor, max=max_image_factor)
-            head_attention[:, img_start:img_end] *= image_factor
-        if renormalize:
-            norm = torch.sum(head_attention, dim=-1, keepdim=True)
-            head_attention /= torch.clamp(norm, min=eps)
-
-    return adjusted
-
-
 def _compute_query_direction_gate_for_layer(config, layer_idx, query_states, num_heads):
     if query_states is None:
         return None
@@ -3222,13 +3086,6 @@ class LlamaAttention(nn.Module):
             kv_seq_len,
             self.num_heads,
         )
-        attn_weights = _maybe_apply_concentrated_visual_boost(
-            self.config,
-            self.layer_idx,
-            attn_weights,
-            kv_seq_len,
-            self.num_heads,
-        )
         
         # TODO: adaptive deactivate of hallucination heads
         if getattr(self.config, "adaptive_deactivate", False):
@@ -4010,10 +3867,7 @@ class LlamaFlashAttention2(LlamaAttention):
             self.head_dim,
         )
 
-        if (
-            getattr(self.config, "query_visual_attention_boost", False)
-            or getattr(self.config, "concentrated_visual_boost", False)
-        ):
+        if getattr(self.config, "query_visual_attention_boost", False):
             manual_key_states = repeat_kv(key_states, self.num_key_value_groups)
             manual_value_states = repeat_kv(value_states, self.num_key_value_groups)
             attn_weights = torch.matmul(query_states, manual_key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
@@ -4036,13 +3890,6 @@ class LlamaFlashAttention2(LlamaAttention):
                 )
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
             attn_weights = _maybe_apply_query_visual_attention_boost(
-                self.config,
-                self.layer_idx,
-                attn_weights,
-                manual_key_states.shape[-2],
-                self.num_heads,
-            )
-            attn_weights = _maybe_apply_concentrated_visual_boost(
                 self.config,
                 self.layer_idx,
                 attn_weights,
@@ -4416,10 +4263,7 @@ class LlamaSdpaAttention(LlamaAttention):
                     f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
                 )
 
-        if (
-            getattr(self.config, "query_visual_attention_boost", False)
-            or getattr(self.config, "concentrated_visual_boost", False)
-        ):
+        if getattr(self.config, "query_visual_attention_boost", False):
             attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
             if attention_mask is not None:
                 attn_weights = attn_weights + attention_mask
@@ -4434,13 +4278,6 @@ class LlamaSdpaAttention(LlamaAttention):
                 )
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
             attn_weights = _maybe_apply_query_visual_attention_boost(
-                self.config,
-                self.layer_idx,
-                attn_weights,
-                kv_seq_len,
-                self.num_heads,
-            )
-            attn_weights = _maybe_apply_concentrated_visual_boost(
                 self.config,
                 self.layer_idx,
                 attn_weights,

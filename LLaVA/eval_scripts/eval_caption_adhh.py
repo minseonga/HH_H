@@ -448,7 +448,6 @@ def eval_model(args):
         args.adaptive_deactivate
         or args.soft_deactivate
         or args.entropy_aware_deactivate
-        or args.concentrated_visual_boost
         or args.dynamic_deactivate
         or args.attribution_soft_deactivate
         or args.retention_aware_deactivate
@@ -580,21 +579,6 @@ def eval_model(args):
                 with open(args.head_thresholds_path, "r") as f:
                     threshold_data = json.load(f)
                 model.config.head_text_thresholds = threshold_data.get("head_text_thresholds", threshold_data)
-        if args.concentrated_visual_boost:
-            model.config.concentrated_visual_boost = True
-            model.config.concentrated_visual_boost_mode = args.concentrated_visual_boost_mode
-            model.config.concentrated_visual_boost_gamma = args.concentrated_visual_boost_gamma
-            model.config.concentrated_visual_boost_text_alpha = args.concentrated_visual_boost_text_alpha
-            model.config.concentrated_visual_boost_visual_beta = args.concentrated_visual_boost_visual_beta
-            model.config.concentrated_visual_boost_text_power = args.concentrated_visual_boost_text_power
-            model.config.concentrated_visual_boost_entropy_power = args.concentrated_visual_boost_entropy_power
-            model.config.concentrated_visual_boost_strength_cap = args.concentrated_visual_boost_strength_cap
-            model.config.concentrated_visual_boost_max_image_factor = args.concentrated_visual_boost_max_image_factor
-            model.config.concentrated_visual_boost_min_layer = args.concentrated_visual_boost_min_layer
-            model.config.concentrated_visual_boost_max_layer = args.concentrated_visual_boost_max_layer
-            model.config.concentrated_visual_boost_phase = args.concentrated_visual_boost_phase
-            model.config.concentrated_visual_boost_target_heads = args.concentrated_visual_boost_target_heads
-            model.config.concentrated_visual_boost_renormalize = args.concentrated_visual_boost_renormalize
         if args.wide_gate_deactivate:
             model.config.wide_gate_deactivate = True
             model.config.wide_gate_mode = args.wide_gate_mode
@@ -1220,7 +1204,6 @@ if __name__ == "__main__":
     parser.add_argument("--adaptive_deactivate", action='store_true', default=False)
     parser.add_argument("--soft_deactivate", action='store_true', default=False)
     parser.add_argument("--entropy_aware_deactivate", action='store_true', default=False)
-    parser.add_argument("--concentrated_visual_boost", action="store_true", default=False)
     parser.add_argument("--dynamic_deactivate", action='store_true', default=False)
     parser.add_argument("--attribution_soft_deactivate", action='store_true', default=False)
     parser.add_argument("--retention_aware_deactivate", action='store_true', default=False)
@@ -1314,19 +1297,6 @@ if __name__ == "__main__":
     parser.add_argument("--visual_gate_recent_window", type=int, default=16)
     parser.add_argument("--visual_gate_tau_low", type=float, default=0.4)
     parser.add_argument("--visual_gate_tau_high", type=float, default=0.9)
-    parser.add_argument("--concentrated_visual_boost_mode", type=str, default="boost", choices=["boost", "suppress", "hybrid"])
-    parser.add_argument("--concentrated_visual_boost_gamma", type=float, default=1.0)
-    parser.add_argument("--concentrated_visual_boost_text_alpha", type=float, default=1.0)
-    parser.add_argument("--concentrated_visual_boost_visual_beta", type=float, default=1.0)
-    parser.add_argument("--concentrated_visual_boost_text_power", type=float, default=1.0)
-    parser.add_argument("--concentrated_visual_boost_entropy_power", type=float, default=1.0)
-    parser.add_argument("--concentrated_visual_boost_strength_cap", type=float, default=1.0)
-    parser.add_argument("--concentrated_visual_boost_max_image_factor", type=float, default=0.0)
-    parser.add_argument("--concentrated_visual_boost_min_layer", type=int, default=11)
-    parser.add_argument("--concentrated_visual_boost_max_layer", type=int, default=20)
-    parser.add_argument("--concentrated_visual_boost_phase", type=str, default="decode", choices=["all", "prefill", "decode"])
-    parser.add_argument("--concentrated_visual_boost_target_heads", type=str, default="all", choices=["all", "adhh"])
-    parser.add_argument("--concentrated_visual_boost_renormalize", action="store_true", default=False)
     parser.add_argument("--wide_gate_mode", type=str, default="hard", choices=["hard", "continuous"])
     parser.add_argument("--wide_gate_feature", type=str, default="text_norm", choices=["text", "norm", "text_norm"])
     parser.add_argument("--wide_gate_text_tau", type=float, default=0.4)
@@ -1588,7 +1558,6 @@ if __name__ == "__main__":
         args.adaptive_deactivate,
         args.soft_deactivate,
         args.entropy_aware_deactivate,
-        args.concentrated_visual_boost,
         args.dynamic_deactivate,
         args.attribution_soft_deactivate,
         args.retention_aware_deactivate,
