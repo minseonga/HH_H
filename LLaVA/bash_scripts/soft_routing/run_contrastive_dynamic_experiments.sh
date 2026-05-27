@@ -29,6 +29,16 @@ ATTENTION_HEAD_PATH="${ATTENTION_HEAD_PATH:-}"
 if [ -z "${ATTENTION_HEAD_PATH}" ] && [ -f "${DEFAULT_TEAM_HEAD_PATH}" ]; then
     ATTENTION_HEAD_PATH="${DEFAULT_TEAM_HEAD_PATH}"
 fi
+if [ -n "${ATTENTION_HEAD_PATH}" ] && [ ! -f "${ATTENTION_HEAD_PATH}" ]; then
+    if [ "${ATTENTION_HEAD_PATH}" = "/path/to/team_top_heads.json" ] && [ -f "${DEFAULT_TEAM_HEAD_PATH}" ]; then
+        echo "[warn] ATTENTION_HEAD_PATH was left as the placeholder; using ${DEFAULT_TEAM_HEAD_PATH}"
+        ATTENTION_HEAD_PATH="${DEFAULT_TEAM_HEAD_PATH}"
+    else
+        echo "[error] attention head file not found: ${ATTENTION_HEAD_PATH}" >&2
+        echo "[hint] unset ATTENTION_HEAD_PATH to auto-use: ${DEFAULT_TEAM_HEAD_PATH}" >&2
+        exit 2
+    fi
+fi
 TOP_KS="${TOP_KS:-100 150 200}"
 STRENGTHS="${STRENGTHS:-0.7 1.0}"
 BETAS="${BETAS:-8 10}"
