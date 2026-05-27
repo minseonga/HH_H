@@ -551,6 +551,13 @@ def make_report(
         f"- rank-percentile prior min is {fmt(arch100.get('rank_percentile_prior_min'))} for top100 and {fmt(arch150.get('rank_percentile_prior_min'))} for top150.",
         "Interpretation: expansion to top100/top150 does not mean uniform hard suppression. Offline rank gives a graded where-prior, and online text ratio gives token-level strength.",
         "",
+        "## Visual Suppression Evidence",
+        "",
+        "- `suppression_evidence_figures.md` contains the figure bundle that justifies text-side suppression directly from attention-source behavior.",
+        "- `suppression_evidence_head_space.svg` shows that selected heads occupy the high intervention-text-mass and high hallucinated-vs-grounded text-over-image region.",
+        "- `suppression_evidence_source_shift.svg` compares selected heads against the rank>200 tail on Itext gap, image drop, and log text-over-image gap.",
+        "- `suppression_evidence_layer_head_map.svg` shows top100/top150 as a distributed mid-to-late layer actuator scaffold with AD-HH overlap and rejected AD-HH heads marked.",
+        "",
         "## Surrogate Consistency",
         "",
     ])

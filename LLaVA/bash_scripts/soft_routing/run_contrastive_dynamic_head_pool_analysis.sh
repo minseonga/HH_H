@@ -19,6 +19,11 @@ python -m eval_scripts.soft_routing.analyze_contrastive_dynamic_head_pool \
     --adhh-eval-json "${ADHH_EVAL_JSON}" \
     --dynamic-eval-glob "${DYNAMIC_EVAL_GLOB}"
 
+python -m eval_scripts.soft_routing.build_suppression_evidence_figures \
+    --ranked-heads "${RANKED_HEADS}" \
+    --output-dir "${OUTPUT_DIR}" \
+    --model-path "${MODEL_PATH}"
+
 echo "[summary] head-pool rank buckets"
 column -s, -t "${OUTPUT_DIR}/head_pool_rank_bucket_summary.csv"
 
@@ -34,4 +39,8 @@ column -s, -t "${OUTPUT_DIR}/rejected_adhh_heads_by_contrastive_pool.csv"
 echo "[summary] local eval metrics"
 column -s, -t "${OUTPUT_DIR}/local_eval_metrics.csv"
 
+echo "[summary] suppression evidence"
+column -s, -t "${OUTPUT_DIR}/suppression_evidence_summary.csv"
+
 echo "[done] report: ${OUTPUT_DIR}/method_justification_report.md"
+echo "[done] evidence figures: ${OUTPUT_DIR}/suppression_evidence_figures.md"

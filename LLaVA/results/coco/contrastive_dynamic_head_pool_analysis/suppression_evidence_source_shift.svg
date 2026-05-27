@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="640" viewBox="0 0 1120 640">
+<rect width="100%" height="100%" fill="white"/>
+<text x="560.00" y="31.00" font-family="Arial, sans-serif" font-size="21" font-weight="700" fill="#0f172a" text-anchor="middle">Why suppress text-side attention?</text>
+<text x="560.00" y="53.00" font-family="Arial, sans-serif" font-size="12" font-weight="400" fill="#64748b" text-anchor="middle">Selected heads move toward text-over-image reliance at hallucinated object steps</text>
+<rect x="70.00" y="76.00" width="310.00" height="410.00" fill="#f8fafc" opacity="1.0" stroke="#cbd5e1" stroke-width="1"/>
+<line x1="70.00" y1="361.47" x2="380.00" y2="361.47" stroke="#94a3b8" stroke-width="1.2"/>
+<text x="225.00" y="58.00" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#0f172a" text-anchor="middle">Itext hall - grounded</text>
+<rect x="104.00" y="173.18" width="48.00" height="188.29" fill="#2563eb" opacity="0.86"/>
+<text x="128.00" y="508.00" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#0f172a" text-anchor="middle">top20</text>
+<text x="128.00" y="166.18" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#0f172a" text-anchor="middle">0.026</text>
+<rect x="172.00" y="153.92" width="48.00" height="207.55" fill="#2563eb" opacity="0.86"/>
+<text x="196.00" y="508.00" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#0f172a" text-anchor="middle">top100</text>
+<text x="196.00" y="146.92" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#0f172a" text-anchor="middle">0.029</text>
+<rect x="240.00" y="147.14" width="48.00" height="214.33" fill="#2563eb" opacity="0.86"/>
+<text x="264.00" y="508.00" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#0f172a" text-anchor="middle">top150</text>
+<text x="264.00" y="140.14" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#0f172a" text-anchor="middle">0.030</text>
+<rect x="308.00" y="361.47" width="48.00" height="53.39" fill="#94a3b8" opacity="0.86"/>
+<text x="332.00" y="508.00" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#0f172a" text-anchor="middle">tail&gt;200</text>
+<text x="332.00" y="428.86" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#0f172a" text-anchor="middle">-0.008</text>
+<text x="60.00" y="151.14" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#64748b" text-anchor="end">0.03</text>
+<text x="60.00" y="365.47" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#64748b" text-anchor="end">0</text>
+<text x="60.00" y="418.86" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#64748b" text-anchor="end">-0.01</text>
+<rect x="412.00" y="76.00" width="310.00" height="410.00" fill="#f8fafc" opacity="1.0" stroke="#cbd5e1" stroke-width="1"/>
+<line x1="412.00" y1="418.63" x2="722.00" y2="418.63" stroke="#94a3b8" stroke-width="1.2"/>
+<text x="567.00" y="58.00" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#0f172a" text-anchor="middle">Image drop grounded - hall</text>
+<rect x="446.00" y="160.19" width="48.00" height="258.44" fill="#059669" opacity="0.86"/>
+<text x="470.00" y="508.00" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#0f172a" text-anchor="middle">top20</text>
+<text x="470.00" y="153.19" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#0f172a" text-anchor="middle">0.038</text>
+<rect x="514.00" y="163.99" width="48.00" height="254.64" fill="#059669" opacity="0.86"/>
+<text x="538.00" y="508.00" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#0f172a" text-anchor="middle">top100</text>
+<text x="538.00" y="156.99" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#0f172a" text-anchor="middle">0.038</text>
+<rect x="582.00" y="143.37" width="48.00" height="275.26" fill="#059669" opacity="0.86"/>
+<text x="606.00" y="508.00" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#0f172a" text-anchor="middle">top150</text>
+<text x="606.00" y="136.37" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#0f172a" text-anchor="middle">0.041</text>
+<rect x="650.00" y="346.93" width="48.00" height="71.71" fill="#94a3b8" opacity="0.86"/>
+<text x="674.00" y="508.00" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#0f172a" text-anchor="middle">tail&gt;200</text>
+<text x="674.00" y="339.93" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#0f172a" text-anchor="middle">0.011</text>
+<text x="402.00" y="147.37" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#64748b" text-anchor="end">0.04</text>
+<text x="402.00" y="422.63" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#64748b" text-anchor="end">0</text>
+<text x="402.00" y="422.63" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#64748b" text-anchor="end">0.00</text>
+<rect x="754.00" y="76.00" width="310.00" height="410.00" fill="#f8fafc" opacity="1.0" stroke="#cbd5e1" stroke-width="1"/>
+<line x1="754.00" y1="446.32" x2="1064.00" y2="446.32" stroke="#94a3b8" stroke-width="1.2"/>
+<text x="909.00" y="58.00" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#0f172a" text-anchor="middle">LogTOI hall - grounded</text>
+<rect x="788.00" y="115.68" width="48.00" height="330.65" fill="#f97316" opacity="0.86"/>
+<text x="812.00" y="508.00" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#0f172a" text-anchor="middle">top20</text>
+<text x="812.00" y="108.68" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#0f172a" text-anchor="middle">0.591</text>
+<rect x="856.00" y="216.43" width="48.00" height="229.89" fill="#f97316" opacity="0.86"/>
+<text x="880.00" y="508.00" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#0f172a" text-anchor="middle">top100</text>
+<text x="880.00" y="209.43" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#0f172a" text-anchor="middle">0.411</text>
+<rect x="924.00" y="223.79" width="48.00" height="222.54" fill="#f97316" opacity="0.86"/>
+<text x="948.00" y="508.00" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#0f172a" text-anchor="middle">top150</text>
+<text x="948.00" y="216.79" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#0f172a" text-anchor="middle">0.398</text>
+<rect x="992.00" y="379.51" width="48.00" height="66.81" fill="#94a3b8" opacity="0.86"/>
+<text x="1016.00" y="508.00" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#0f172a" text-anchor="middle">tail&gt;200</text>
+<text x="1016.00" y="372.51" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#0f172a" text-anchor="middle">0.119</text>
+<text x="744.00" y="119.68" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#64748b" text-anchor="end">0.59</text>
+<text x="744.00" y="450.32" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#64748b" text-anchor="end">0</text>
+<text x="744.00" y="450.32" font-family="Arial, sans-serif" font-size="10" font-weight="400" fill="#64748b" text-anchor="end">0.00</text>
+<text x="560.00" y="588.00" font-family="Arial, sans-serif" font-size="13" font-weight="400" fill="#0f172a" text-anchor="middle">Suppression is source-specific: the actuator only downweights the text-side slice, and these selected heads are exactly where hallucination steps show text-over-image shift.</text>
+</svg>
