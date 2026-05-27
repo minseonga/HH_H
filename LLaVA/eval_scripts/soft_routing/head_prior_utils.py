@@ -53,6 +53,58 @@ def score_priors(score_items):
     return priors
 
 
+def _score_from_record(record, score_key="score"):
+    for key in (score_key, "score", "txt_attn_raw"):
+        if key and key in record:
+            return float(record[key])
+    return 1.0
+
+
+def _normalize_ordered_score_items(score_items, mode="rank_percentile"):
+    if not score_items:
+        return {}
+
+    mode = mode or "rank_percentile"
+    if mode == "rank_percentile":
+        n = len(score_items)
+        denom = float(max(n - 1, 1))
+        return {
+            head_key(item["layer"], item["head"]): 1.0 - idx / denom
+            for idx, item in enumerate(score_items)
+        }
+
+    values = [float(item["score"]) for item in score_items]
+    if mode == "raw":
+        return {
+            head_key(item["layer"], item["head"]): min(1.0, max(0.0, float(item["score"])))
+            for item in score_items
+        }
+
+    if mode == "minmax":
+        v_min, v_max = min(values), max(values)
+        denom = max(v_max - v_min, 1e-8)
+        return {
+            head_key(item["layer"], item["head"]): (float(item["score"]) - v_min) / denom
+            for item in score_items
+        }
+
+    if mode == "logminmax":
+        import math
+
+        logged = [math.log1p(max(value, 0.0)) for value in values]
+        v_min, v_max = min(logged), max(logged)
+        denom = max(v_max - v_min, 1e-8)
+        return {
+            head_key(item["layer"], item["head"]): (logged[idx] - v_min) / denom
+            for idx, item in enumerate(score_items)
+        }
+
+    if mode == "quantile":
+        return score_priors(score_items)
+
+    raise ValueError(f"Unknown score_normalize={mode}")
+
+
 def uniform_priors(heads):
     return {head_key(*head): 1.0 for head in heads}
 
@@ -72,7 +124,14 @@ def _score_items_from_field(raw_scores):
     return score_items
 
 
-def load_head_priors(path=None, top_k=20, prior_mode="auto", default_heads=None):
+def load_head_priors(
+    path=None,
+    top_k=20,
+    prior_mode="auto",
+    default_heads=None,
+    score_key="score",
+    score_normalize="rank_percentile",
+):
     if prior_mode not in {"auto", "score", "rank", "uniform"}:
         raise ValueError(f"Unknown prior_mode={prior_mode}")
 
@@ -84,6 +143,33 @@ def load_head_priors(path=None, top_k=20, prior_mode="auto", default_heads=None)
 
     with open(path, "r") as f:
         data = json.load(f)
+
+    if isinstance(data, dict) and isinstance(data.get("heads"), list):
+        records = data["heads"]
+        heads = [[int(item["layer"]), int(item["head"])] for item in records[:top_k]]
+        if prior_mode == "uniform":
+            return heads, uniform_priors(heads), "uniform_heads_records"
+        if prior_mode == "rank":
+            return heads, rank_priors(heads), "rank_heads_records"
+
+        score_records = records
+        if score_normalize in ("minmax", "raw", "quantile"):
+            score_records = records[:top_k]
+        score_items = [
+            {
+                "layer": int(item["layer"]),
+                "head": int(item["head"]),
+                "score": _score_from_record(item, score_key),
+            }
+            for item in score_records
+        ]
+        priors = _normalize_ordered_score_items(score_items, score_normalize)
+        allowed = {head_key(*head) for head in heads}
+        priors = {key: value for key, value in priors.items() if key in allowed}
+        for key, value in rank_priors(heads).items():
+            priors.setdefault(key, value)
+        return heads, priors, f"score_heads_records_{score_normalize}"
+
     heads = data.get("hal_heads", default_heads or DEFAULT_LLAVA15_HEADS)[:top_k]
 
     if prior_mode == "uniform":

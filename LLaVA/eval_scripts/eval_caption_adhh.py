@@ -474,6 +474,8 @@ def eval_model(args):
             top_k=args.top_k,
             prior_mode=args.head_prior_mode,
             default_heads=default_heads_for_model(model_path),
+            score_key=args.attention_head_score_key,
+            score_normalize=args.attention_head_score_normalize,
         )
         model.config.hal_attention_heads = heads
         model.config.head_attribution_priors = priors
@@ -1226,6 +1228,13 @@ if __name__ == "__main__":
     parser.add_argument("--attention_head_path", type=str, default="")
     parser.add_argument("--top_k", type=int, default=20)
     parser.add_argument("--head_prior_mode", type=str, default="auto", choices=["auto", "score", "rank", "uniform"])
+    parser.add_argument("--attention_head_score_key", type=str, default="score")
+    parser.add_argument(
+        "--attention_head_score_normalize",
+        type=str,
+        default="rank_percentile",
+        choices=["rank_percentile", "minmax", "raw", "logminmax", "quantile"],
+    )
     parser.add_argument("--soft_gamma", type=float, default=0.5)
     parser.add_argument("--soft_temperature", type=float, default=0.05)
     parser.add_argument("--entropy_aware_gamma", type=float, default=1.0)

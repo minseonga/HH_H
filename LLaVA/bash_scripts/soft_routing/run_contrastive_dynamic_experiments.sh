@@ -21,8 +21,14 @@ BASE_RESULT_PATH="${BASE_RESULT_PATH:-./results/${DATASET}/soft_routing_smoke_n5
 OUTPUT_DIR="${OUTPUT_DIR:-${BASE_RESULT_PATH}/contrastive_dynamic_n${NUM_SAMPLES}}"
 LOG_DIR="${LOG_DIR:-./logs/soft_routing}"
 
+HEAD_PRIOR_MODE="${HEAD_PRIOR_MODE:-auto}"
+ATTENTION_HEAD_SCORE_KEY="${ATTENTION_HEAD_SCORE_KEY:-global__itext_all__C_toi_HminusG}"
+ATTENTION_HEAD_SCORE_NORMALIZE="${ATTENTION_HEAD_SCORE_NORMALIZE:-rank_percentile}"
+DEFAULT_TEAM_HEAD_PATH="../ADHH/LLaVA/results/coco/llava-v1.5-7b_base_original_qa_n3000/surrogate_hh_scores/surrogate_score_zoo/ranked_heads_${ATTENTION_HEAD_SCORE_KEY}.json"
 ATTENTION_HEAD_PATH="${ATTENTION_HEAD_PATH:-}"
-HEAD_PRIOR_MODE="${HEAD_PRIOR_MODE:-rank}"
+if [ -z "${ATTENTION_HEAD_PATH}" ] && [ -f "${DEFAULT_TEAM_HEAD_PATH}" ]; then
+    ATTENTION_HEAD_PATH="${DEFAULT_TEAM_HEAD_PATH}"
+fi
 TOP_KS="${TOP_KS:-100 150 200}"
 STRENGTHS="${STRENGTHS:-0.7 1.0}"
 BETAS="${BETAS:-8 10}"
@@ -38,6 +44,7 @@ echo "[info] output dir: ${OUTPUT_DIR}"
 echo "[info] num samples: ${NUM_SAMPLES}"
 echo "[info] attention head path: ${ATTENTION_HEAD_PATH:-<default>}"
 echo "[info] head prior mode: ${HEAD_PRIOR_MODE}"
+echo "[info] head score: ${ATTENTION_HEAD_SCORE_KEY}/${ATTENTION_HEAD_SCORE_NORMALIZE}"
 echo "[info] top ks: ${TOP_KS}"
 echo "[info] strengths: ${STRENGTHS}"
 echo "[info] betas: ${BETAS}"
@@ -83,7 +90,11 @@ run_eval() {
 
 head_path_arg=()
 if [ -n "${ATTENTION_HEAD_PATH}" ]; then
-    head_path_arg=(--attention_head_path "${ATTENTION_HEAD_PATH}")
+    head_path_arg=(
+        --attention_head_path "${ATTENTION_HEAD_PATH}"
+        --attention_head_score_key "${ATTENTION_HEAD_SCORE_KEY}"
+        --attention_head_score_normalize "${ATTENTION_HEAD_SCORE_NORMALIZE}"
+    )
 fi
 renorm_arg=()
 if [ "${RENORMALIZE}" = "1" ]; then
