@@ -3293,6 +3293,63 @@ class LlamaAttention(nn.Module):
                     strength = gamma * torch.sigmoid(risk).to(attn_weights.dtype)
                     attn_weights[:, head, -1, text_start_idx:] *= (1.0 - strength)
 
+        # Contrastive dynamic suppression:
+        #   strength = s * head_prior * exp(beta * (text_ratio - tau)).
+        # Optional concentration modes add the online sensitivity signal found in
+        # head-level ablation analysis: concentrated text attention is more fragile.
+        if getattr(self.config, "contrastive_dynamic_deactivate", False):
+            if head_list is not None:
+                img_slice = slice(self.config.img_start_pos, self.config.img_start_pos + self.config.img_length)
+                text_start_idx = self.config.img_start_pos + self.config.img_length
+                priors = getattr(self.config, "head_attribution_priors", {})
+                strength_scale = float(getattr(self.config, "contrastive_dynamic_strength", 0.7))
+                beta = float(getattr(self.config, "contrastive_dynamic_beta", 8.0))
+                tau = float(getattr(self.config, "contrastive_dynamic_tau", 0.9))
+                concentration_mode = getattr(self.config, "contrastive_dynamic_concentration_mode", "none")
+                concentration_power = float(getattr(self.config, "contrastive_dynamic_concentration_power", 1.0))
+                renormalize = bool(getattr(self.config, "contrastive_dynamic_renormalize", False))
+                eps = float(getattr(self.config, "contrastive_dynamic_eps", 1e-6))
+                text_entropy_den = math.log(max(kv_seq_len - text_start_idx, 2))
+
+                for head in head_list:
+                    key = f"{int(self.layer_idx)}:{int(head)}"
+                    prior = float(priors.get(key, 1.0))
+                    head_attention = attn_weights[:, head, -1, :]
+                    text_attention = head_attention[:, text_start_idx:]
+                    img_attention = head_attention[:, img_slice]
+                    text_mass = torch.sum(text_attention, dim=-1, keepdim=True).float()
+                    img_mass = torch.sum(img_attention, dim=-1, keepdim=True).float()
+                    text_ratio = text_mass / torch.clamp(text_mass + img_mass, min=eps)
+                    exponent = torch.clamp(beta * (text_ratio - tau), min=-20.0, max=20.0)
+                    gate = torch.exp(exponent)
+                    strength = strength_scale * prior * gate
+
+                    if concentration_mode != "none":
+                        if concentration_mode == "max_text_prob":
+                            max_text_prob = torch.max(text_attention.float(), dim=-1, keepdim=True).values
+                            concentration = max_text_prob / torch.clamp(text_mass, min=eps)
+                        else:
+                            text_probs = text_attention.float() / torch.clamp(text_mass, min=eps)
+                            text_entropy = -torch.sum(
+                                text_probs * torch.log(torch.clamp(text_probs, min=eps)),
+                                dim=-1,
+                                keepdim=True,
+                            )
+                            entropy_norm = torch.clamp(text_entropy / max(text_entropy_den, eps), min=0.0, max=1.0)
+                            concentration = torch.clamp(1.0 - entropy_norm, min=0.0, max=1.0)
+                            if concentration_mode == "sqrt_inverse_text_entropy":
+                                concentration = torch.sqrt(torch.clamp(concentration, min=0.0))
+                        concentration = torch.clamp(concentration, min=0.0, max=1.0)
+                        if concentration_power != 1.0:
+                            concentration = torch.pow(concentration, concentration_power)
+                        strength = strength * concentration
+
+                    strength = torch.clamp(strength, min=0.0, max=1.0).to(attn_weights.dtype)
+                    text_attention *= (1.0 - strength)
+                    if renormalize:
+                        norm = torch.sum(head_attention, dim=-1, keepdim=True)
+                        head_attention /= torch.clamp(norm, min=eps)
+
         if getattr(self.config, "retention_aware_deactivate", False):
             if head_list is not None:
                 text_start_idx = self.config.img_start_pos + self.config.img_length

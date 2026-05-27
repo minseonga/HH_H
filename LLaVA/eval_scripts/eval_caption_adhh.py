@@ -449,6 +449,7 @@ def eval_model(args):
         or args.soft_deactivate
         or args.entropy_aware_deactivate
         or args.dynamic_deactivate
+        or args.contrastive_dynamic_deactivate
         or args.attribution_soft_deactivate
         or args.retention_aware_deactivate
         or args.visual_gate_deactivate
@@ -546,6 +547,14 @@ def eval_model(args):
             model.config.dynamic_ratio_weight = args.dynamic_ratio_weight
             model.config.dynamic_consensus_weight = args.dynamic_consensus_weight
             model.config.dynamic_bias = args.dynamic_bias
+        if args.contrastive_dynamic_deactivate:
+            model.config.contrastive_dynamic_deactivate = True
+            model.config.contrastive_dynamic_strength = args.contrastive_dynamic_strength
+            model.config.contrastive_dynamic_beta = args.contrastive_dynamic_beta
+            model.config.contrastive_dynamic_tau = args.contrastive_dynamic_tau
+            model.config.contrastive_dynamic_concentration_mode = args.contrastive_dynamic_concentration_mode
+            model.config.contrastive_dynamic_concentration_power = args.contrastive_dynamic_concentration_power
+            model.config.contrastive_dynamic_renormalize = args.contrastive_dynamic_renormalize
         if args.attribution_soft_deactivate:
             model.config.attribution_soft_deactivate = True
             model.config.attribution_soft_gamma = args.attribution_soft_gamma
@@ -1205,6 +1214,7 @@ if __name__ == "__main__":
     parser.add_argument("--soft_deactivate", action='store_true', default=False)
     parser.add_argument("--entropy_aware_deactivate", action='store_true', default=False)
     parser.add_argument("--dynamic_deactivate", action='store_true', default=False)
+    parser.add_argument("--contrastive_dynamic_deactivate", action='store_true', default=False)
     parser.add_argument("--attribution_soft_deactivate", action='store_true', default=False)
     parser.add_argument("--retention_aware_deactivate", action='store_true', default=False)
     parser.add_argument("--visual_gate_deactivate", action='store_true', default=False)
@@ -1272,6 +1282,17 @@ if __name__ == "__main__":
     parser.add_argument("--dynamic_ratio_weight", type=float, default=0.25)
     parser.add_argument("--dynamic_consensus_weight", type=float, default=0.5)
     parser.add_argument("--dynamic_bias", type=float, default=0.0)
+    parser.add_argument("--contrastive_dynamic_strength", type=float, default=0.7)
+    parser.add_argument("--contrastive_dynamic_beta", type=float, default=8.0)
+    parser.add_argument("--contrastive_dynamic_tau", type=float, default=0.9)
+    parser.add_argument(
+        "--contrastive_dynamic_concentration_mode",
+        type=str,
+        default="none",
+        choices=["none", "inverse_text_entropy", "sqrt_inverse_text_entropy", "max_text_prob"],
+    )
+    parser.add_argument("--contrastive_dynamic_concentration_power", type=float, default=1.0)
+    parser.add_argument("--contrastive_dynamic_renormalize", action="store_true", default=False)
     parser.add_argument("--attribution_soft_gamma", type=float, default=1.0)
     parser.add_argument("--attribution_soft_mode", type=str, default="linear", choices=["linear", "sqrt", "quadratic", "budget"])
     parser.add_argument("--attribution_tau_low", type=float, default=0.4)
@@ -1559,6 +1580,7 @@ if __name__ == "__main__":
         args.soft_deactivate,
         args.entropy_aware_deactivate,
         args.dynamic_deactivate,
+        args.contrastive_dynamic_deactivate,
         args.attribution_soft_deactivate,
         args.retention_aware_deactivate,
         args.visual_gate_deactivate,
