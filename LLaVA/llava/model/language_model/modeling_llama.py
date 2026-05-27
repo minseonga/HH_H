@@ -384,6 +384,28 @@ def _record_head_output_diagnostics(config, layer_idx, head_outputs, num_heads, 
         records.append(record)
 
 
+def _should_record_head_output_components(config, layer_idx):
+    if not getattr(config, "record_head_output_diagnostics", False):
+        return False
+    if not getattr(config, "head_output_record_components", False):
+        return False
+    if getattr(config, "head_output_diagnostics", None) is None:
+        return False
+    layer = int(layer_idx) if layer_idx is not None else -1
+    min_layer = getattr(config, "head_output_record_min_layer", None)
+    max_layer = getattr(config, "head_output_record_max_layer", None)
+    if min_layer is not None and layer < int(min_layer):
+        return False
+    if max_layer is not None and layer > int(max_layer):
+        return False
+    heads_by_layer = getattr(config, "head_output_record_heads_by_layer", None)
+    if heads_by_layer is not None:
+        return heads_by_layer.get(layer, heads_by_layer.get(str(layer), None)) is not None
+    if getattr(config, "head_output_record_all_heads", False):
+        return True
+    return getattr(config, "head_output_record_heads", None) is not None
+
+
 def _record_residual_diagnostics(config, layer_idx, hidden_states):
     if not getattr(config, "record_residual_diagnostics", False):
         return
@@ -3983,7 +4005,7 @@ class LlamaFlashAttention2(LlamaAttention):
         attn_output_heads = attn_output.transpose(1, 2).contiguous()
         component_weights_for_record = None
         component_value_for_record = None
-        if bool(getattr(self.config, "head_output_record_components", False)):
+        if _should_record_head_output_components(self.config, self.layer_idx):
             component_query = query_states.transpose(1, 2)
             component_key = key_states.transpose(1, 2)
             component_value = value_states.transpose(1, 2)
@@ -4344,7 +4366,7 @@ class LlamaSdpaAttention(LlamaAttention):
             is_causal=self.is_causal and attention_mask is None and q_len > 1,
         )
         component_weights_for_record = None
-        if bool(getattr(self.config, "head_output_record_components", False)):
+        if _should_record_head_output_components(self.config, self.layer_idx):
             component_scores = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
             if attention_mask is not None:
                 component_scores = component_scores + attention_mask
