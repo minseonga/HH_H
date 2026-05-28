@@ -86,7 +86,23 @@ def circle(x, y, r, fill, stroke=None, width=1, opacity=1.0):
     return f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{r:.2f}" fill="{fill}" opacity="{opacity}"{stroke_attr}/>\n'
 
 
-def load_heads(path):
+def score_from_record(row, score_key):
+    if score_key and score_key != "auto":
+        return safe_float(row.get(score_key), 0.0)
+    for key in (
+        "score",
+        "global__itext_all__C_toi_HminusG",
+        "itext_all__C_toi_HminusG",
+        "quadrant_score",
+        "front_percentile",
+        "back_percentile",
+    ):
+        if key in row:
+            return safe_float(row.get(key), 0.0)
+    return 1.0
+
+
+def load_heads(path, score_key="auto"):
     with open(path) as f:
         data = json.load(f)
     if isinstance(data, dict):
@@ -104,10 +120,11 @@ def load_heads(path):
             heads.append({
                 "layer": safe_int(row.get("layer")),
                 "head": safe_int(row.get("head")),
-                "score": safe_float(row.get("score", row.get("global__itext_all__C_toi_HminusG", row.get("itext_all__C_toi_HminusG", 0.0)))),
+                "score": score_from_record(row, score_key),
             })
         else:
-            heads.append({"layer": safe_int(row[0]), "head": safe_int(row[1]), "score": 0.0})
+            score = safe_float(row[2], 1.0) if len(row) > 2 else 1.0
+            heads.append({"layer": safe_int(row[0]), "head": safe_int(row[1]), "score": score})
     return data if isinstance(data, dict) else {}, heads
 
 
@@ -132,25 +149,39 @@ def summarize_layers(heads, top_ks, n_layers):
         selected = heads[: min(top_k, len(heads))]
         counts = Counter(row["layer"] for row in selected)
         band_counts = Counter(band_name(row["layer"]) for row in selected)
+        total_score = sum(max(safe_float(row.get("score")), 0.0) for row in selected)
+        layer_scores = Counter()
+        band_scores = Counter()
         by_layer_heads = {}
         for row in selected:
+            score = max(safe_float(row.get("score")), 0.0)
+            layer_scores[row["layer"]] += score
+            band_scores[band_name(row["layer"])] += score
             by_layer_heads.setdefault(row["layer"], []).append(f"{row['layer']}:{row['head']}")
         for layer in range(n_layers):
             count = counts.get(layer, 0)
+            score_sum = layer_scores.get(layer, 0.0)
             rows.append({
                 "top_k": top_k,
                 "layer": layer,
                 "count": count,
                 "fraction": count / max(len(selected), 1),
+                "score_sum": score_sum,
+                "score_mean": score_sum / max(count, 1),
+                "score_fraction": score_sum / max(total_score, 1e-12),
                 "heads": " ".join(by_layer_heads.get(layer, [])),
             })
         for band in band_order():
             count = band_counts.get(band, 0)
+            score_sum = band_scores.get(band, 0.0)
             band_rows.append({
                 "top_k": top_k,
                 "band": band,
                 "count": count,
                 "fraction": count / max(len(selected), 1),
+                "score_sum": score_sum,
+                "score_mean": score_sum / max(count, 1),
+                "score_fraction": score_sum / max(total_score, 1e-12),
             })
     return rows, band_rows
 
@@ -414,6 +445,76 @@ def make_layer_line_svg(path, rows, top_ks, n_layers, title):
     svg(path, width, height, "".join(body))
 
 
+def make_layer_score_line_svg(path, rows, top_ks, n_layers, title, metric, ylabel):
+    width, height = 1240, 620
+    left, top = 84, 82
+    plot_w, plot_h = 1004, 390
+    colors = [BLUE, GREEN, ORANGE, PURPLE, RED, GRAY]
+    by = {
+        (safe_int(row["top_k"]), safe_int(row["layer"])): safe_float(row.get(metric))
+        for row in rows
+    }
+    vmax = max(by.values()) if by else 1.0
+    vmax = max(vmax, 1e-9)
+
+    def sx(layer):
+        return left + layer / max(n_layers - 1, 1) * plot_w
+
+    def sy(value):
+        return top + plot_h - value / vmax * plot_h
+
+    def fmt(value):
+        if metric == "score_fraction":
+            return f"{value:.2f}"
+        if value >= 10:
+            return f"{value:.1f}"
+        return f"{value:.2f}"
+
+    body = []
+    body.append(text(width / 2, 32, title, 21, DARK, "middle", "700"))
+    body.append(text(width / 2, 55, "X-axis is the exact transformer layer; each line sums selected head scores within that layer.", 12, MUTED, "middle"))
+    body.append(rect(left, top, plot_w, plot_h, "#f8fafc", "#cbd5e1"))
+
+    for idx in range(5):
+        value = vmax * idx / 4.0
+        y = sy(value)
+        body.append(line(left, y, left + plot_w, y, GRID))
+        body.append(text(left - 12, y + 4, fmt(value), 10, MUTED, "end"))
+
+    for layer in range(n_layers):
+        x = sx(layer)
+        if layer in [11, 21, 27]:
+            body.append(line(x, top, x, top + plot_h, "#334155", 1.15, "5 5"))
+        elif layer % 2 == 0:
+            body.append(line(x, top, x, top + plot_h, "#edf2f7", 0.8))
+        body.append(text(x, top + plot_h + 22, f"L{layer}", 8, DARK, "middle", rotate=35))
+
+    body.append(text((sx(0) + sx(10)) / 2, top - 13, "early", 11, MUTED, "middle", "700"))
+    body.append(text((sx(11) + sx(20)) / 2, top - 13, "cross-modal", 11, MUTED, "middle", "700"))
+    body.append(text((sx(21) + sx(26)) / 2, top - 13, "bridge", 11, MUTED, "middle", "700"))
+    body.append(text((sx(27) + sx(31)) / 2, top - 13, "late", 11, MUTED, "middle", "700"))
+
+    for idx, top_k in enumerate(top_ks):
+        color = colors[idx % len(colors)]
+        points = [(sx(layer), sy(by.get((top_k, layer), 0.0))) for layer in range(n_layers)]
+        body.append(polyline(points, color, 2.8))
+        for layer, (x, y) in enumerate(points):
+            value = by.get((top_k, layer), 0.0)
+            if value > 0:
+                body.append(circle(x, y, 3.4, color, "white", 1.1, 0.95))
+
+    lx, ly = left + plot_w + 32, top + 20
+    for idx, top_k in enumerate(top_ks):
+        color = colors[idx % len(colors)]
+        y = ly + idx * 28
+        body.append(line(lx, y, lx + 32, y, color, 3))
+        body.append(circle(lx + 16, y, 3.4, color, "white", 1.0))
+        body.append(text(lx + 42, y + 4, f"top{top_k}", 11, DARK))
+    body.append(text(left + plot_w / 2, height - 36, "layer", 13, DARK, "middle"))
+    body.append(text(28, top + plot_h / 2, ylabel, 13, DARK, "middle", rotate=-90))
+    svg(path, width, height, "".join(body))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -422,11 +523,16 @@ def main():
     )
     parser.add_argument("--top-ks", default="20,50,100,150,200")
     parser.add_argument("--n-layers", type=int, default=32)
+    parser.add_argument(
+        "--score-key",
+        default="auto",
+        help="Head score field to sum by layer. Use auto for score/global__itext_all__C_toi_HminusG/itext_all__C_toi_HminusG fallback.",
+    )
     parser.add_argument("--output-dir", default="./results/coco/ranked_head_layer_distribution")
     parser.add_argument("--title", default="Layer distribution of ranked hallucination-suppression heads")
     args = parser.parse_args()
 
-    meta, heads = load_heads(args.ranked_heads)
+    meta, heads = load_heads(args.ranked_heads, args.score_key)
     top_ks = [int(item) for item in args.top_ks.replace(" ", "").split(",") if item]
     top_ks = [top_k for top_k in top_ks if top_k > 0]
     layer_rows, band_rows = summarize_layers(heads, top_ks, args.n_layers)
@@ -438,12 +544,32 @@ def main():
     band_svg = os.path.join(args.output_dir, "topk_layer_band_distribution.svg")
     grouped_hist_svg = os.path.join(args.output_dir, "topk_layer_histogram_grouped.svg")
     line_svg = os.path.join(args.output_dir, "topk_layer_distribution_lines.svg")
+    score_sum_line_svg = os.path.join(args.output_dir, "topk_layer_score_sum_lines.svg")
+    score_share_line_svg = os.path.join(args.output_dir, "topk_layer_score_share_lines.svg")
     write_csv(layer_csv, layer_rows)
     write_csv(band_csv, band_rows)
     make_layer_heatmap_svg(layer_svg, layer_rows, top_ks, args.n_layers, args.title)
     make_band_svg(band_svg, band_rows, top_ks, "Layer-band distribution of ranked head pools")
     make_grouped_layer_histogram_svg(grouped_hist_svg, layer_rows, top_ks, args.n_layers, "Exact per-layer head-count distribution")
     make_layer_line_svg(line_svg, layer_rows, top_ks, args.n_layers, "Exact per-layer head-count distribution")
+    make_layer_score_line_svg(
+        score_sum_line_svg,
+        layer_rows,
+        top_ks,
+        args.n_layers,
+        "Per-layer summed head score",
+        "score_sum",
+        "sum(score)",
+    )
+    make_layer_score_line_svg(
+        score_share_line_svg,
+        layer_rows,
+        top_ks,
+        args.n_layers,
+        "Per-layer share of selected head score",
+        "score_fraction",
+        "score share",
+    )
     per_topk_histograms = {}
     for top_k in top_ks:
         path = os.path.join(args.output_dir, f"layer_histogram_top{top_k}.svg")
@@ -453,6 +579,7 @@ def main():
     summary = {
         "ranked_heads": args.ranked_heads,
         "score_name": meta.get("score_name"),
+        "score_key": args.score_key,
         "n_heads": len(heads),
         "top_ks": top_ks,
         "outputs": {
@@ -462,6 +589,8 @@ def main():
             "band_svg": band_svg,
             "grouped_hist_svg": grouped_hist_svg,
             "line_svg": line_svg,
+            "score_sum_line_svg": score_sum_line_svg,
+            "score_share_line_svg": score_share_line_svg,
             "per_topk_histograms": per_topk_histograms,
         },
     }
