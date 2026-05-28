@@ -76,6 +76,16 @@ def line(x1, y1, x2, y2, stroke=GRID, width=1, dash=None):
     return f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" stroke="{stroke}" stroke-width="{width}"{dash_attr}/>\n'
 
 
+def polyline(points, stroke, width=2.5):
+    pts = " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
+    return f'<polyline points="{pts}" fill="none" stroke="{stroke}" stroke-width="{width}" stroke-linejoin="round" stroke-linecap="round"/>\n'
+
+
+def circle(x, y, r, fill, stroke=None, width=1, opacity=1.0):
+    stroke_attr = f' stroke="{stroke}" stroke-width="{width}"' if stroke else ""
+    return f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{r:.2f}" fill="{fill}" opacity="{opacity}"{stroke_attr}/>\n'
+
+
 def load_heads(path):
     with open(path) as f:
         data = json.load(f)
@@ -344,6 +354,66 @@ def make_grouped_layer_histogram_svg(path, rows, top_ks, n_layers, title):
     svg(path, width, height, "".join(body))
 
 
+def make_layer_line_svg(path, rows, top_ks, n_layers, title):
+    width, height = 1240, 620
+    left, top = 78, 82
+    plot_w, plot_h = 1010, 390
+    colors = [BLUE, GREEN, ORANGE, PURPLE, RED, GRAY]
+    by = {(safe_int(row["top_k"]), safe_int(row["layer"])): safe_int(row["count"]) for row in rows}
+    vmax = max(by.values()) if by else 1
+
+    def sx(layer):
+        return left + layer / max(n_layers - 1, 1) * plot_w
+
+    def sy(value):
+        return top + plot_h - value / max(vmax, 1) * plot_h
+
+    body = []
+    body.append(text(width / 2, 32, title, 21, DARK, "middle", "700"))
+    body.append(text(width / 2, 55, "X-axis is the exact transformer layer; each line is one ranked top-k prefix.", 12, MUTED, "middle"))
+    body.append(rect(left, top, plot_w, plot_h, "#f8fafc", "#cbd5e1"))
+
+    for tick in range(0, vmax + 1):
+        if vmax > 8 and tick % 2:
+            continue
+        y = sy(tick)
+        body.append(line(left, y, left + plot_w, y, GRID))
+        body.append(text(left - 12, y + 4, tick, 10, MUTED, "end"))
+
+    for layer in range(n_layers):
+        x = sx(layer)
+        if layer in [11, 21, 27]:
+            body.append(line(x, top, x, top + plot_h, "#334155", 1.15, "5 5"))
+        elif layer % 2 == 0:
+            body.append(line(x, top, x, top + plot_h, "#edf2f7", 0.8))
+        body.append(text(x, top + plot_h + 22, f"L{layer}", 8, DARK, "middle", rotate=35))
+
+    body.append(text((sx(0) + sx(10)) / 2, top - 13, "early", 11, MUTED, "middle", "700"))
+    body.append(text((sx(11) + sx(20)) / 2, top - 13, "cross-modal", 11, MUTED, "middle", "700"))
+    body.append(text((sx(21) + sx(26)) / 2, top - 13, "bridge", 11, MUTED, "middle", "700"))
+    body.append(text((sx(27) + sx(31)) / 2, top - 13, "late", 11, MUTED, "middle", "700"))
+
+    for idx, top_k in enumerate(top_ks):
+        color = colors[idx % len(colors)]
+        points = [(sx(layer), sy(by.get((top_k, layer), 0))) for layer in range(n_layers)]
+        body.append(polyline(points, color, 2.8))
+        for layer, (x, y) in enumerate(points):
+            count = by.get((top_k, layer), 0)
+            if count:
+                body.append(circle(x, y, 3.4, color, "white", 1.1, 0.95))
+
+    lx, ly = left + plot_w + 32, top + 20
+    for idx, top_k in enumerate(top_ks):
+        color = colors[idx % len(colors)]
+        y = ly + idx * 28
+        body.append(line(lx, y, lx + 32, y, color, 3))
+        body.append(circle(lx + 16, y, 3.4, color, "white", 1.0))
+        body.append(text(lx + 42, y + 4, f"top{top_k}", 11, DARK))
+    body.append(text(left + plot_w / 2, height - 36, "layer", 13, DARK, "middle"))
+    body.append(text(26, top + plot_h / 2, "head count", 13, DARK, "middle", rotate=-90))
+    svg(path, width, height, "".join(body))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -367,11 +437,13 @@ def main():
     layer_svg = os.path.join(args.output_dir, "topk_layer_distribution.svg")
     band_svg = os.path.join(args.output_dir, "topk_layer_band_distribution.svg")
     grouped_hist_svg = os.path.join(args.output_dir, "topk_layer_histogram_grouped.svg")
+    line_svg = os.path.join(args.output_dir, "topk_layer_distribution_lines.svg")
     write_csv(layer_csv, layer_rows)
     write_csv(band_csv, band_rows)
     make_layer_heatmap_svg(layer_svg, layer_rows, top_ks, args.n_layers, args.title)
     make_band_svg(band_svg, band_rows, top_ks, "Layer-band distribution of ranked head pools")
     make_grouped_layer_histogram_svg(grouped_hist_svg, layer_rows, top_ks, args.n_layers, "Exact per-layer head-count distribution")
+    make_layer_line_svg(line_svg, layer_rows, top_ks, args.n_layers, "Exact per-layer head-count distribution")
     per_topk_histograms = {}
     for top_k in top_ks:
         path = os.path.join(args.output_dir, f"layer_histogram_top{top_k}.svg")
@@ -389,6 +461,7 @@ def main():
             "layer_svg": layer_svg,
             "band_svg": band_svg,
             "grouped_hist_svg": grouped_hist_svg,
+            "line_svg": line_svg,
             "per_topk_histograms": per_topk_histograms,
         },
     }
