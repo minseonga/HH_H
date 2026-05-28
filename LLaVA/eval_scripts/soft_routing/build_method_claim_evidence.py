@@ -448,6 +448,183 @@ def materialize_component_rankings(records, output_dir, source_path):
     return paths
 
 
+def _clean_record(row):
+    return {key: value for key, value in row.items() if not key.startswith("_")}
+
+
+def materialize_quadrant_rankings(records, output_dir, source_path, top_k):
+    """Write strict 2x2 component-quadrant head pools.
+
+    Quadrants are defined by the two component ranks used by the method:
+    text-slice leverage (`front_percentile`) and hallucination specificity
+    (`back_percentile`). The resulting files are intended for behavioral
+    ablations, not only plotting.
+    """
+    base_meta = {
+        "source_ranked_heads": source_path,
+        "quadrant_top_k": top_k,
+        "description": (
+            "Strict 2x2 head groups from text-slice leverage rank and "
+            "hallucination-specific contrast rank."
+        ),
+    }
+    specs = [
+        (
+            "quadA_high_itext_high_contrast",
+            "A_high_itext_high_contrast",
+            lambda row: int(row["_front_rank"]) <= top_k and int(row["_back_rank"]) <= top_k,
+            lambda row: (
+                safe_float(row.get("front_percentile"), 0.0)
+                + safe_float(row.get("back_percentile"), 0.0)
+            )
+            / 2.0,
+            "leverageable + hallucination-specific",
+        ),
+        (
+            "quadB_high_itext_low_contrast",
+            "B_high_itext_low_contrast",
+            lambda row: int(row["_front_rank"]) <= top_k and int(row["_back_rank"]) > top_k,
+            lambda row: safe_float(row.get("front_percentile"), 0.0),
+            "leverage-only control",
+        ),
+        (
+            "quadC_low_itext_high_contrast",
+            "C_low_itext_high_contrast",
+            lambda row: int(row["_front_rank"]) > top_k and int(row["_back_rank"]) <= top_k,
+            lambda row: safe_float(row.get("back_percentile"), 0.0),
+            "specificity-only control",
+        ),
+        (
+            "quadD_low_itext_low_contrast",
+            "D_low_itext_low_contrast",
+            lambda row: int(row["_front_rank"]) > top_k and int(row["_back_rank"]) > top_k,
+            lambda row: (
+                safe_float(row.get("front_percentile"), 0.0)
+                + safe_float(row.get("back_percentile"), 0.0)
+            )
+            / 2.0,
+            "neither-axis control",
+        ),
+    ]
+
+    paths = {}
+    summary_rows = []
+    for file_key, group_name, predicate, score_fn, description in specs:
+        selected = [row for row in records if predicate(row)]
+        selected = sorted(selected, key=score_fn, reverse=True)
+        out_heads = []
+        for idx, row in enumerate(selected, start=1):
+            item = _clean_record(row)
+            item["quadrant"] = group_name
+            item["quadrant_rank"] = idx
+            item["score"] = score_fn(row)
+            item["quadrant_score"] = item["score"]
+            item["quadrant_description"] = description
+            out_heads.append(item)
+        path = os.path.join(output_dir, f"ranked_heads_{file_key}.json")
+        write_json(
+            path,
+            {
+                **base_meta,
+                "score_name": file_key,
+                "quadrant": group_name,
+                "heads": out_heads,
+            },
+        )
+        paths[file_key] = path
+        summary_rows.append({
+            "quadrant": group_name,
+            "description": description,
+            "n_heads": len(selected),
+            "mean_combo_rank": mean(row["_rank"] for row in selected),
+            "mean_text_rank": mean(row["_front_rank"] for row in selected),
+            "mean_contrast_rank": mean(row["_back_rank"] for row in selected),
+            "mean_itext_all": mean(row.get("Itext_all") for row in selected),
+            "mean_itext_gap_hall_minus_grounded": mean(itext_gap(row) for row in selected),
+            "mean_image_drop_grounded_minus_hall": mean(image_drop(row) for row in selected),
+            "mean_log_toi_gap_hall_minus_grounded": mean(log_toi_gap(row) for row in selected),
+            "mean_raw_toi_gap_hall_minus_grounded": mean(raw_toi_gap(row) for row in selected),
+            "positive_raw_toi_gap_fraction": mean(1.0 if raw_toi_gap(row) > 0 else 0.0 for row in selected),
+            "positive_image_drop_fraction": mean(1.0 if image_drop(row) > 0 else 0.0 for row in selected),
+            "path": path,
+        })
+    write_csv(os.path.join(output_dir, "quadrant_head_pool_summary.csv"), summary_rows)
+    return paths, summary_rows
+
+
+def summarize_quadrant_object_rows(object_rows):
+    prefix_to_quadrant = {
+        "quadA_": "A_high_itext_high_contrast",
+        "quadB_": "B_high_itext_low_contrast",
+        "quadC_": "C_low_itext_high_contrast",
+        "quadD_": "D_low_itext_low_contrast",
+    }
+    rows = []
+    for row in object_rows:
+        method = row.get("method", "")
+        quadrant = None
+        for prefix, name in prefix_to_quadrant.items():
+            if method.startswith(prefix):
+                quadrant = name
+                break
+        if quadrant is None:
+            continue
+        out = dict(row)
+        out["quadrant"] = quadrant
+        out["hallucination_removal_rate"] = row.get("base_hall_removed_rate")
+        out["grounded_damage_rate"] = row.get("base_grounded_lost_rate")
+        rows.append(out)
+    rows.sort(key=lambda row: (row["quadrant"], row["method"]))
+    return rows
+
+
+def make_quadrant_object_matrix_svg(path, rows):
+    width, height = 900, 600
+    body = []
+    body.append(text(width / 2, 31, "2x2 quadrant behavioral matrix", 20, DARK, "middle", "700"))
+    body.append(text(width / 2, 53, "Cells report greedy hallucinated removal, grounded damage, and fragility ratio after suppression", 12, MUTED, "middle"))
+
+    if not rows:
+        body.append(text(width / 2, height / 2, "Run quadA/quadB/quadC/quadD ablations to populate this matrix", 16, MUTED, "middle"))
+        svg(path, width, height, "".join(body))
+        return
+
+    preferred = {}
+    for row in rows:
+        key = row["quadrant"]
+        # Prefer the most selective run per quadrant for the dashboard.
+        current = preferred.get(key)
+        if current is None or safe_float(row.get("fragility_ratio"), 0.0) > safe_float(current.get("fragility_ratio"), 0.0):
+            preferred[key] = row
+
+    left, top, cell_w, cell_h = 160, 120, 280, 170
+    cells = [
+        ("A_high_itext_high_contrast", 1, 0, "A: high leverage + high specificity", BLUE),
+        ("B_high_itext_low_contrast", 1, 1, "B: leverage only", ORANGE),
+        ("C_low_itext_high_contrast", 0, 0, "C: specificity only", GREEN),
+        ("D_low_itext_low_contrast", 0, 1, "D: neither", GRAY),
+    ]
+    body.append(text(left + cell_w, top - 48, "high contrastive", 13, DARK, "middle", "700"))
+    body.append(text(left + cell_w * 2, top - 48, "low contrastive", 13, DARK, "middle", "700"))
+    body.append(text(left - 50, top + cell_h / 2, "high itext", 13, DARK, "middle", "700", rotate=-90))
+    body.append(text(left - 50, top + cell_h * 1.5, "low itext", 13, DARK, "middle", "700", rotate=-90))
+
+    for quadrant, col, row_idx, label, color in cells:
+        x = left + col * cell_w
+        y = top + row_idx * cell_h
+        item = preferred.get(quadrant)
+        body.append(rect(x, y, cell_w - 18, cell_h - 18, "#f8fafc", color, 2, 1.0))
+        body.append(text(x + 16, y + 28, label, 13, DARK, "start", "700"))
+        if item:
+            body.append(text(x + 16, y + 62, f"method: {item['method']}", 10, MUTED))
+            body.append(text(x + 16, y + 88, f"hall removal: {safe_float(item.get('base_hall_removed_rate'), 0.0):.3f}", 13, RED))
+            body.append(text(x + 16, y + 112, f"grounded damage: {safe_float(item.get('base_grounded_lost_rate'), 0.0):.3f}", 13, BLUE))
+            body.append(text(x + 16, y + 136, f"fragility ratio: {safe_float(item.get('fragility_ratio'), 0.0):.2f}", 13, DARK, "start", "700"))
+        else:
+            body.append(text(x + 16, y + 86, "not run yet", 13, MUTED))
+    svg(path, width, height, "".join(body))
+
+
 def make_report(path, outputs, component_rows, object_rows, top_k):
     by_cat = {row["category"]: row for row in component_rows}
 
@@ -493,6 +670,10 @@ def make_report(path, outputs, component_rows, object_rows, top_k):
         "",
         f"![Object change]({os.path.basename(outputs['object_change'])})",
         "",
+        "## 2x2 Quadrant Behavioral Check",
+        "",
+        f"![Quadrant object matrix]({os.path.basename(outputs['quadrant_object_matrix'])})",
+        "",
     ]
     if object_rows:
         best = object_rows[0]
@@ -516,6 +697,10 @@ def make_report(path, outputs, component_rows, object_rows, top_k):
         "",
         f"- text-only head ranking: `{outputs['component_rankings'].get('itext_all_from_combo', '')}`",
         f"- contrastive-only head ranking: `{outputs['component_rankings'].get('C_toi_HminusG_from_combo', '')}`",
+        f"- quadrant A ranking: `{outputs['quadrant_rankings'].get('quadA_high_itext_high_contrast', '')}`",
+        f"- quadrant B ranking: `{outputs['quadrant_rankings'].get('quadB_high_itext_low_contrast', '')}`",
+        f"- quadrant C ranking: `{outputs['quadrant_rankings'].get('quadC_low_itext_high_contrast', '')}`",
+        f"- quadrant D ranking: `{outputs['quadrant_rankings'].get('quadD_low_itext_low_contrast', '')}`",
         "",
     ])
     with open(path, "w") as f:
@@ -547,10 +732,18 @@ def main():
 
     component_rank_dir = os.path.join(args.output_dir, "component_rankings")
     component_paths = materialize_component_rankings(records, component_rank_dir, args.ranked_heads)
+    quadrant_rank_dir = os.path.join(args.output_dir, "quadrant_rankings")
+    quadrant_paths, quadrant_rows = materialize_quadrant_rankings(
+        records,
+        quadrant_rank_dir,
+        args.ranked_heads,
+        args.top_k,
+    )
 
     component_quadrant = os.path.join(args.output_dir, "component_quadrant.svg")
     gate_curve = os.path.join(args.output_dir, "continuous_gate_curve.svg")
     object_change = os.path.join(args.output_dir, "output_object_change.svg")
+    quadrant_object_matrix = os.path.join(args.output_dir, "quadrant_object_matrix.svg")
     make_component_quadrant_svg(component_quadrant, categorized, args.top_k)
     make_gate_curve_svg(gate_curve, strength=args.gate_strength, tau=args.gate_tau)
 
@@ -561,12 +754,17 @@ def main():
     object_rows = compare_object_changes(args.base_eval_json, method_paths)
     write_csv(os.path.join(args.output_dir, "object_change_summary.csv"), object_rows)
     make_object_change_svg(object_change, object_rows)
+    quadrant_object_rows = summarize_quadrant_object_rows(object_rows)
+    write_csv(os.path.join(args.output_dir, "quadrant_object_matrix.csv"), quadrant_object_rows)
+    make_quadrant_object_matrix_svg(quadrant_object_matrix, quadrant_object_rows)
 
     outputs = {
         "component_quadrant": component_quadrant,
         "gate_curve": gate_curve,
         "object_change": object_change,
+        "quadrant_object_matrix": quadrant_object_matrix,
         "component_rankings": component_paths,
+        "quadrant_rankings": quadrant_paths,
     }
     report_path = os.path.join(args.output_dir, "method_claim_evidence.md")
     make_report(report_path, outputs, component_rows, object_rows, args.top_k)
@@ -579,8 +777,12 @@ def main():
             "component_quadrant": component_quadrant,
             "gate_curve": gate_curve,
             "object_change": object_change,
+            "quadrant_object_matrix": quadrant_object_matrix,
         },
         "component_rankings": component_paths,
+        "quadrant_rankings": quadrant_paths,
+        "quadrant_head_pool_summary": os.path.join(quadrant_rank_dir, "quadrant_head_pool_summary.csv"),
+        "quadrant_object_matrix": os.path.join(args.output_dir, "quadrant_object_matrix.csv"),
     }
     print(json.dumps(summary, indent=2))
 

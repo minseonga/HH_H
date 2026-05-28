@@ -24,6 +24,7 @@ EVIDENCE_DIR="${EVIDENCE_DIR:-${OUTPUT_DIR}/method_claim_evidence}"
 LOG_DIR="${LOG_DIR:-./logs/soft_routing}"
 
 SELECTIONS="${SELECTIONS:-combined itext contrast}"
+QUADRANT_TOP_K="${QUADRANT_TOP_K:-100}"
 POLICIES="${POLICIES:-continuous hard}"
 TOP_KS="${TOP_KS:-20 50 100 150}"
 STRENGTHS="${STRENGTHS:-0.7}"
@@ -40,17 +41,26 @@ mkdir -p "${OUTPUT_DIR}" "${EVIDENCE_DIR}" "${LOG_DIR}"
 python -m eval_scripts.soft_routing.build_method_claim_evidence \
     --ranked-heads "${RANKED_HEADS}" \
     --output-dir "${EVIDENCE_DIR}" \
-    --base-eval-json "${BASE_EVAL_JSON}"
+    --base-eval-json "${BASE_EVAL_JSON}" \
+    --top-k "${QUADRANT_TOP_K}"
 
 COMBINED_HEADS="${RANKED_HEADS}"
 ITEXT_HEADS="${EVIDENCE_DIR}/component_rankings/ranked_heads_itext_all_from_combo.json"
 CONTRAST_HEADS="${EVIDENCE_DIR}/component_rankings/ranked_heads_C_toi_HminusG_from_combo.json"
+QUADA_HEADS="${EVIDENCE_DIR}/quadrant_rankings/ranked_heads_quadA_high_itext_high_contrast.json"
+QUADB_HEADS="${EVIDENCE_DIR}/quadrant_rankings/ranked_heads_quadB_high_itext_low_contrast.json"
+QUADC_HEADS="${EVIDENCE_DIR}/quadrant_rankings/ranked_heads_quadC_low_itext_high_contrast.json"
+QUADD_HEADS="${EVIDENCE_DIR}/quadrant_rankings/ranked_heads_quadD_low_itext_low_contrast.json"
 
 head_path_for_selection() {
     case "$1" in
         combined) echo "${COMBINED_HEADS}" ;;
         itext) echo "${ITEXT_HEADS}" ;;
         contrast) echo "${CONTRAST_HEADS}" ;;
+        quadA) echo "${QUADA_HEADS}" ;;
+        quadB) echo "${QUADB_HEADS}" ;;
+        quadC) echo "${QUADC_HEADS}" ;;
+        quadD) echo "${QUADD_HEADS}" ;;
         *) echo "[error] unknown selection: $1" >&2; exit 2 ;;
     esac
 }
@@ -60,6 +70,7 @@ score_key_for_selection() {
         combined) echo "global__itext_all__C_toi_HminusG" ;;
         itext) echo "front_percentile" ;;
         contrast) echo "back_percentile" ;;
+        quadA|quadB|quadC|quadD) echo "score" ;;
         *) echo "score" ;;
     esac
 }
@@ -201,5 +212,17 @@ with open(out, "w", newline="") as f:
     writer.writerows(rows)
 print(out)
 PY
+
+POST_BASE_EVAL_JSON="${OUTPUT_DIR}/greedy/captions_eval_results.json"
+if [ ! -f "${POST_BASE_EVAL_JSON}" ]; then
+    POST_BASE_EVAL_JSON="${BASE_EVAL_JSON}"
+fi
+
+python -m eval_scripts.soft_routing.build_method_claim_evidence \
+    --ranked-heads "${RANKED_HEADS}" \
+    --output-dir "${EVIDENCE_DIR}" \
+    --base-eval-json "${POST_BASE_EVAL_JSON}" \
+    --method-eval-glob "${OUTPUT_DIR}/*/captions_eval_results.json" \
+    --top-k "${QUADRANT_TOP_K}"
 
 column -s, -t "${OUTPUT_DIR}/method_claim_ablation_summary.csv"
