@@ -33,6 +33,7 @@ RENORMALIZE="${RENORMALIZE:-1}"
 HEAD_PRIOR_MODE="${HEAD_PRIOR_MODE:-auto}"
 ATTENTION_HEAD_SCORE_NORMALIZE="${ATTENTION_HEAD_SCORE_NORMALIZE:-rank_percentile}"
 RUN_BASELINE="${RUN_BASELINE:-1}"
+RUN_ONLY_TAGS="${RUN_ONLY_TAGS:-}"
 
 mkdir -p "${OUTPUT_DIR}" "${EVIDENCE_DIR}" "${LOG_DIR}"
 
@@ -74,6 +75,19 @@ eval_chair() {
 run_eval() {
     local tag="$1"
     shift
+    if [ -n "${RUN_ONLY_TAGS}" ]; then
+        local matched=0
+        for allowed_tag in ${RUN_ONLY_TAGS}; do
+            if [ "${tag}" = "${allowed_tag}" ]; then
+                matched=1
+                break
+            fi
+        done
+        if [ "${matched}" = "0" ]; then
+            echo "[skip] ${tag}: not in RUN_ONLY_TAGS"
+            return
+        fi
+    fi
     local result_dir="${OUTPUT_DIR}/${tag}"
     local answers_file="${result_dir}/captions.jsonl"
     local eval_file="${result_dir}/captions_eval_results.json"
