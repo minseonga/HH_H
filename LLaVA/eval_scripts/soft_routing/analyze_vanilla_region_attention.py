@@ -137,6 +137,24 @@ def load_coco_questions(args):
     return questions
 
 
+REGION_VALUE_KEYS = [
+    "raw_system_mass",
+    "raw_visual_mass",
+    "raw_question_mass",
+    "raw_generated_mass",
+    "raw_text_mass",
+    "raw_other_mass",
+    "raw_region_mass_sum",
+    "raw_attention_row_sum",
+    "system_share",
+    "visual_share",
+    "question_share",
+    "generated_share",
+    "text_share",
+    "system_visual_text_sum",
+]
+
+
 def region_masses(attn_row, img_start, img_length, expanded_prompt_len):
     # attn_row: [num_heads, kv_len], one query row after softmax.
     kv_len = int(attn_row.shape[-1])
@@ -147,29 +165,48 @@ def region_masses(attn_row, img_start, img_length, expanded_prompt_len):
     system = torch.zeros(attn_row.shape[0], device=attn_row.device, dtype=attn_row.dtype)
     if img_start > 0:
         system = system + attn_row[:, :img_start].sum(dim=-1)
-    if prompt_end > img_end:
-        system = system + attn_row[:, img_end:prompt_end].sum(dim=-1)
 
     visual = attn_row[:, img_start:img_end].sum(dim=-1) if img_end > img_start else torch.zeros_like(system)
+    question = (
+        attn_row[:, img_end:prompt_end].sum(dim=-1)
+        if prompt_end > img_end
+        else torch.zeros_like(system)
+    )
     generated_text = (
         attn_row[:, prompt_end:kv_len].sum(dim=-1)
         if kv_len > prompt_end
         else torch.zeros_like(system)
     )
-    values = {
-        "system": float(system.float().mean().cpu().item()),
-        "visual": float(visual.float().mean().cpu().item()),
-        "text": float(generated_text.float().mean().cpu().item()),
+    text_side = question + generated_text
+    raw = {
+        "raw_system_mass": float(system.float().mean().cpu().item()),
+        "raw_visual_mass": float(visual.float().mean().cpu().item()),
+        "raw_question_mass": float(question.float().mean().cpu().item()),
+        "raw_generated_mass": float(generated_text.float().mean().cpu().item()),
+        "raw_text_mass": float(text_side.float().mean().cpu().item()),
+        "raw_attention_row_sum": float(attn_row.sum(dim=-1).float().mean().cpu().item()),
     }
-    total = max(sum(values.values()), 1e-12)
-    return {key: value / total for key, value in values.items()}
+    raw["raw_region_mass_sum"] = (
+        raw["raw_system_mass"]
+        + raw["raw_visual_mass"]
+        + raw["raw_text_mass"]
+    )
+    raw["raw_other_mass"] = raw["raw_attention_row_sum"] - raw["raw_region_mass_sum"]
+    total = max(raw["raw_region_mass_sum"], 1e-12)
+    raw["system_share"] = raw["raw_system_mass"] / total
+    raw["visual_share"] = raw["raw_visual_mass"] / total
+    raw["question_share"] = raw["raw_question_mass"] / total
+    raw["generated_share"] = raw["raw_generated_mass"] / total
+    raw["text_share"] = raw["raw_text_mass"] / total
+    raw["system_visual_text_sum"] = raw["system_share"] + raw["visual_share"] + raw["text_share"]
+    return raw
 
 
 def add_acc(acc, key, values):
     bucket = acc[key]
     bucket["n"] += 1
     for name, value in values.items():
-        bucket[name] += float(value)
+        bucket[name] = bucket.get(name, 0.0) + float(value)
 
 
 def finalize_rows(acc, key_names):
@@ -179,23 +216,42 @@ def finalize_rows(acc, key_names):
         n = max(int(item["n"]), 1)
         row = {name: value for name, value in zip(key_names, key)}
         row["n"] = item["n"]
-        row["system_share"] = item["system"] / n
-        row["visual_share"] = item["visual"] / n
-        row["text_share"] = item["text"] / n
-        row["system_visual_text_sum"] = row["system_share"] + row["visual_share"] + row["text_share"]
+        for name in REGION_VALUE_KEYS:
+            row[name] = item.get(name, 0.0) / n
         rows.append(row)
     return rows
 
 
-def make_layer_line_svg(path, rows, title):
+def make_layer_line_svg(path, rows, title, metrics=None, labels=None, colors=None, subtitle=None):
     width, height = 1180, 620
     left, top = 82, 82
     plot_w, plot_h = 930, 390
-    colors = {"system_share": GRAY, "visual_share": BLUE, "text_share": ORANGE}
-    labels = {
-        "system_share": "system/prompt",
+    metrics = metrics or ["system_share", "visual_share", "text_share"]
+    colors = colors or {
+        "system_share": GRAY,
+        "visual_share": BLUE,
+        "question_share": GREEN,
+        "generated_share": ORANGE,
+        "text_share": ORANGE,
+        "raw_system_mass": GRAY,
+        "raw_visual_mass": BLUE,
+        "raw_question_mass": GREEN,
+        "raw_generated_mass": ORANGE,
+        "raw_text_mass": ORANGE,
+        "raw_other_mass": PURPLE,
+    }
+    labels = labels or {
+        "system_share": "system prefix",
         "visual_share": "visual",
-        "text_share": "generated text",
+        "question_share": "question/instruction",
+        "generated_share": "generated prefix",
+        "text_share": "text-side",
+        "raw_system_mass": "system prefix",
+        "raw_visual_mass": "visual",
+        "raw_question_mass": "question/instruction",
+        "raw_generated_mass": "generated prefix",
+        "raw_text_mass": "text-side",
+        "raw_other_mass": "other",
     }
     by_layer = {int(row["layer"]): row for row in rows}
     n_layers = max(by_layer) + 1 if by_layer else 32
@@ -208,7 +264,14 @@ def make_layer_line_svg(path, rows, title):
 
     body = []
     body.append(text(width / 2, 32, title, 21, DARK, "middle", "700"))
-    body.append(text(width / 2, 55, "Each layer averages head attention over generated steps; three regions are normalized to sum to 1.", 12, MUTED, "middle"))
+    body.append(text(
+        width / 2,
+        55,
+        subtitle or "Each layer averages head attention over generated steps.",
+        12,
+        MUTED,
+        "middle",
+    ))
     body.append(rect(left, top, plot_w, plot_h, "#f8fafc", "#cbd5e1"))
     for tick in [0.0, 0.25, 0.5, 0.75, 1.0]:
         y = sy(tick)
@@ -221,31 +284,31 @@ def make_layer_line_svg(path, rows, title):
         elif layer % 2 == 0:
             body.append(line(x, top, x, top + plot_h, "#edf2f7", 0.8))
         body.append(text(x, top + plot_h + 22, f"L{layer}", 8, DARK, "middle", rotate=35))
-    for metric in ["system_share", "visual_share", "text_share"]:
+    for metric in metrics:
         pts = [(sx(layer), sy(float(by_layer.get(layer, {}).get(metric, 0.0)))) for layer in range(n_layers)]
-        body.append(polyline(pts, colors[metric]))
+        body.append(polyline(pts, colors.get(metric, DARK)))
         for layer, (x, y) in enumerate(pts):
             value = float(by_layer.get(layer, {}).get(metric, 0.0))
             if value > 0.01:
-                body.append(circle(x, y, 3.0, colors[metric]))
+                body.append(circle(x, y, 3.0, colors.get(metric, DARK)))
     lx, ly = left + plot_w + 34, top + 24
-    for idx, metric in enumerate(["system_share", "visual_share", "text_share"]):
+    for idx, metric in enumerate(metrics):
         y = ly + idx * 30
-        body.append(line(lx, y, lx + 32, y, colors[metric], 3))
-        body.append(circle(lx + 16, y, 3.2, colors[metric]))
-        body.append(text(lx + 42, y + 4, labels[metric], 11, DARK))
+        body.append(line(lx, y, lx + 32, y, colors.get(metric, DARK), 3))
+        body.append(circle(lx + 16, y, 3.2, colors.get(metric, DARK)))
+        body.append(text(lx + 42, y + 4, labels.get(metric, metric), 11, DARK))
     body.append(text(left + plot_w / 2, height - 36, "layer", 13, DARK, "middle"))
     body.append(text(28, top + plot_h / 2, "attention share", 13, DARK, "middle", rotate=-90))
     svg(path, width, height, "".join(body))
 
 
-def make_layer_stacked_svg(path, rows, title):
+def make_layer_stacked_svg(path, rows, title, metrics=None, labels=None, colors=None, subtitle=None):
     width, height = 1180, 620
     left, top = 82, 82
     plot_w, plot_h = 930, 390
-    colors = [GRAY, BLUE, ORANGE]
-    metrics = ["system_share", "visual_share", "text_share"]
-    labels = ["system/prompt", "visual", "generated text"]
+    metrics = metrics or ["system_share", "visual_share", "text_share"]
+    labels = labels or ["system/prompt", "visual", "generated text"]
+    colors = colors or [GRAY, BLUE, ORANGE, PURPLE]
     by_layer = {int(row["layer"]): row for row in rows}
     n_layers = max(by_layer) + 1 if by_layer else 32
 
@@ -265,7 +328,14 @@ def make_layer_stacked_svg(path, rows, title):
 
     body = []
     body.append(text(width / 2, 32, title, 21, DARK, "middle", "700"))
-    body.append(text(width / 2, 55, "Stacked regions are normalized per layer: system/prompt + visual + generated text = 1.", 12, MUTED, "middle"))
+    body.append(text(
+        width / 2,
+        55,
+        subtitle or "Stacked regions are averaged per layer.",
+        12,
+        MUTED,
+        "middle",
+    ))
     body.append(rect(left, top, plot_w, plot_h, "#f8fafc", "#cbd5e1"))
     for tick in [0.0, 0.25, 0.5, 0.75, 1.0]:
         y = sy(tick)
@@ -278,7 +348,8 @@ def make_layer_stacked_svg(path, rows, title):
         elif layer % 2 == 0:
             body.append(line(x, top, x, top + plot_h, "#edf2f7", 0.8))
         body.append(text(x, top + plot_h + 22, f"L{layer}", 8, DARK, "middle", rotate=35))
-    for idx, color in enumerate(colors):
+    for idx, metric in enumerate(metrics):
+        color = colors[idx % len(colors)]
         lower = cumulative[idx]
         upper = cumulative[idx + 1]
         top_pts = [(sx(layer), sy(upper[layer])) for layer in range(n_layers)]
@@ -287,7 +358,7 @@ def make_layer_stacked_svg(path, rows, title):
         body.append(polyline(top_pts, color, 1.5))
     lx, ly = left + plot_w + 34, top + 24
     for idx, label in enumerate(labels):
-        body.append(rect(lx, ly + idx * 30 - 12, 22, 18, colors[idx], None, opacity=0.75))
+        body.append(rect(lx, ly + idx * 30 - 12, 22, 18, colors[idx % len(colors)], None, opacity=0.75))
         body.append(text(lx + 34, ly + idx * 30 + 3, label, 11, DARK))
     body.append(text(left + plot_w / 2, height - 36, "layer", 13, DARK, "middle"))
     body.append(text(28, top + plot_h / 2, "attention share", 13, DARK, "middle", rotate=-90))
@@ -320,8 +391,8 @@ def main():
     questions = load_coco_questions(args)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    layer_acc = defaultdict(lambda: {"n": 0, "system": 0.0, "visual": 0.0, "text": 0.0})
-    step_layer_acc = defaultdict(lambda: {"n": 0, "system": 0.0, "visual": 0.0, "text": 0.0})
+    layer_acc = defaultdict(lambda: {"n": 0})
+    step_layer_acc = defaultdict(lambda: {"n": 0})
     sample_rows = []
 
     for sample_index, question in enumerate(tqdm(questions, desc="samples")):
@@ -388,8 +459,52 @@ def main():
 
     line_svg = os.path.join(args.output_dir, "vanilla_region_attention_layer_lines.svg")
     stacked_svg = os.path.join(args.output_dir, "vanilla_region_attention_layer_stacked.svg")
-    make_layer_line_svg(line_svg, layer_rows, "Vanilla attention by source region")
-    make_layer_stacked_svg(stacked_svg, layer_rows, "Vanilla attention by source region")
+    raw_line_svg = os.path.join(args.output_dir, "vanilla_region_attention_layer_raw_lines.svg")
+    raw_stacked_svg = os.path.join(args.output_dir, "vanilla_region_attention_layer_raw_stacked.svg")
+    make_layer_line_svg(
+        line_svg,
+        layer_rows,
+        "Vanilla attention by source region",
+        subtitle="Each layer averages head attention over generated steps; text-side is question/instruction plus generated prefix.",
+    )
+    make_layer_stacked_svg(
+        stacked_svg,
+        layer_rows,
+        "Vanilla attention by source region",
+        labels=["system prefix", "visual", "text-side"],
+        subtitle="Stacked regions are normalized per layer: system prefix + visual + text-side = 1.",
+    )
+    make_layer_line_svg(
+        raw_line_svg,
+        layer_rows,
+        "Vanilla raw attention mass by source region",
+        metrics=["raw_system_mass", "raw_visual_mass", "raw_text_mass", "raw_other_mass"],
+        subtitle="Raw attention mass from the softmax row; text-side includes question/instruction and generated prefix.",
+    )
+    make_layer_stacked_svg(
+        raw_stacked_svg,
+        layer_rows,
+        "Vanilla raw attention mass by source region",
+        metrics=["raw_system_mass", "raw_visual_mass", "raw_text_mass", "raw_other_mass"],
+        labels=["system prefix", "visual", "text-side", "other"],
+        subtitle="Raw stacked attention mass; total should be close to 1 when region boundaries cover the row.",
+    )
+    text_split_line_svg = os.path.join(args.output_dir, "vanilla_region_attention_layer_text_split_lines.svg")
+    raw_text_split_line_svg = os.path.join(args.output_dir, "vanilla_region_attention_layer_raw_text_split_lines.svg")
+    make_layer_line_svg(
+        text_split_line_svg,
+        layer_rows,
+        "Vanilla attention text-side split",
+        metrics=["system_share", "visual_share", "question_share", "generated_share"],
+        subtitle="Question/instruction is separated here only for audit; main text-side uses question + generated prefix.",
+    )
+    make_layer_line_svg(
+        raw_text_split_line_svg,
+        layer_rows,
+        "Vanilla raw attention text-side split",
+        metrics=["raw_system_mass", "raw_visual_mass", "raw_question_mass", "raw_generated_mass", "raw_other_mass"],
+        subtitle="Raw split of the text-side region into question/instruction and generated prefix.",
+    )
 
     summary = {
         "model_path": args.model_path,
@@ -397,9 +512,11 @@ def main():
         "img_start_pos": int(model.config.img_start_pos),
         "img_length": int(model.config.img_length),
         "region_definition": {
-            "system_prompt": "[0, image_start) union [image_end, expanded_prompt_end)",
+            "system_prefix": "[0, image_start)",
             "visual": "[image_start, image_end)",
-            "generated_text": "[expanded_prompt_end, kv_len)",
+            "question_instruction": "[image_end, expanded_prompt_end)",
+            "generated_prefix": "[expanded_prompt_end, kv_len)",
+            "text_side": "[image_end, kv_len)",
         },
         "outputs": {
             "layer_csv": layer_csv,
@@ -407,6 +524,10 @@ def main():
             "sample_csv": sample_csv,
             "line_svg": line_svg,
             "stacked_svg": stacked_svg,
+            "raw_line_svg": raw_line_svg,
+            "raw_stacked_svg": raw_stacked_svg,
+            "text_split_line_svg": text_split_line_svg,
+            "raw_text_split_line_svg": raw_text_split_line_svg,
         },
     }
     with open(os.path.join(args.output_dir, "vanilla_region_attention_summary.json"), "w") as f:
