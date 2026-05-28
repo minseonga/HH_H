@@ -236,6 +236,94 @@ def load_query_direction_gate_with_stats(calibration_npz, top_k=0, min_auroc=0.0
     return direction_dict, threshold_dict, stats_dict, rows
 
 
+TWO_PASS_DISABLED_INTERVENTIONS = (
+    "adaptive_deactivate",
+    "soft_deactivate",
+    "entropy_aware_deactivate",
+    "dynamic_deactivate",
+    "contrastive_dynamic_deactivate",
+    "attribution_soft_deactivate",
+    "retention_aware_deactivate",
+    "visual_gate_deactivate",
+    "wide_gate_deactivate",
+    "online_value_selector_deactivate",
+    "layer_contrastive_deactivate",
+    "unsupported_component_deactivate",
+    "query_gated_head_output_suppress",
+    "query_logit_correction",
+    "query_visual_attention_boost",
+)
+
+
+def set_config_attrs(config, values):
+    previous = {}
+    for name, value in values.items():
+        previous[name] = getattr(config, name, None)
+        setattr(config, name, value)
+    return previous
+
+
+def restore_config_attrs(config, values):
+    for name, value in values.items():
+        setattr(config, name, value)
+
+
+def reset_query_gate_step_state(config, record_steps=False):
+    config.adhh_query_gate_previous_risk = None
+    config.adhh_query_gate_risk_values = []
+    config.adhh_query_gate_step_index = 0
+    config.adhh_query_gate_step_records = []
+    config.record_adhh_query_gate_step_records = bool(record_steps)
+
+
+def configure_token_gate(config, positions, min_scale=0.0, max_scale=1.0):
+    config.adhh_token_gate_enabled = True
+    config.adhh_token_gate_positions = set(int(pos) for pos in positions)
+    config.adhh_token_gate_min_scale = float(min_scale)
+    config.adhh_token_gate_max_scale = float(max_scale)
+    config.adhh_token_gate_step_index = 0
+    config.adhh_token_gate_current_step = None
+
+
+def clear_token_gate(config):
+    config.adhh_token_gate_enabled = False
+    config.adhh_token_gate_positions = set()
+    config.adhh_token_gate_step_index = 0
+    config.adhh_token_gate_current_step = None
+
+
+def query_gate_positions_from_records(records, threshold):
+    positions = []
+    for record in records:
+        if record.get("phase") not in ("prefill", "decode"):
+            continue
+        token_pos = record.get("token_pos", record.get("step_index"))
+        if token_pos is None:
+            continue
+        risk = float(record.get("risk", 0.0))
+        if risk >= float(threshold):
+            positions.append(int(token_pos))
+    return sorted(set(positions))
+
+
+def run_caption_generation(model, input_ids, image_tensor, image_sizes, args):
+    return model.generate(
+        input_ids,
+        images=image_tensor,
+        image_sizes=image_sizes,
+        do_sample=True if args.temperature > 0 else False,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        num_beams=args.num_beams,
+        max_new_tokens=args.max_new_tokens,
+        use_cache=True,
+        output_attentions=True,
+        output_hidden_states=args.record_layer_contrastive_diagnostics,
+        output_scores=args.record_token_score_diagnostics,
+        return_dict_in_generate=True,
+    )
+
+
 def _top2_margin(logits):
     top_vals, top_ids = torch.topk(logits, k=2)
     return top_vals, top_ids, top_vals[0] - top_vals[1]
@@ -541,6 +629,9 @@ def eval_model(args):
                 )
         else:
             model.config.adhh_query_gate = False
+        if args.two_pass_query_gated_adhh and not args.adhh_query_gate_calibration:
+            raise ValueError("--two_pass_query_gated_adhh requires --adhh_query_gate_calibration")
+        clear_token_gate(model.config)
         if args.dynamic_deactivate:
             model.config.dynamic_deactivate = True
             model.config.dynamic_gamma = args.dynamic_gamma
@@ -1010,6 +1101,20 @@ def eval_model(args):
         query_visual_attention_boost_diag_file = open(query_visual_attention_boost_diag_path, "w")
         print(f"[info] query visual-attention boost diagnostics: {query_visual_attention_boost_diag_path}")
 
+    two_pass_query_gate_file = None
+    if args.two_pass_query_gated_adhh:
+        two_pass_query_gate_path = args.two_pass_query_gate_records_file
+        if not two_pass_query_gate_path:
+            two_pass_query_gate_path = os.path.join(
+                os.path.dirname(answers_file),
+                "two_pass_query_gate_records.jsonl",
+            )
+        two_pass_query_gate_dir = os.path.dirname(two_pass_query_gate_path)
+        if two_pass_query_gate_dir:
+            os.makedirs(two_pass_query_gate_dir, exist_ok=True)
+        two_pass_query_gate_file = open(two_pass_query_gate_path, "w")
+        print(f"[info] two-pass query gate records: {two_pass_query_gate_path}")
+
     count = 0
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
         count += 1
@@ -1024,8 +1129,7 @@ def eval_model(args):
             model.config.unsupported_component_prefill_protect_heads = {}
             model.config.unsupported_component_query_gate_state = {}
         if args.adhh_query_gate_calibration:
-            model.config.adhh_query_gate_previous_risk = None
-            model.config.adhh_query_gate_risk_values = []
+            reset_query_gate_step_state(model.config, record_steps=False)
         if args.record_layer_contrastive_diagnostics:
             model.config.layer_contrastive_diagnostics = []
             model.config.layer_contrastive_call_index = 0
@@ -1045,21 +1149,77 @@ def eval_model(args):
         input_ids = input_ids.to(device='cuda', non_blocking=True)
         image_tensor = image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True)
 
-        with torch.inference_mode():
-            output_dict = model.generate(
-                input_ids,
-                images=image_tensor,
-                image_sizes=image_sizes,
-                do_sample=True if args.temperature > 0 else False,
-                temperature=args.temperature,
-                top_p=args.top_p,
-                num_beams=args.num_beams,
-                max_new_tokens=args.max_new_tokens,
-                use_cache=True,
-                output_attentions=True,
-                output_hidden_states=args.record_layer_contrastive_diagnostics,
-                output_scores=args.record_token_score_diagnostics,
-                return_dict_in_generate=True)
+        if args.two_pass_query_gated_adhh:
+            original_query_gate = bool(getattr(model.config, "adhh_query_gate", False))
+            first_pass_overrides = {
+                name: False
+                for name in TWO_PASS_DISABLED_INTERVENTIONS
+                if hasattr(model.config, name)
+            }
+            first_pass_overrides["adhh_query_gate"] = True
+            first_pass_state = set_config_attrs(model.config, first_pass_overrides)
+            clear_token_gate(model.config)
+            reset_query_gate_step_state(model.config, record_steps=True)
+            with torch.inference_mode():
+                first_pass_output_dict = run_caption_generation(
+                    model,
+                    input_ids,
+                    image_tensor,
+                    image_sizes,
+                    args,
+                )
+            first_pass_outputs = tokenizer.batch_decode(
+                first_pass_output_dict["sequences"],
+                skip_special_tokens=True,
+            )[0].strip()
+            query_gate_records = list(getattr(model.config, "adhh_query_gate_step_records", []))
+            gate_positions = query_gate_positions_from_records(
+                query_gate_records,
+                args.two_pass_query_gate_threshold,
+            )
+            restore_config_attrs(model.config, first_pass_state)
+
+            second_pass_state = set_config_attrs(model.config, {"adhh_query_gate": False})
+            configure_token_gate(
+                model.config,
+                gate_positions,
+                min_scale=args.two_pass_token_gate_min_scale,
+                max_scale=args.two_pass_token_gate_max_scale,
+            )
+            if args.adhh_query_gate_calibration:
+                reset_query_gate_step_state(model.config, record_steps=False)
+            with torch.inference_mode():
+                output_dict = run_caption_generation(
+                    model,
+                    input_ids,
+                    image_tensor,
+                    image_sizes,
+                    args,
+                )
+            clear_token_gate(model.config)
+            restore_config_attrs(model.config, second_pass_state)
+            model.config.adhh_query_gate = original_query_gate
+
+            if two_pass_query_gate_file is not None:
+                two_pass_query_gate_file.write(json.dumps({
+                    "question_id": question_id,
+                    "image": image_file,
+                    "first_pass_text": first_pass_outputs,
+                    "gate_threshold": float(args.two_pass_query_gate_threshold),
+                    "n_gate_positions": int(len(gate_positions)),
+                    "gate_positions": gate_positions,
+                    "query_gate_records": query_gate_records,
+                }) + "\n")
+                two_pass_query_gate_file.flush()
+        else:
+            with torch.inference_mode():
+                output_dict = run_caption_generation(
+                    model,
+                    input_ids,
+                    image_tensor,
+                    image_sizes,
+                    args,
+                )
 
         output_ids = output_dict['sequences']
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
@@ -1185,6 +1345,8 @@ def eval_model(args):
         query_logit_correction_diag_file.close()
     if query_visual_attention_boost_diag_file is not None:
         query_visual_attention_boost_diag_file.close()
+    if two_pass_query_gate_file is not None:
+        two_pass_query_gate_file.close()
 
 
 
@@ -1285,6 +1447,11 @@ if __name__ == "__main__":
         default="current_or_previous",
         choices=["current_or_previous", "current", "previous"],
     )
+    parser.add_argument("--two_pass_query_gated_adhh", action="store_true", default=False)
+    parser.add_argument("--two_pass_query_gate_threshold", type=float, default=0.5)
+    parser.add_argument("--two_pass_token_gate_min_scale", type=float, default=0.0)
+    parser.add_argument("--two_pass_token_gate_max_scale", type=float, default=1.0)
+    parser.add_argument("--two_pass_query_gate_records_file", type=str, default="")
     parser.add_argument("--dynamic_gamma", type=float, default=1.0)
     parser.add_argument("--dynamic_temperature", type=float, default=0.05)
     parser.add_argument("--dynamic_margin_weight", type=float, default=1.0)

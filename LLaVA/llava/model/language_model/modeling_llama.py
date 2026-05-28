@@ -1059,7 +1059,7 @@ def _aggregate_adhh_query_gate_risk(config, risk_values):
     return risk
 
 
-def _finalize_adhh_query_gate_risk(config):
+def _finalize_adhh_query_gate_risk(config, phase=None):
     if not getattr(config, "adhh_query_gate", False):
         return
     current = _aggregate_adhh_query_gate_risk(
@@ -1067,7 +1067,60 @@ def _finalize_adhh_query_gate_risk(config):
         getattr(config, "adhh_query_gate_risk_values", None),
     )
     if current is not None:
+        records = getattr(config, "adhh_query_gate_step_records", None)
+        if getattr(config, "record_adhh_query_gate_step_records", False) and records is not None:
+            if phase == "decode":
+                step_index = int(getattr(config, "adhh_query_gate_step_index", 0))
+                token_pos = step_index + 1
+            else:
+                step_index = None
+                token_pos = 0
+            records.append({
+                "kind": "adhh_query_gate_step",
+                "phase": phase,
+                "step_index": step_index,
+                "token_pos": token_pos,
+                "risk": float(current.detach().float().mean().cpu().item()),
+                "active": bool(
+                    (current > float(getattr(config, "adhh_query_gate_eps", 1e-6)))
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                    .item()
+                    > 0.0
+                ),
+            })
         config.adhh_query_gate_previous_risk = current.detach()
+    if phase == "decode":
+        config.adhh_query_gate_step_index = int(getattr(config, "adhh_query_gate_step_index", 0)) + 1
+
+
+def _get_adhh_token_gate_scale(config, attn_weights):
+    if not getattr(config, "adhh_token_gate_enabled", False):
+        return None
+    step = getattr(config, "adhh_token_gate_current_step", None)
+    if step is None:
+        active = False
+    else:
+        positions = getattr(config, "adhh_token_gate_positions", None) or set()
+        active = int(step) in positions
+    min_scale = float(getattr(config, "adhh_token_gate_min_scale", 0.0))
+    max_scale = float(getattr(config, "adhh_token_gate_max_scale", 1.0))
+    scale = max_scale if active else min_scale
+    return torch.full(
+        (attn_weights.shape[0], 1),
+        scale,
+        device=attn_weights.device,
+        dtype=attn_weights.dtype,
+    )
+
+
+def _get_adhh_intervention_gate_scale(config, attn_weights):
+    token_gate_scale = _get_adhh_token_gate_scale(config, attn_weights)
+    if token_gate_scale is not None:
+        return token_gate_scale
+    return _get_adhh_query_gate_scale(config, attn_weights)
 
 
 def _get_adhh_query_gate_scale(config, attn_weights):
@@ -3112,7 +3165,7 @@ class LlamaAttention(nn.Module):
         # TODO: adaptive deactivate of hallucination heads
         if getattr(self.config, "adaptive_deactivate", False):
             if head_list is not None:
-                query_gate_scale = _get_adhh_query_gate_scale(self.config, attn_weights)
+                query_gate_scale = _get_adhh_intervention_gate_scale(self.config, attn_weights)
                 for head in head_list:
                     aggre_attention = torch.sum(attn_weights[:, head, -1, self.config.img_start_pos+self.config.img_length:])
                     if aggre_attention >= self.config.adhh_threshold:
@@ -3130,7 +3183,7 @@ class LlamaAttention(nn.Module):
                 temperature = max(float(getattr(self.config, "soft_temperature", 0.05)), 1e-6)
                 gamma = float(getattr(self.config, "soft_gamma", 0.5))
                 threshold = float(getattr(self.config, "adhh_threshold", 0.0))
-                query_gate_scale = _get_adhh_query_gate_scale(self.config, attn_weights)
+                query_gate_scale = _get_adhh_intervention_gate_scale(self.config, attn_weights)
                 for head in head_list:
                     text_attention = attn_weights[:, head, -1, text_start_idx:]
                     text_mass = torch.sum(text_attention, dim=-1, keepdim=True)
@@ -3166,7 +3219,7 @@ class LlamaAttention(nn.Module):
                     strength_cap = float(getattr(self.config, "entropy_aware_strength_cap", 1.0))
                     use_query_gate = bool(getattr(self.config, "entropy_aware_use_query_gate", False))
                     renormalize = bool(getattr(self.config, "entropy_aware_renormalize", False))
-                    query_gate_scale = _get_adhh_query_gate_scale(self.config, attn_weights) if use_query_gate else None
+                    query_gate_scale = _get_adhh_intervention_gate_scale(self.config, attn_weights) if use_query_gate else None
                     strength_cap = min(max(strength_cap, 0.0), 1.0)
                     if strength_cap == 0.0:
                         strength_cap = 1.0
@@ -4977,6 +5030,17 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             self.config.adhh_query_gate_risk_values = []
         if getattr(self.config, "query_visual_attention_boost", False):
             self.config.query_visual_attention_boost_risk_state = None
+        input_seq_len = None
+        if input_ids is not None:
+            input_seq_len = int(input_ids.shape[1])
+        elif inputs_embeds is not None:
+            input_seq_len = int(inputs_embeds.shape[1])
+        forward_phase = "decode" if past_key_values is not None and input_seq_len == 1 else "prefill"
+        if getattr(self.config, "adhh_token_gate_enabled", False):
+            if forward_phase == "decode":
+                self.config.adhh_token_gate_current_step = int(getattr(self.config, "adhh_token_gate_step_index", 0)) + 1
+            else:
+                self.config.adhh_token_gate_current_step = 0
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
@@ -5044,7 +5108,9 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
                 logits,
                 phase,
             )
-            _finalize_adhh_query_gate_risk(self.config)
+            _finalize_adhh_query_gate_risk(self.config, phase)
+            if getattr(self.config, "adhh_token_gate_enabled", False) and phase == "decode":
+                self.config.adhh_token_gate_step_index = int(getattr(self.config, "adhh_token_gate_step_index", 0)) + 1
 
             loss = None
             if labels is not None:
