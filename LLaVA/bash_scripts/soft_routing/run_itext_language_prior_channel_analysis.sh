@@ -15,10 +15,13 @@ EVAL_RESULTS="${EVAL_RESULTS:-}"
 RANKED_HEADS="${RANKED_HEADS:-../ADHH/LLaVA/results/coco/llava-v1.5-7b_base_original_qa_n3000/surrogate_hh_scores/surrogate_score_zoo/ranked_heads_global__itext_all__C_toi_HminusG.json}"
 TOP_K="${TOP_K:-100}"
 MAX_MENTIONS="${MAX_MENTIONS:-80}"
+MAX_PER_LABEL="${MAX_PER_LABEL:-0}"
 MAX_SENTENCES="${MAX_SENTENCES:-0}"
 LABEL_FILTER="${LABEL_FILTER:-all}"
 SKIP_FULL_HEAD_ABLATION="${SKIP_FULL_HEAD_ABLATION:-1}"
 SKIP_TEXT_ABLATION="${SKIP_TEXT_ABLATION:-0}"
+CANDIDATE_SELECTIONS="${CANDIDATE_SELECTIONS:-combined itext contrast}"
+CANDIDATE_HEAD_LIMIT="${CANDIDATE_HEAD_LIMIT:-0}"
 
 OUTPUT_DIR="${OUTPUT_DIR:-./results/coco/itext_language_prior_channel_top${TOP_K}_m${MAX_MENTIONS}}"
 ROWS_DIR="${ROWS_DIR:-${OUTPUT_DIR}/head_logit_rows}"
@@ -36,19 +39,30 @@ import json
 
 path = "${RANKED_HEADS}"
 top_k = int("${TOP_K}")
+head_limit = int("${CANDIDATE_HEAD_LIMIT}")
+selections = set("${CANDIDATE_SELECTIONS}".replace(",", " ").split())
 data = json.load(open(path))
 records = data["heads"]
 by_itext = sorted(records, key=lambda row: float(row.get("front_percentile", -1.0)), reverse=True)
 by_contrast = sorted(records, key=lambda row: float(row.get("back_percentile", -1.0)), reverse=True)
 heads = []
 seen = set()
-for rows in (records[:top_k], by_itext[:top_k], by_contrast[:top_k]):
+ranking_rows = []
+if "combined" in selections:
+    ranking_rows.append(records[:top_k])
+if "itext" in selections:
+    ranking_rows.append(by_itext[:top_k])
+if "contrast" in selections:
+    ranking_rows.append(by_contrast[:top_k])
+for rows in ranking_rows:
     for row in rows:
         key = f"{int(row['layer'])}:{int(row['head'])}"
         if key in seen:
             continue
         heads.append(key)
         seen.add(key)
+if head_limit > 0:
+    heads = heads[:head_limit]
 print(",".join(heads))
 PY
 )}"
@@ -56,6 +70,8 @@ PY
 echo "[info] output dir: ${OUTPUT_DIR}"
 echo "[info] ranked heads: ${RANKED_HEADS}"
 echo "[info] top k: ${TOP_K}"
+echo "[info] candidate selections: ${CANDIDATE_SELECTIONS}"
+echo "[info] candidate head limit: ${CANDIDATE_HEAD_LIMIT}"
 echo "[info] candidate heads: $(python - <<PY
 print(len([x for x in "${CANDIDATE_HEADS}".split(",") if x]))
 PY
@@ -94,6 +110,7 @@ if [ ! -f "${HEAD_ROWS}" ]; then
         --label-filter "${LABEL_FILTER}" \
         --max-sentences "${MAX_SENTENCES}" \
         --max-mentions "${MAX_MENTIONS}" \
+        --max-per-label "${MAX_PER_LABEL}" \
         --include-adhh-top-k 0 \
         --candidate-heads "${CANDIDATE_HEADS}" \
         "${full_ablation_arg[@]}" \
