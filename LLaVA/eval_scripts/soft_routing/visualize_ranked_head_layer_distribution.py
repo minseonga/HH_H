@@ -250,6 +250,100 @@ def make_band_svg(path, band_rows, top_ks, title):
     svg(path, width, height, "".join(body))
 
 
+def make_single_topk_layer_histogram_svg(path, rows, top_k, n_layers, title):
+    width, height = 1120, 560
+    left, top = 78, 78
+    plot_w, plot_h = 930, 340
+    by = {safe_int(row["layer"]): safe_int(row["count"]) for row in rows if safe_int(row["top_k"]) == top_k}
+    vmax = max(max(by.values()) if by else 1, 1)
+    body = []
+    body.append(text(width / 2, 32, f"{title}: top{top_k}", 21, DARK, "middle", "700"))
+    body.append(text(width / 2, 55, "One bar per transformer layer. Counts are selected heads from the ranked prefix.", 12, MUTED, "middle"))
+    body.append(rect(left, top, plot_w, plot_h, "#f8fafc", "#cbd5e1"))
+
+    for tick in range(0, vmax + 1):
+        if vmax > 8 and tick % 2:
+            continue
+        y = top + plot_h - tick / vmax * plot_h
+        body.append(line(left, y, left + plot_w, y, GRID))
+        body.append(text(left - 12, y + 4, tick, 10, MUTED, "end"))
+
+    layer_w = plot_w / n_layers
+    bar_w = min(20, layer_w * 0.62)
+    for layer in range(n_layers):
+        count = by.get(layer, 0)
+        h = count / vmax * plot_h
+        x = left + layer * layer_w + layer_w / 2
+        fill = BLUE if 11 <= layer <= 20 else ORANGE if 21 <= layer <= 26 else PURPLE if layer >= 27 else GRAY
+        body.append(rect(x - bar_w / 2, top + plot_h - h, bar_w, h, fill, None, 1, 0.9))
+        if count:
+            body.append(text(x, top + plot_h - h - 7, count, 9, DARK, "middle", "700"))
+        body.append(text(x, top + plot_h + 20, f"L{layer}", 8, DARK, "middle", rotate=35))
+
+    for boundary in [11, 21, 27]:
+        x = left + boundary * layer_w
+        body.append(line(x, top, x, top + plot_h, "#334155", 1.2, "5 5"))
+    body.append(text(left + 5.5 * layer_w, top - 13, "early", 11, MUTED, "middle", "700"))
+    body.append(text(left + 15.5 * layer_w, top - 13, "cross-modal", 11, MUTED, "middle", "700"))
+    body.append(text(left + 23.5 * layer_w, top - 13, "bridge", 11, MUTED, "middle", "700"))
+    body.append(text(left + 29.0 * layer_w, top - 13, "late", 11, MUTED, "middle", "700"))
+    body.append(text(left + plot_w / 2, height - 36, "layer", 13, DARK, "middle"))
+    body.append(text(26, top + plot_h / 2, "head count", 13, DARK, "middle", rotate=-90))
+
+    lx, ly = left + plot_w + 28, top + 28
+    for idx, (label, color) in enumerate([
+        ("L0-10", GRAY),
+        ("L11-20", BLUE),
+        ("L21-26", ORANGE),
+        ("L27-31", PURPLE),
+    ]):
+        body.append(rect(lx, ly + idx * 28, 18, 18, color, None, 1, 0.9))
+        body.append(text(lx + 27, ly + idx * 28 + 14, label, 11, DARK))
+    svg(path, width, height, "".join(body))
+
+
+def make_grouped_layer_histogram_svg(path, rows, top_ks, n_layers, title):
+    width, height = 1320, 620
+    left, top = 80, 82
+    plot_w, plot_h = 1100, 390
+    colors = [BLUE, GREEN, ORANGE, PURPLE, RED, GRAY]
+    by = {(safe_int(row["top_k"]), safe_int(row["layer"])): safe_int(row["count"]) for row in rows}
+    vmax = max(by.values()) if by else 1
+    body = []
+    body.append(text(width / 2, 32, title, 21, DARK, "middle", "700"))
+    body.append(text(width / 2, 55, "Grouped bars compare exact layer counts across rank prefixes.", 12, MUTED, "middle"))
+    body.append(rect(left, top, plot_w, plot_h, "#f8fafc", "#cbd5e1"))
+
+    for tick in range(0, vmax + 1):
+        if vmax > 8 and tick % 2:
+            continue
+        y = top + plot_h - tick / max(vmax, 1) * plot_h
+        body.append(line(left, y, left + plot_w, y, GRID))
+        body.append(text(left - 12, y + 4, tick, 10, MUTED, "end"))
+
+    layer_w = plot_w / n_layers
+    bar_w = min(5.5, layer_w / max(len(top_ks), 1) * 0.74)
+    for layer in range(n_layers):
+        cx = left + layer * layer_w + layer_w / 2
+        for idx, top_k in enumerate(top_ks):
+            count = by.get((top_k, layer), 0)
+            h = count / max(vmax, 1) * plot_h
+            x = cx + (idx - (len(top_ks) - 1) / 2.0) * (bar_w + 1.5)
+            body.append(rect(x - bar_w / 2, top + plot_h - h, bar_w, h, colors[idx % len(colors)], None, 1, 0.86))
+        body.append(text(cx, top + plot_h + 20, f"L{layer}", 8, DARK, "middle", rotate=35))
+
+    for boundary in [11, 21, 27]:
+        x = left + boundary * layer_w
+        body.append(line(x, top, x, top + plot_h, "#334155", 1.2, "5 5"))
+    lx, ly = left + plot_w + 30, top + 20
+    for idx, top_k in enumerate(top_ks):
+        body.append(rect(lx, ly + idx * 26, 18, 16, colors[idx % len(colors)], None, 1, 0.86))
+        body.append(text(lx + 27, ly + idx * 26 + 13, f"top{top_k}", 11, DARK))
+    body.append(text(left + plot_w / 2, height - 36, "layer", 13, DARK, "middle"))
+    body.append(text(26, top + plot_h / 2, "head count", 13, DARK, "middle", rotate=-90))
+    svg(path, width, height, "".join(body))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -272,10 +366,17 @@ def main():
     band_csv = os.path.join(args.output_dir, "topk_layer_band_distribution.csv")
     layer_svg = os.path.join(args.output_dir, "topk_layer_distribution.svg")
     band_svg = os.path.join(args.output_dir, "topk_layer_band_distribution.svg")
+    grouped_hist_svg = os.path.join(args.output_dir, "topk_layer_histogram_grouped.svg")
     write_csv(layer_csv, layer_rows)
     write_csv(band_csv, band_rows)
     make_layer_heatmap_svg(layer_svg, layer_rows, top_ks, args.n_layers, args.title)
     make_band_svg(band_svg, band_rows, top_ks, "Layer-band distribution of ranked head pools")
+    make_grouped_layer_histogram_svg(grouped_hist_svg, layer_rows, top_ks, args.n_layers, "Exact per-layer head-count distribution")
+    per_topk_histograms = {}
+    for top_k in top_ks:
+        path = os.path.join(args.output_dir, f"layer_histogram_top{top_k}.svg")
+        make_single_topk_layer_histogram_svg(path, layer_rows, top_k, args.n_layers, "Exact per-layer head-count distribution")
+        per_topk_histograms[str(top_k)] = path
 
     summary = {
         "ranked_heads": args.ranked_heads,
@@ -287,6 +388,8 @@ def main():
             "band_csv": band_csv,
             "layer_svg": layer_svg,
             "band_svg": band_svg,
+            "grouped_hist_svg": grouped_hist_svg,
+            "per_topk_histograms": per_topk_histograms,
         },
     }
     with open(os.path.join(args.output_dir, "layer_distribution_summary.json"), "w") as f:
