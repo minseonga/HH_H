@@ -17,6 +17,8 @@ TOP_K="${TOP_K:-100}"
 MAX_MENTIONS="${MAX_MENTIONS:-80}"
 MAX_SENTENCES="${MAX_SENTENCES:-0}"
 LABEL_FILTER="${LABEL_FILTER:-all}"
+SKIP_FULL_HEAD_ABLATION="${SKIP_FULL_HEAD_ABLATION:-1}"
+SKIP_TEXT_ABLATION="${SKIP_TEXT_ABLATION:-0}"
 
 OUTPUT_DIR="${OUTPUT_DIR:-./results/coco/itext_language_prior_channel_top${TOP_K}_m${MAX_MENTIONS}}"
 ROWS_DIR="${ROWS_DIR:-${OUTPUT_DIR}/head_logit_rows}"
@@ -59,10 +61,20 @@ print(len([x for x in "${CANDIDATE_HEADS}".split(",") if x]))
 PY
 )"
 echo "[info] head rows: ${HEAD_ROWS}"
+echo "[info] skip full-head ablation: ${SKIP_FULL_HEAD_ABLATION}"
+echo "[info] skip text ablation: ${SKIP_TEXT_ABLATION}"
 
 model_base_arg=()
 if [ -n "${MODEL_BASE}" ]; then
     model_base_arg=(--model-base "${MODEL_BASE}")
+fi
+full_ablation_arg=()
+if [ "${SKIP_FULL_HEAD_ABLATION}" = "1" ]; then
+    full_ablation_arg=(--skip-full-head-ablation)
+fi
+text_ablation_arg=()
+if [ "${SKIP_TEXT_ABLATION}" = "1" ]; then
+    text_ablation_arg=(--skip-text-ablation)
 fi
 
 if [ ! -f "${HEAD_ROWS}" ]; then
@@ -84,7 +96,8 @@ if [ ! -f "${HEAD_ROWS}" ]; then
         --max-mentions "${MAX_MENTIONS}" \
         --include-adhh-top-k 0 \
         --candidate-heads "${CANDIDATE_HEADS}" \
-        --skip-full-head-ablation \
+        "${full_ablation_arg[@]}" \
+        "${text_ablation_arg[@]}" \
         --resume
 fi
 
