@@ -57,6 +57,15 @@ def write_json(path, value):
         json.dump(value, f, indent=2, ensure_ascii=False)
 
 
+def write_fixed_csv(path, fieldnames, rows):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
 def finite(value, default=0.0):
     try:
         value = float(value)
@@ -429,6 +438,180 @@ def plot_sources(output_dir, head_rows, ratio_rows, redistribution_summary, gate
     save_matplotlib(fig, os.path.join(output_dir, "phase2_attention_redistribution.png"))
 
 
+def save_all_head_object_trace(path_csv, path_npz, object_records, head_rows, args):
+    by_pair = {
+        (int(row["layer"]), int(row["head"])): row
+        for row in head_rows
+    }
+    pairs = sorted(by_pair)
+    if not object_records or not pairs:
+        write_fixed_csv(path_csv, ["empty"], [])
+        np.savez_compressed(path_npz, empty=np.array([], dtype=np.float32))
+        return 0
+
+    num_layers = max(layer for layer, _ in pairs) + 1
+    num_heads = max(head for _, head in pairs) + 1
+    n_objects = len(object_records)
+
+    system = np.zeros((n_objects, num_layers, num_heads), dtype=np.float32)
+    image = np.zeros_like(system)
+    text = np.zeros_like(system)
+    raw_toi = np.zeros_like(system)
+    bounded = np.zeros_like(system)
+
+    labels = []
+    question_ids = []
+    images = []
+    step_indices = []
+    token_ids = []
+    token_texts = []
+    object_words = []
+    for obj_idx, record in enumerate(object_records):
+        labels.append(record["label"])
+        question_ids.append(str(record["question_id"]))
+        images.append(str(record["image"]))
+        step_indices.append(int(record["step_idx"]))
+        token_ids.append(int(record["token_id"]))
+        token_texts.append(str(record["token_text"]))
+        object_words.append(" ".join(item.get("node_word", item.get("word", "")) for item in record.get("objects", [])))
+        system[obj_idx] = record["system_mass"].numpy()
+        image[obj_idx] = record["image_mass"].numpy()
+        text[obj_idx] = record["text_mass"].numpy()
+        raw_toi[obj_idx] = record["raw_toi"].numpy()
+        bounded[obj_idx] = record["bounded_ratio"].numpy()
+
+    score = np.zeros((num_layers, num_heads), dtype=np.float32)
+    text_percentile = np.zeros_like(score)
+    contrast_percentile = np.zeros_like(score)
+    selected = np.zeros((num_layers, num_heads), dtype=np.int8)
+    selection_allowed = np.zeros_like(selected)
+    rank = np.zeros((num_layers, num_heads), dtype=np.int32)
+    text_mass_rank = np.zeros_like(rank)
+    for (layer, head), row in by_pair.items():
+        score[layer, head] = float(row["score"])
+        text_percentile[layer, head] = float(row["text_percentile"])
+        contrast_percentile[layer, head] = float(row["contrast_percentile"])
+        selected[layer, head] = int(row["selected"])
+        selection_allowed[layer, head] = int(row["selection_allowed"])
+        rank[layer, head] = int(row["rank"])
+        text_mass_rank[layer, head] = int(row["text_mass_rank"])
+
+    gate = np.exp(np.clip(float(args.gate_beta) * (bounded - float(args.gate_tau)), -20.0, 20.0))
+    counterfactual_delta = np.clip(float(args.gate_strength) * score[None, :, :] * gate, 0.0, 1.0)
+    applied_delta = counterfactual_delta * selected[None, :, :]
+    text_after = text * (1.0 - applied_delta)
+    if args.renormalize:
+        denom = np.maximum(system + image + text_after, EPS)
+        system_after = system / denom
+        image_after = image / denom
+        text_after_norm = text_after / denom
+    else:
+        system_after = system
+        image_after = image
+        text_after_norm = text_after
+
+    os.makedirs(os.path.dirname(path_npz), exist_ok=True)
+    np.savez_compressed(
+        path_npz,
+        system_before=system,
+        image_before=image,
+        text_before=text,
+        raw_toi=raw_toi,
+        bounded_ratio=bounded,
+        gate=gate.astype(np.float32),
+        counterfactual_delta=counterfactual_delta.astype(np.float32),
+        applied_delta=applied_delta.astype(np.float32),
+        system_after=system_after.astype(np.float32),
+        image_after=image_after.astype(np.float32),
+        text_after=text_after_norm.astype(np.float32),
+        head_score=score,
+        text_percentile=text_percentile,
+        contrast_percentile=contrast_percentile,
+        selected=selected,
+        selection_allowed=selection_allowed,
+        rank=rank,
+        text_mass_rank=text_mass_rank,
+        labels=np.array(labels),
+        question_ids=np.array(question_ids),
+        images=np.array(images),
+        step_indices=np.array(step_indices, dtype=np.int32),
+        token_ids=np.array(token_ids, dtype=np.int32),
+        token_texts=np.array(token_texts),
+        object_words=np.array(object_words),
+    )
+
+    fields = [
+        "object_index",
+        "question_id",
+        "image",
+        "step_idx",
+        "token_id",
+        "token_text",
+        "label",
+        "object_words",
+        "layer",
+        "head",
+        "head_key",
+        "rank",
+        "text_mass_rank",
+        "selected",
+        "selection_allowed",
+        "score",
+        "text_percentile",
+        "contrast_percentile",
+        "system_before",
+        "image_before",
+        "text_before",
+        "raw_toi",
+        "bounded_ratio",
+        "gate",
+        "counterfactual_delta",
+        "applied_delta",
+        "system_after",
+        "image_after",
+        "text_after",
+    ]
+
+    def iter_rows():
+        for obj_idx, record in enumerate(object_records):
+            for layer, head in pairs:
+                row = by_pair[(layer, head)]
+                yield {
+                    "object_index": obj_idx,
+                    "question_id": record["question_id"],
+                    "image": record["image"],
+                    "step_idx": record["step_idx"],
+                    "token_id": record["token_id"],
+                    "token_text": record["token_text"],
+                    "label": record["label"],
+                    "object_words": object_words[obj_idx],
+                    "layer": layer,
+                    "head": head,
+                    "head_key": f"{layer}:{head}",
+                    "rank": int(row["rank"]),
+                    "text_mass_rank": int(row["text_mass_rank"]),
+                    "selected": int(row["selected"]),
+                    "selection_allowed": int(row["selection_allowed"]),
+                    "score": float(score[layer, head]),
+                    "text_percentile": float(text_percentile[layer, head]),
+                    "contrast_percentile": float(contrast_percentile[layer, head]),
+                    "system_before": float(system[obj_idx, layer, head]),
+                    "image_before": float(image[obj_idx, layer, head]),
+                    "text_before": float(text[obj_idx, layer, head]),
+                    "raw_toi": float(raw_toi[obj_idx, layer, head]),
+                    "bounded_ratio": float(bounded[obj_idx, layer, head]),
+                    "gate": float(gate[obj_idx, layer, head]),
+                    "counterfactual_delta": float(counterfactual_delta[obj_idx, layer, head]),
+                    "applied_delta": float(applied_delta[obj_idx, layer, head]),
+                    "system_after": float(system_after[obj_idx, layer, head]),
+                    "image_after": float(image_after[obj_idx, layer, head]),
+                    "text_after": float(text_after_norm[obj_idx, layer, head]),
+                }
+
+    write_fixed_csv(path_csv, fields, iter_rows())
+    return n_objects * len(pairs)
+
+
 def main(args):
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -740,6 +923,8 @@ def main(args):
         "samples": os.path.join(args.output_dir, "samples.csv"),
         "head_scores": os.path.join(args.output_dir, "head_scores_all.csv"),
         "ranked_heads": os.path.join(args.output_dir, "ranked_heads_sample_trace.json"),
+        "all_head_object_attention_csv": os.path.join(args.output_dir, "all_head_object_attention.csv"),
+        "all_head_object_attention_npz": os.path.join(args.output_dir, "all_head_object_attention.npz"),
         "ratio_distribution": os.path.join(args.output_dir, "selected_head_object_ratio_distribution.csv"),
         "gate_curve": os.path.join(args.output_dir, "gate_curve.csv"),
         "gate_markers": os.path.join(args.output_dir, "gate_markers.csv"),
@@ -751,6 +936,15 @@ def main(args):
     write_csv(paths["samples"], sample_rows)
     write_csv(paths["head_scores"], head_rows)
     write_json(paths["ranked_heads"], ranked_heads_json)
+    n_all_head_object_rows = 0
+    if args.save_all_head_object_trace:
+        n_all_head_object_rows = save_all_head_object_trace(
+            paths["all_head_object_attention_csv"],
+            paths["all_head_object_attention_npz"],
+            object_records,
+            head_rows,
+            args,
+        )
     write_csv(paths["ratio_distribution"], ratio_rows)
     write_csv(paths["gate_curve"], gate_rows)
     write_csv(paths["gate_markers"], marker_rows)
@@ -774,6 +968,7 @@ def main(args):
         },
         "n_object_records": len(object_records),
         "n_ratio_rows": len(ratio_rows),
+        "n_all_head_object_rows": int(n_all_head_object_rows),
         "selected_heads": [f"{layer}:{head}" for layer, head, _ in selected_pairs],
         "ratio_summary": ratio_summary,
         "outputs": paths,
@@ -815,6 +1010,8 @@ if __name__ == "__main__":
     parser.add_argument("--gate-x-max", type=float, default=1.0)
     parser.add_argument("--renormalize", action="store_true", default=True)
     parser.add_argument("--no-renormalize", dest="renormalize", action="store_false")
+    parser.add_argument("--save-all-head-object-trace", action="store_true", default=True)
+    parser.add_argument("--no-save-all-head-object-trace", dest="save_all_head_object_trace", action="store_false")
     parser.add_argument("--make-plots", action="store_true", default=True)
     parser.add_argument("--no-plots", dest="make_plots", action="store_false")
     main(parser.parse_args())
