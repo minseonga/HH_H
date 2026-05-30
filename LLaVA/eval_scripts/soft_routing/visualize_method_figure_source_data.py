@@ -161,6 +161,7 @@ def load_source(source_dir, ratio_source):
         ),
         "rank_fusion": os.path.join(source_dir, "rank_fusion_summary.csv"),
         "all_head_npz": os.path.join(source_dir, "all_head_object_attention.npz"),
+        "samples": os.path.join(source_dir, "samples.csv"),
     }
     summary = read_json(paths["summary"], default={}) or {}
     head_rows = read_csv(paths["head_scores"])
@@ -176,7 +177,18 @@ def load_source(source_dir, ratio_source):
         "gate_markers": read_csv(paths["gate_markers"]) if os.path.exists(paths["gate_markers"]) else [],
         "redistribution": read_csv(paths["redistribution"]),
         "rank_fusion": read_csv(paths["rank_fusion"]) if os.path.exists(paths["rank_fusion"]) else [],
+        "samples": read_csv(paths["samples"]) if os.path.exists(paths["samples"]) else [],
     }
+
+
+def sample_caption_text(source, override=""):
+    if override:
+        return override
+    for row in source.get("samples", []):
+        caption = str(row.get("caption", "")).strip()
+        if caption:
+            return caption.replace("\\n", "\n")
+    return ""
 
 
 def load_all_head_ratio_rows(path):
@@ -1075,6 +1087,7 @@ def main():
     source["source_dir"] = source_dir
     layers = source_layers(source["summary"], args.selection_layers)
     top_k = source_top_k(source["summary"], source["head_rows"], args.top_k)
+    caption_text = sample_caption_text(source, args.caption_text)
 
     figures = {}
     figures["phase1_text_mass_sorted"] = figure_text_mass_sorted(source["head_rows"], output_dir, formats)
@@ -1103,7 +1116,7 @@ def main():
     )
     if not args.no_overview_panel:
         figures["method_phase_overview_panel"] = figure_overview_panel(source, output_dir, formats, layers)
-        figures["method_claim_compact_panel"] = figure_method_claim_panel(source, output_dir, formats, layers, args.caption_text)
+        figures["method_claim_compact_panel"] = figure_method_claim_panel(source, output_dir, formats, layers, caption_text)
 
     numeric_summary = build_numeric_summary(source, ratio_stats, delta_stats, layers)
     if window_stats:
@@ -1140,6 +1153,7 @@ def main():
         "formats": formats,
         "top_k": top_k,
         "selection_layers": layers if layers else "all",
+        "caption_text": caption_text,
         "figures": figures,
         "numeric_summary": numeric_summary,
         "numeric_summary_csv": summary_csv,
