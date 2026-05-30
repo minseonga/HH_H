@@ -788,7 +788,6 @@ def figure_overview_panel(source, output_dir, formats, layers):
 
 def figure_method_claim_panel(source, output_dir, formats, layers, caption_text):
     head_rows = source["head_rows"]
-    ratio_rows = source["ratio_rows"]
     gate_rows = source["gate_curve"]
     marker_rows = source["gate_markers"]
 
@@ -804,8 +803,8 @@ def figure_method_claim_panel(source, output_dir, formats, layers, caption_text)
     ]
     plot_offline_selection_formula_on_axis(axes[0], head_rows, layers)
     plot_high_text_head_on_axis(axes[1], head_rows)
-    plot_hall_ground_ratio_on_axis(axes[2], ratio_rows)
-    plot_layer_window_profile_on_axis(axes[3], head_rows, layers)
+    plot_contrastive_head_on_axis(axes[2], head_rows)
+    plot_head_selection_score_on_axis(axes[3], head_rows, layers)
     plot_gate_on_axis(axes[4], gate_rows, marker_rows, show_formula=True)
     plot_caption_or_formula_on_axis(axes[5], caption_text)
     fig.text(0.5, 0.985, "Phase 1: offline head-pool selection", ha="center", va="top", color=COLORS["dark"], fontsize=9.2, weight="bold")
@@ -885,7 +884,15 @@ def plot_offline_selection_formula_on_axis(ax, head_rows, layers):
 
 def text_head_example(head_rows):
     candidates = selected_rows(head_rows) or head_rows
-    return max(candidates, key=lambda row: as_float(row, "text_mass_all") * as_float(row, "contrast_percentile"))
+    return max(candidates, key=lambda row: as_float(row, "text_mass_all"))
+
+
+def contrastive_head_example(head_rows):
+    candidates = selected_rows(head_rows) or head_rows
+    return max(
+        candidates,
+        key=lambda row: as_float(row, "bounded_ratio_hallucinated") - as_float(row, "bounded_ratio_grounded"),
+    )
 
 
 def plot_high_text_head_on_axis(ax, head_rows):
@@ -907,6 +914,62 @@ def plot_high_text_head_on_axis(ax, head_rows):
     ax.legend(frameon=False, loc="lower left", bbox_to_anchor=(0.0, 0.01), handlelength=1.0, handletextpad=0.25, borderpad=0.1)
     for idx, value in enumerate(text):
         ax.text(idx, min(0.97, system[idx] + image[idx] + value - 0.06), f"T={value:.2f}", ha="center", va="top", color="white", fontsize=6.0, weight="bold")
+
+
+def plot_contrastive_head_on_axis(ax, head_rows):
+    row = contrastive_head_example(head_rows)
+    labels = ["grounded", "hall."]
+    ratios = np.array(
+        [as_float(row, "bounded_ratio_grounded"), as_float(row, "bounded_ratio_hallucinated")],
+        dtype=np.float64,
+    )
+    colors = [COLORS["ground"], COLORS["hall"]]
+    x = np.arange(len(labels))
+    ax.bar(x, ratios, color=colors, alpha=0.72, width=0.55)
+    ax.set_title(f"C. Contrastive head {row.get('head_key', '')}")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel(r"$r=T/(T+I)$")
+    ax.set_ylim(0, 1.0)
+    ax.grid(axis="y")
+    for idx, value in enumerate(ratios):
+        ax.text(idx, value + 0.035, f"{value:.2f}", ha="center", va="bottom", color=colors[idx], fontsize=7.0, weight="bold")
+    gap = ratios[1] - ratios[0]
+    ax.annotate(
+        "",
+        xy=(1, ratios[1] + 0.11),
+        xytext=(0, ratios[0] + 0.11),
+        arrowprops=dict(arrowstyle="->", lw=1.0, color=COLORS["dark"]),
+    )
+    ax.text(0.5, min(0.96, max(ratios) + 0.16), rf"$\Delta r={gap:.2f}$", ha="center", va="bottom", color=COLORS["dark"], fontsize=7.0)
+
+
+def plot_head_selection_score_on_axis(ax, head_rows, layers):
+    layer_set = set(layers)
+    if layer_set:
+        allowed = [row for row in head_rows if as_int(row, "layer") in layer_set]
+    else:
+        allowed = list(head_rows)
+    selected = [row for row in allowed if as_int(row, "selected") == 1]
+    rejected = [row for row in allowed if as_int(row, "selected") != 1]
+    selected_scores = np.array([as_float(row, "score") for row in selected], dtype=np.float64)
+    rejected_scores = np.array([as_float(row, "score") for row in rejected], dtype=np.float64)
+    bins = np.linspace(0, 1.0, 28)
+    if len(rejected_scores):
+        ax.hist(rejected_scores, bins=bins, color=COLORS["tail"], alpha=0.82, linewidth=0, label="not selected")
+    if len(selected_scores):
+        ax.hist(selected_scores, bins=bins, histtype="stepfilled", color=COLORS["score"], alpha=0.52, linewidth=0, label="selected")
+        cutoff = float(np.min(selected_scores))
+        ax.axvline(cutoff, color=COLORS["score"], linestyle="--", linewidth=1.0)
+        ax.text(cutoff + 0.015, 0.92, f"cutoff {cutoff:.2f}", ha="left", va="top", color=COLORS["score"], fontsize=6.2, transform=ax.get_xaxis_transform())
+    layer_text = f"L{min(layers)}-L{max(layers)}" if layers else "all layers"
+    ax.set_title(f"D. Select Top-{len(selected)}")
+    ax.set_xlabel(r"fused score $S(l,h)$")
+    ax.set_ylabel("heads")
+    ax.set_xlim(0, 1.0)
+    ax.grid(axis="y")
+    ax.legend(frameon=False, loc="upper left", handlelength=1.0, borderpad=0.1, handletextpad=0.25)
+    ax.text(0.98, 0.82, layer_text, ha="right", va="top", color="#b45309", fontsize=7.0, weight="bold", transform=ax.transAxes)
 
 
 def plot_hall_ground_ratio_on_axis(ax, ratio_rows):
