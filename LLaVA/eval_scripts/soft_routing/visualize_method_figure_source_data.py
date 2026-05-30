@@ -788,6 +788,7 @@ def figure_overview_panel(source, output_dir, formats, layers):
 
 def figure_method_claim_panel(source, output_dir, formats, layers, caption_text):
     head_rows = source["head_rows"]
+    ratio_rows = source["ratio_rows"]
     gate_rows = source["gate_curve"]
     marker_rows = source["gate_markers"]
 
@@ -801,14 +802,14 @@ def figure_method_claim_panel(source, output_dir, formats, layers, caption_text)
         fig.add_subplot(gs[1, 0:2]),
         fig.add_subplot(gs[1, 2:4]),
     ]
-    plot_text_mass_distribution_on_axis(axes[0], head_rows)
-    plot_contrastive_distribution_on_axis(axes[1], head_rows)
-    plot_layer_window_profile_on_axis(axes[2], head_rows, layers)
-    plot_rank_fusion_readable_on_axis(axes[3], head_rows, layers)
-    plot_gate_on_axis(axes[4], gate_rows, marker_rows)
+    plot_offline_selection_formula_on_axis(axes[0], head_rows, layers)
+    plot_high_text_head_on_axis(axes[1], head_rows)
+    plot_hall_ground_ratio_on_axis(axes[2], ratio_rows)
+    plot_layer_window_profile_on_axis(axes[3], head_rows, layers)
+    plot_gate_on_axis(axes[4], gate_rows, marker_rows, show_formula=True)
     plot_caption_or_formula_on_axis(axes[5], caption_text)
-    fig.text(0.5, 0.985, "Phase 1: why this head pool?", ha="center", va="top", color=COLORS["dark"], fontsize=9.2, weight="bold")
-    fig.text(0.5, 0.455, "Phase 2: how suppression is applied", ha="center", va="top", color=COLORS["dark"], fontsize=9.2, weight="bold")
+    fig.text(0.5, 0.985, "Phase 1: offline head-pool selection", ha="center", va="top", color=COLORS["dark"], fontsize=9.2, weight="bold")
+    fig.text(0.5, 0.455, "Phase 2: dynamic suppression", ha="center", va="top", color=COLORS["dark"], fontsize=9.2, weight="bold")
     fig.add_artist(plt.Line2D([0.03, 0.97], [0.955, 0.955], transform=fig.transFigure, color=COLORS["grid"], linewidth=1.0))
     fig.add_artist(plt.Line2D([0.03, 0.97], [0.427, 0.427], transform=fig.transFigure, color=COLORS["grid"], linewidth=1.0))
     return save_figure(fig, output_dir, "method_claim_compact_panel", formats)
@@ -843,6 +844,100 @@ def plot_contrastive_specificity_on_axis(ax, head_rows):
     ax.set_ylabel(r"$\log(1+C_{\mathrm{toi}})$")
     ax.set_xlim(0, len(values))
     ax.grid(axis="y")
+
+
+def plot_offline_selection_formula_on_axis(ax, head_rows, layers):
+    selected = selected_rows(head_rows)
+    top_k = len(selected)
+    layer_text = f"L{min(layers)}-L{max(layers)}" if layers else "all layers"
+    ax.axis("off")
+    ax.set_title("A. Offline score")
+    boxes = [
+        (
+            0.03,
+            0.68,
+            r"$I_{\mathrm{text}}(l,h)=\mathbb{E}_t\sum_{j\in T}A_{t,l,h,j}$",
+            "text leverage",
+            COLORS["text"],
+        ),
+        (
+            0.03,
+            0.43,
+            r"$C_{\mathrm{toi}}(l,h)=\mathbb{E}_{H}r-\mathbb{E}_{G}r,\quad r=\frac{T}{I+\epsilon}$",
+            "hallucination contrast",
+            COLORS["image"],
+        ),
+        (
+            0.03,
+            0.18,
+            r"$S(l,h)=\frac{1}{2}P(I_{\mathrm{text}})+\frac{1}{2}P(C_{\mathrm{toi}})$",
+            f"Top-{top_k} in {layer_text}",
+            COLORS["score"],
+        ),
+    ]
+    for x, y, formula, label, color in boxes:
+        ax.add_patch(Rectangle((x, y), 0.94, 0.19, transform=ax.transAxes, facecolor="white", edgecolor=color, linewidth=1.0))
+        ax.text(x + 0.03, y + 0.125, formula, ha="left", va="center", color=COLORS["dark"], fontsize=6.4, transform=ax.transAxes)
+        ax.text(x + 0.03, y + 0.045, label, ha="left", va="center", color=color, fontsize=5.9, transform=ax.transAxes)
+    for y0, y1 in [(0.68, 0.62), (0.43, 0.37)]:
+        ax.annotate("", xy=(0.50, y1), xytext=(0.50, y0), xycoords=ax.transAxes, arrowprops=dict(arrowstyle="->", lw=0.9, color=COLORS["muted"]))
+
+
+def text_head_example(head_rows):
+    candidates = selected_rows(head_rows) or head_rows
+    return max(candidates, key=lambda row: as_float(row, "text_mass_all") * as_float(row, "contrast_percentile"))
+
+
+def plot_high_text_head_on_axis(ax, head_rows):
+    row = text_head_example(head_rows)
+    labels = ["grounded", "hallucinated"]
+    text = np.array([as_float(row, "text_mass_grounded"), as_float(row, "text_mass_hallucinated")], dtype=np.float64)
+    image = np.array([as_float(row, "image_mass_grounded"), as_float(row, "image_mass_hallucinated")], dtype=np.float64)
+    system = np.maximum(1.0 - text - image, 0.0)
+    x = np.arange(len(labels))
+    ax.bar(x, system, color=COLORS["system"], alpha=0.72, width=0.55, label="system/other")
+    ax.bar(x, image, bottom=system, color=COLORS["image"], alpha=0.82, width=0.55, label="image")
+    ax.bar(x, text, bottom=system + image, color=COLORS["text"], alpha=0.86, width=0.55, label="text")
+    ax.set_title(f"B. High text head {row.get('head_key', '')}")
+    ax.set_xticks(x)
+    ax.set_xticklabels(["grounded", "hall."])
+    ax.set_ylabel("attention mass")
+    ax.set_ylim(0, 1.0)
+    ax.grid(axis="y")
+    ax.legend(frameon=False, loc="lower left", bbox_to_anchor=(0.0, 0.01), handlelength=1.0, handletextpad=0.25, borderpad=0.1)
+    for idx, value in enumerate(text):
+        ax.text(idx, min(0.97, system[idx] + image[idx] + value - 0.06), f"T={value:.2f}", ha="center", va="top", color="white", fontsize=6.0, weight="bold")
+
+
+def plot_hall_ground_ratio_on_axis(ax, ratio_rows):
+    grouped = ratio_values(ratio_rows, "bounded_ratio")
+    bins = np.linspace(0.45, 1.0, 32)
+    medians = {}
+    for label, color, alpha in [("grounded", COLORS["ground"], 0.32), ("hallucinated", COLORS["hall"], 0.32)]:
+        values = grouped.get(label, np.array([], dtype=np.float64))
+        if not values.size:
+            continue
+        ax.hist(values, bins=bins, density=True, histtype="stepfilled", alpha=alpha, color=color, edgecolor=color, linewidth=0.7, label=label)
+        median = float(np.median(values))
+        medians[label] = median
+        ax.axvline(median, color=color, linewidth=1.3)
+    ax.set_title("C. Hall vs grounded contrast")
+    ax.set_xlabel(r"$r=T/(T+I)$")
+    ax.set_ylabel("density")
+    ax.set_xlim(0.45, 1.0)
+    ax.grid(axis="y")
+    ax.legend(frameon=False, loc="upper left", handlelength=1.2, borderpad=0.1, handletextpad=0.3)
+    if "grounded" in medians and "hallucinated" in medians:
+        ax.text(
+            0.98,
+            0.92,
+            f"median: {medians['grounded']:.3f} -> {medians['hallucinated']:.3f}",
+            ha="right",
+            va="top",
+            color=COLORS["dark"],
+            fontsize=6.1,
+            transform=ax.transAxes,
+        )
 
 
 def plot_distribution_overlay(ax, all_values, selected_values, bins, colors, labels):
@@ -925,7 +1020,7 @@ def plot_layer_window_profile_on_axis(ax, head_rows, layers):
         ax.axvspan(min(layers) - 0.5, max(layers) + 0.5, color=COLORS["window"], zorder=0)
     ax.plot(layer_ids, mean_score, color=COLORS["score"], linewidth=1.6, marker="o", markersize=2.4, label="fused score")
     ax.plot(layer_ids, mean_text, color=COLORS["text"], linewidth=1.25, marker="o", markersize=2.0, label="text leverage")
-    ax.set_title("C. Layer window")
+    ax.set_title("D. Layer window")
     ax.set_xlabel("layer")
     ax.set_ylabel("mean percentile")
     ax.set_ylim(0.0, 1.02)
@@ -1094,7 +1189,7 @@ def plot_rank_fusion_scatter_on_axis(ax, head_rows, layers):
     ax.legend(frameon=False, loc="lower left", handletextpad=0.1, borderpad=0.1)
 
 
-def plot_gate_on_axis(ax, gate_rows, marker_rows):
+def plot_gate_on_axis(ax, gate_rows, marker_rows, show_formula=False):
     xs = np.array([as_float(row, "r_online") for row in gate_rows], dtype=np.float64)
     ys = np.array([as_float(row, "gate") for row in gate_rows], dtype=np.float64)
     if xs.size == 0:
@@ -1111,6 +1206,17 @@ def plot_gate_on_axis(ax, gate_rows, marker_rows):
     ax.set_ylabel(r"$g$")
     ax.set_xlim(0.5, 1.0)
     ax.grid(axis="y")
+    if show_formula:
+        ax.text(
+            0.03,
+            0.94,
+            r"$\delta=\mathrm{clip}(S(l,h)\exp(q(r-\tau)),0,1)$",
+            ha="left",
+            va="top",
+            color=COLORS["dark"],
+            fontsize=7.0,
+            transform=ax.transAxes,
+        )
 
 
 def plot_caption_or_formula_on_axis(ax, caption_text):
