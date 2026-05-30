@@ -791,8 +791,8 @@ def figure_method_claim_panel(source, output_dir, formats, layers, caption_text)
     gate_rows = source["gate_curve"]
     marker_rows = source["gate_markers"]
 
-    fig = plt.figure(figsize=(9.4, 4.35))
-    gs = fig.add_gridspec(2, 4, height_ratios=[1.0, 0.86], wspace=0.48, hspace=0.76)
+    fig = plt.figure(figsize=(9.8, 4.45))
+    gs = fig.add_gridspec(2, 4, height_ratios=[1.0, 0.86], wspace=0.50, hspace=0.78)
     axes = [
         fig.add_subplot(gs[0, 0]),
         fig.add_subplot(gs[0, 1]),
@@ -801,11 +801,10 @@ def figure_method_claim_panel(source, output_dir, formats, layers, caption_text)
         fig.add_subplot(gs[1, 0:2]),
         fig.add_subplot(gs[1, 2:4]),
     ]
-    plot_text_mass_on_axis(axes[0], head_rows)
-    plot_contrastive_specificity_on_axis(axes[1], head_rows)
-    plot_rank_fusion_scatter_on_axis(axes[2], head_rows, layers)
-    axes[2].set_title("C. Rank fusion")
-    plot_selected_head_map_on_axis(axes[3], head_rows, layers)
+    plot_text_mass_distribution_on_axis(axes[0], head_rows)
+    plot_contrastive_distribution_on_axis(axes[1], head_rows)
+    plot_layer_window_profile_on_axis(axes[2], head_rows, layers)
+    plot_rank_fusion_readable_on_axis(axes[3], head_rows, layers)
     plot_gate_on_axis(axes[4], gate_rows, marker_rows)
     plot_caption_or_formula_on_axis(axes[5], caption_text)
     fig.text(0.5, 0.985, "Phase 1: why this head pool?", ha="center", va="top", color=COLORS["dark"], fontsize=9.2, weight="bold")
@@ -844,6 +843,145 @@ def plot_contrastive_specificity_on_axis(ax, head_rows):
     ax.set_ylabel(r"$\log(1+C_{\mathrm{toi}})$")
     ax.set_xlim(0, len(values))
     ax.grid(axis="y")
+
+
+def plot_distribution_overlay(ax, all_values, selected_values, bins, colors, labels):
+    ax.hist(all_values, bins=bins, density=True, color=COLORS["tail"], alpha=0.78, linewidth=0, label=labels[0])
+    if len(selected_values):
+        ax.hist(selected_values, bins=bins, density=True, histtype="step", color=colors[1], linewidth=1.6, label=labels[1])
+        ax.axvline(float(np.median(selected_values)), color=colors[1], linewidth=1.2)
+    if len(all_values):
+        ax.axvline(float(np.median(all_values)), color=COLORS["muted"], linewidth=0.9, linestyle=":")
+    ax.grid(axis="y")
+    ax.legend(frameon=False, loc="upper right", handlelength=1.2, borderpad=0.1, handletextpad=0.3)
+
+
+def plot_text_mass_distribution_on_axis(ax, head_rows):
+    all_values = np.array([as_float(row, "text_mass_all") for row in head_rows], dtype=np.float64)
+    selected_values = np.array([as_float(row, "text_mass_all") for row in selected_rows(head_rows)], dtype=np.float64)
+    plot_distribution_overlay(
+        ax,
+        all_values,
+        selected_values,
+        np.linspace(0.0, 1.0, 28),
+        (COLORS["tail"], COLORS["text"]),
+        ("all heads", "selected"),
+    )
+    ax.set_title("A. Text leverage")
+    ax.set_xlabel(r"$I_{\mathrm{text}}$")
+    ax.set_ylabel("density")
+    ax.set_xlim(0.0, 1.0)
+    if len(selected_values):
+        ax.text(
+            0.98,
+            0.72,
+            f"selected median\n{np.median(selected_values):.2f}",
+            ha="right",
+            va="top",
+            color=COLORS["text"],
+            fontsize=6.0,
+            transform=ax.transAxes,
+        )
+
+
+def plot_contrastive_distribution_on_axis(ax, head_rows):
+    all_values = np.array([math.log1p(positive_contrast(row)) for row in head_rows], dtype=np.float64)
+    selected_values = np.array([math.log1p(positive_contrast(row)) for row in selected_rows(head_rows)], dtype=np.float64)
+    upper = max(0.2, float(np.percentile(all_values, 99.5)))
+    plot_distribution_overlay(
+        ax,
+        np.clip(all_values, 0.0, upper),
+        np.clip(selected_values, 0.0, upper),
+        np.linspace(0.0, upper, 28),
+        (COLORS["tail"], COLORS["image"]),
+        ("all heads", "selected"),
+    )
+    ax.set_title("B. Contrastive specificity")
+    ax.set_xlabel(r"$\log(1+C_{\mathrm{toi}}^+)$")
+    ax.set_ylabel("density")
+    ax.set_xlim(0.0, upper)
+    if len(selected_values):
+        ax.text(
+            0.98,
+            0.72,
+            f"selected median\n{np.median(selected_values):.2f}",
+            ha="right",
+            va="top",
+            color=COLORS["image"],
+            fontsize=6.0,
+            transform=ax.transAxes,
+        )
+
+
+def plot_layer_window_profile_on_axis(ax, head_rows, layers):
+    by_layer = defaultdict(list)
+    for row in head_rows:
+        by_layer[as_int(row, "layer")].append(row)
+    layer_ids = sorted(by_layer)
+    mean_score = np.array([mean(as_float(row, "score") for row in by_layer[layer]) for layer in layer_ids], dtype=np.float64)
+    mean_text = np.array([mean(as_float(row, "text_percentile") for row in by_layer[layer]) for layer in layer_ids], dtype=np.float64)
+    ax.axvspan(-0.5, 1.5, color="#f8fafc", zorder=0)
+    if layers:
+        ax.axvspan(min(layers) - 0.5, max(layers) + 0.5, color=COLORS["window"], zorder=0)
+    ax.plot(layer_ids, mean_score, color=COLORS["score"], linewidth=1.6, marker="o", markersize=2.4, label="fused score")
+    ax.plot(layer_ids, mean_text, color=COLORS["text"], linewidth=1.25, marker="o", markersize=2.0, label="text leverage")
+    ax.set_title("C. Layer window")
+    ax.set_xlabel("layer")
+    ax.set_ylabel("mean percentile")
+    ax.set_ylim(0.0, 1.02)
+    ax.set_xlim(min(layer_ids) - 0.5, max(layer_ids) + 0.5)
+    ax.set_xticks([0, 8, 16, 24, 31])
+    ax.grid(axis="y")
+    ax.legend(frameon=False, loc="lower right", handlelength=1.4)
+    ax.text(0.7, 0.96, "early\nsink", ha="center", va="top", color=COLORS["muted"], fontsize=5.8)
+    if layers:
+        ax.text(
+            (min(layers) + max(layers)) / 2,
+            0.97,
+            f"used L{min(layers)}-L{max(layers)}",
+            ha="center",
+            va="top",
+            color="#b45309",
+            fontsize=6.2,
+            weight="bold",
+        )
+
+
+def plot_rank_fusion_readable_on_axis(ax, head_rows, layers):
+    layer_set = set(layers)
+    selected = [row for row in head_rows if as_int(row, "selected") == 1]
+    window = [row for row in head_rows if as_int(row, "layer") in layer_set and as_int(row, "selected") != 1]
+    outside = [row for row in head_rows if as_int(row, "layer") not in layer_set]
+    ax.add_patch(Rectangle((0.65, 0.65), 0.35, 0.35, facecolor="#ede9fe", edgecolor="none", zorder=0))
+    for rows, color, alpha, size, label, zorder in [
+        (outside, COLORS["tail"], 0.24, 7, "outside", 1),
+        (window, "#fbbf24", 0.55, 9, "L-window", 2),
+        (selected, COLORS["score"], 0.88, 15, "selected", 3),
+    ]:
+        if not rows:
+            continue
+        ax.scatter(
+            [as_float(row, "text_percentile") for row in rows],
+            [as_float(row, "contrast_percentile") for row in rows],
+            s=size,
+            color=color,
+            alpha=alpha,
+            linewidths=0,
+            label=label,
+            zorder=zorder,
+        )
+    ax.axvline(0.65, color=COLORS["grid"], linestyle="--", linewidth=0.8)
+    ax.axhline(0.65, color=COLORS["grid"], linestyle="--", linewidth=0.8)
+    ax.text(0.98, 0.97, "high-high\nselected", ha="right", va="top", color=COLORS["score"], fontsize=6.0)
+    ax.text(0.95, 0.18, "text-only", ha="right", va="center", color=COLORS["text"], fontsize=5.8)
+    ax.text(0.18, 0.92, "specific-only", ha="center", va="top", color=COLORS["image"], fontsize=5.8)
+    ax.set_title("D. Fusion-selected pool")
+    ax.set_xlabel("text leverage percentile")
+    ax.set_ylabel("contrast percentile")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.grid(True)
+    ax.legend(frameon=False, loc="lower left", handletextpad=0.1, borderpad=0.1)
 
 
 def plot_ratio_on_axis(ax, ratio_rows):
