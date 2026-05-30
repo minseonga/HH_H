@@ -815,6 +815,151 @@ def figure_method_claim_panel(source, output_dir, formats, layers, caption_text)
     return save_figure(fig, output_dir, "method_claim_compact_panel", formats)
 
 
+def percentile_bin_label(lo, hi):
+    if hi == 1.0:
+        return f"{int(lo * 100)}-100"
+    return f"{int(lo * 100)}-{int(hi * 100)}"
+
+
+def percentile_bin_rows(head_rows, key, bins):
+    grouped = []
+    for lo, hi in bins:
+        rows = [
+            row
+            for row in head_rows
+            if as_float(row, key) >= lo and (as_float(row, key) < hi if hi < 1.0 else as_float(row, key) <= hi)
+        ]
+        grouped.append((lo, hi, rows))
+    return grouped
+
+
+def figure_feature_rationale_panel(source, output_dir, formats):
+    head_rows = source["head_rows"]
+    bins = [(0.0, 0.50), (0.50, 0.75), (0.75, 0.90), (0.90, 0.95), (0.95, 0.99), (0.99, 1.0)]
+    labels = [percentile_bin_label(lo, hi) for lo, hi in bins]
+    x = np.arange(len(labels))
+
+    fig, axes = plt.subplots(1, 3, figsize=(9.8, 3.15), gridspec_kw={"width_ratios": [1.12, 1.12, 0.86]})
+    fig.subplots_adjust(wspace=0.42)
+
+    text_groups = percentile_bin_rows(head_rows, "text_percentile", bins)
+    text_ground = np.array([mean(as_float(row, "text_mass_grounded") for row in rows) for _, _, rows in text_groups])
+    text_hall = np.array([mean(as_float(row, "text_mass_hallucinated") for row in rows) for _, _, rows in text_groups])
+    image_mean = np.array(
+        [
+            mean((as_float(row, "image_mass_grounded") + as_float(row, "image_mass_hallucinated")) / 2.0 for row in rows)
+            for _, _, rows in text_groups
+        ]
+    )
+    ax = axes[0]
+    ax.plot(x, text_ground, marker="o", color=COLORS["ground"], linewidth=1.8, label="grounded object")
+    ax.plot(x, text_hall, marker="o", color=COLORS["hall"], linewidth=1.8, label="hallucinated object")
+    ax.plot(x, image_mean, marker="o", color=COLORS["image"], linewidth=1.25, linestyle="--", label="image mass")
+    ax.fill_between(x, text_ground, text_hall, color=COLORS["text"], alpha=0.10, linewidth=0)
+    ax.set_title("A. Text mass is an actuator axis")
+    ax.set_ylabel("attention mass")
+    ax.set_xlabel("heads binned by text-mass percentile")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=28, ha="right")
+    ax.set_ylim(0.0, 1.0)
+    ax.grid(axis="y")
+    ax.legend(frameon=False, loc="upper left")
+    ax.text(
+        0.98,
+        0.50,
+        "not a hall detector:\nH/G move together",
+        transform=ax.transAxes,
+        ha="right",
+        va="center",
+        color=COLORS["muted"],
+        fontsize=6.1,
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 1.4},
+    )
+
+    contrast_groups = percentile_bin_rows(head_rows, "contrast_percentile", bins)
+    raw_ground = np.array([mean(math.log1p(as_float(row, "raw_toi_grounded")) for row in rows) for _, _, rows in contrast_groups])
+    raw_hall = np.array([mean(math.log1p(as_float(row, "raw_toi_hallucinated")) for row in rows) for _, _, rows in contrast_groups])
+    ax = axes[1]
+    ax.plot(x, raw_ground, marker="o", color=COLORS["ground"], linewidth=1.8, label="grounded object")
+    ax.plot(x, raw_hall, marker="o", color=COLORS["hall"], linewidth=1.8, label="hallucinated object")
+    ax.fill_between(x, raw_ground, raw_hall, where=raw_hall >= raw_ground, color=COLORS["hall"], alpha=0.14, linewidth=0)
+    ax.set_title("B. Contrastive score is a specificity axis")
+    ax.set_ylabel(r"mean $\log(1+T/I)$")
+    ax.set_xlabel("heads binned by contrastive percentile")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=28, ha="right")
+    ax.grid(axis="y")
+    ax.legend(frameon=False, loc="upper left")
+    gap = raw_hall[-1] - raw_ground[-1]
+    ax.annotate(
+        "hall-specific\ngap opens",
+        xy=(x[-1], raw_hall[-1]),
+        xytext=(x[-2] - 0.05, raw_hall[-1] - 0.55),
+        arrowprops=dict(arrowstyle="->", color=COLORS["hall"], linewidth=0.9),
+        color=COLORS["hall"],
+        fontsize=6.5,
+        ha="right",
+        va="top",
+    )
+    ax.text(
+        0.98,
+        0.08,
+        rf"top-bin log gap={gap:.2f}",
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        color=COLORS["muted"],
+        fontsize=6.3,
+    )
+
+    threshold = 0.65
+    matrix_score = np.zeros((2, 2), dtype=np.float64)
+    matrix_selected = np.zeros((2, 2), dtype=np.float64)
+    matrix_count = np.zeros((2, 2), dtype=np.int64)
+    for text_high in (0, 1):
+        for contrast_high in (0, 1):
+            rows = [
+                row
+                for row in head_rows
+                if (as_float(row, "text_percentile") >= threshold) == bool(text_high)
+                and (as_float(row, "contrast_percentile") >= threshold) == bool(contrast_high)
+            ]
+            y_idx = contrast_high
+            x_idx = text_high
+            matrix_score[y_idx, x_idx] = mean(as_float(row, "score") for row in rows)
+            matrix_selected[y_idx, x_idx] = mean(as_int(row, "selected") for row in rows)
+            matrix_count[y_idx, x_idx] = len(rows)
+    ax = axes[2]
+    im = ax.imshow(matrix_score, origin="lower", cmap="Purples", vmin=0.0, vmax=1.0)
+    for y_idx in range(2):
+        for x_idx in range(2):
+            ax.text(
+                x_idx,
+                y_idx,
+                f"S={matrix_score[y_idx, x_idx]:.2f}\nsel={matrix_selected[y_idx, x_idx]:.0%}\nn={matrix_count[y_idx, x_idx]}",
+                ha="center",
+                va="center",
+                color="white" if matrix_score[y_idx, x_idx] > 0.62 else COLORS["dark"],
+                fontsize=7.0,
+                weight="bold",
+            )
+    ax.set_xticks([0, 1])
+    ax.set_xticklabels(["low text", "high text"])
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(["low contrast", "high contrast"])
+    ax.set_title("C. Fusion favors high-high heads")
+    ax.set_xlabel("text leverage")
+    ax.set_ylabel("hall-specificity")
+    ax.text(0.98, 0.96, f"threshold={threshold:.2f}", transform=ax.transAxes, ha="right", va="top", color=COLORS["muted"], fontsize=6.2)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.048, pad=0.035)
+    cbar.set_label("mean fused score")
+
+    fig.suptitle("Why text mass and contrastive bias are useful feature axes", y=1.02, fontsize=10.0, weight="bold", color=COLORS["dark"])
+    return save_figure(fig, output_dir, "method_feature_rationale_panel", formats)
+
+
 SVG = {
     "bg": "#141412",
     "panel": "#1d1d1a",
@@ -1738,6 +1883,7 @@ def main():
     if not args.no_overview_panel:
         figures["method_phase_overview_panel"] = figure_overview_panel(source, output_dir, formats, layers)
         figures["method_claim_compact_panel"] = figure_method_claim_panel(source, output_dir, formats, layers, caption_text)
+        figures["method_feature_rationale_panel"] = figure_feature_rationale_panel(source, output_dir, formats)
         figures["method_teaser_dark"] = figure_method_teaser_dark_svg(source, output_dir, layers, caption_text)
 
     numeric_summary = build_numeric_summary(source, ratio_stats, delta_stats, layers)
