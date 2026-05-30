@@ -6,6 +6,7 @@ import math
 import os
 import textwrap
 from collections import defaultdict
+from xml.sax.saxutils import escape as xml_escape
 
 os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/matplotlib")
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
@@ -814,6 +815,319 @@ def figure_method_claim_panel(source, output_dir, formats, layers, caption_text)
     return save_figure(fig, output_dir, "method_claim_compact_panel", formats)
 
 
+SVG = {
+    "bg": "#141412",
+    "panel": "#1d1d1a",
+    "panel2": "#24231f",
+    "stroke": "#4b4a43",
+    "muted": "#a5a197",
+    "text": "#f7f2e8",
+    "blue": "#78aee8",
+    "orange": "#f09a72",
+    "purple": "#a98bff",
+    "green": "#55c7a5",
+    "red": "#ea6b6b",
+    "yellow": "#f6c95d",
+    "gray": "#7f8794",
+}
+
+
+def svg_attr(value):
+    return xml_escape(str(value), {'"': "&quot;"})
+
+
+def svg_text(x, y, value, size=9, fill=None, weight="", anchor="start", family="Inter,Arial,sans-serif"):
+    fill = fill or SVG["text"]
+    weight_attr = f' font-weight="{svg_attr(weight)}"' if weight else ""
+    return (
+        f'<text x="{x:.2f}" y="{y:.2f}" fill="{fill}" font-family="{family}" '
+        f'font-size="{size}" text-anchor="{anchor}"{weight_attr}>{xml_escape(str(value))}</text>'
+    )
+
+
+def svg_multiline(x, y, lines, size=8, fill=None, line_height=11, weight="", anchor="start"):
+    out = []
+    for idx, line in enumerate(lines):
+        out.append(svg_text(x, y + idx * line_height, line, size=size, fill=fill, weight=weight, anchor=anchor))
+    return "\n".join(out)
+
+
+def svg_rect(x, y, w, h, fill, stroke=None, rx=8, width=1.0, dash=""):
+    stroke_attr = f' stroke="{stroke}" stroke-width="{width}"' if stroke else ""
+    dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
+    return f'<rect x="{x:.2f}" y="{y:.2f}" width="{w:.2f}" height="{h:.2f}" rx="{rx}" fill="{fill}"{stroke_attr}{dash_attr}/>'
+
+
+def svg_line(x1, y1, x2, y2, stroke, width=1.0, dash="", marker=False):
+    dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
+    marker_attr = ' marker-end="url(#arrow)"' if marker else ""
+    return (
+        f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
+        f'stroke="{stroke}" stroke-width="{width}"{dash_attr}{marker_attr}/>'
+    )
+
+
+def svg_polyline(points, stroke, width=1.5, fill="none"):
+    payload = " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
+    return f'<polyline points="{payload}" fill="{fill}" stroke="{stroke}" stroke-width="{width}" stroke-linecap="round" stroke-linejoin="round"/>'
+
+
+def teaser_card(x, y, w, h, title, lines, color, title_size=8.2):
+    out = [
+        svg_rect(x, y, w, h, SVG["panel2"], color, rx=7, width=1.2),
+        svg_text(x + 9, y + 14, title, size=title_size, fill=color, weight="700"),
+    ]
+    out.append(svg_multiline(x + 9, y + 29, lines, size=7.2, fill=SVG["text"], line_height=10))
+    return "\n".join(out)
+
+
+def teaser_stacked_bar(x, y, w, h, parts):
+    out = []
+    cursor = y + h
+    for value, color, label in parts:
+        seg_h = max(0.0, h * value)
+        cursor -= seg_h
+        out.append(svg_rect(x, cursor, w, seg_h, color, stroke=None, rx=1))
+        if seg_h > 10 and label:
+            out.append(svg_text(x + w / 2, cursor + seg_h / 2 + 3, label, size=6.5, fill="#141412", weight="700", anchor="middle"))
+    out.append(svg_rect(x, y, w, h, "none", SVG["stroke"], rx=2, width=0.7))
+    return "\n".join(out)
+
+
+def teaser_layer_strip(head_rows, layers, x, y, w, h):
+    by_layer = defaultdict(float)
+    selected_counts = defaultdict(int)
+    selected_scores = defaultdict(float)
+    for row in head_rows:
+        layer = as_int(row, "layer")
+        by_layer[layer] += as_float(row, "score")
+        if as_int(row, "selected") == 1:
+            selected_counts[layer] += 1
+            selected_scores[layer] += as_float(row, "score")
+    max_layer = max(by_layer) if by_layer else 31
+    values = [selected_scores.get(layer, 0.0) for layer in range(max_layer + 1)]
+    max_value = max(values) if values else 1.0
+    max_value = max(max_value, 1e-6)
+    out = [svg_rect(x, y, w, h, "#181815", SVG["stroke"], rx=7, width=0.9)]
+    if layers:
+        start, end = min(layers), max(layers)
+        cell = w / (max_layer + 1)
+        out.append(svg_rect(x + start * cell, y + 2, (end - start + 1) * cell, h - 4, "#32291c", SVG["yellow"], rx=4, width=0.8))
+    for layer, value in enumerate(values):
+        cell = w / (max_layer + 1)
+        bar_h = (h - 18) * value / max_value
+        bx = x + layer * cell + 1.0
+        by = y + h - 8 - bar_h
+        color = SVG["purple"] if selected_counts.get(layer, 0) else "#34342f"
+        out.append(svg_rect(bx, by, max(1.5, cell - 2.0), bar_h, color, stroke=None, rx=1))
+    out.append(svg_text(x + 8, y + 14, "Selected score mass by layer", size=7.4, fill=SVG["muted"], weight="700"))
+    if layers:
+        out.append(svg_text(x + w - 8, y + 14, f"actuation window L{min(layers)}-L{max(layers)}", size=7.4, fill=SVG["yellow"], weight="700", anchor="end"))
+    return "\n".join(out)
+
+
+def teaser_gate_curve(gate_rows, marker_rows, x, y, w, h):
+    rows = [
+        row
+        for row in gate_rows
+        if math.isfinite(as_float(row, "r_online")) and math.isfinite(as_float(row, "gate"))
+    ]
+    if not rows:
+        return ""
+    x_min, x_max = 0.5, 1.0
+    y_max = max(1.0, max(as_float(row, "gate") for row in rows) * 1.04)
+
+    def sx(value):
+        return x + (float(value) - x_min) / (x_max - x_min) * w
+
+    def sy(value):
+        return y + h - float(value) / y_max * h
+
+    points = [(sx(as_float(row, "r_online")), sy(as_float(row, "gate"))) for row in rows]
+    tau = as_float(rows[0], "tau", 0.9)
+    out = [
+        svg_rect(x - 8, y - 20, w + 16, h + 36, "#181815", SVG["stroke"], rx=7, width=0.9),
+        svg_text(x, y - 7, "Online gate", size=8, fill=SVG["text"], weight="700"),
+        svg_line(x, y + h, x + w, y + h, SVG["stroke"], width=0.8),
+        svg_line(x, y, x, y + h, SVG["stroke"], width=0.8),
+        svg_polyline(points, SVG["purple"], width=2.0),
+        svg_line(sx(tau), y, sx(tau), y + h, SVG["red"], width=1.0, dash="3 3"),
+        svg_text(sx(tau) + 4, y + 10, "tau=0.9", size=6.5, fill=SVG["red"]),
+    ]
+    for row in marker_rows:
+        label = row.get("label", "")
+        color = SVG["red"] if label == "hallucinated" else SVG["green"]
+        px = sx(as_float(row, "bounded_ratio_median"))
+        py = sy(as_float(row, "gate_at_median"))
+        out.append(f'<circle cx="{px:.2f}" cy="{py:.2f}" r="3.3" fill="{color}" stroke="#ffffff" stroke-width="0.8"/>')
+        out.append(svg_text(px + 5, py - 4, "hall" if label == "hallucinated" else "ground", size=6.2, fill=color, weight="700"))
+    out.append(svg_text(x + w / 2, y + h + 13, "r = T / (T + I)", size=6.6, fill=SVG["muted"], anchor="middle"))
+    return "\n".join(out)
+
+
+def teaser_redistribution(redistribution_rows, x, y, w, h):
+    rows = {row.get("label", ""): row for row in redistribution_rows}
+    out = [svg_rect(x, y, w, h, "#181815", SVG["stroke"], rx=7, width=0.9)]
+    out.append(svg_text(x + 10, y + 15, "Suppression effect", size=8, fill=SVG["text"], weight="700"))
+    pairs = [("hallucinated", SVG["red"], x + 14), ("grounded", SVG["green"], x + w / 2 + 9)]
+    for label, color, bx in pairs:
+        row = rows.get(label)
+        if not row:
+            continue
+        title = "hallucinated step" if label == "hallucinated" else "grounded step"
+        out.append(svg_text(bx, y + 32, title, size=7.2, fill=color, weight="700"))
+        before = [
+            (as_float(row, "system_before"), SVG["gray"], ""),
+            (as_float(row, "image_before"), SVG["blue"], "I"),
+            (as_float(row, "text_before"), SVG["orange"], "T"),
+        ]
+        after = [
+            (as_float(row, "system_after"), SVG["gray"], ""),
+            (as_float(row, "image_after"), SVG["blue"], "I"),
+            (as_float(row, "text_after"), SVG["orange"], "T"),
+        ]
+        out.append(teaser_stacked_bar(bx, y + 43, 26, 44, before))
+        out.append(teaser_stacked_bar(bx + 48, y + 43, 26, 44, after))
+        out.append(svg_line(bx + 30, y + 65, bx + 44, y + 65, SVG["muted"], width=1.0, marker=True))
+        out.append(svg_text(bx + 13, y + 97, "before", size=6.2, fill=SVG["muted"], anchor="middle"))
+        out.append(svg_text(bx + 61, y + 97, "after", size=6.2, fill=SVG["muted"], anchor="middle"))
+        delta = as_float(row, "delta_median")
+        out.append(svg_text(bx + 4, y + h - 7, f"median delta={delta:.2f}", size=6.4, fill=color))
+    return "\n".join(out)
+
+
+def figure_method_teaser_dark_svg(source, output_dir, layers, caption_text=""):
+    os.makedirs(output_dir, exist_ok=True)
+    head_rows = source["head_rows"]
+    selected = selected_rows(head_rows)
+    top_k = len(selected)
+    layer_text = f"L{min(layers)}-L{max(layers)}" if layers else "all layers"
+    text_head = text_head_example(head_rows)
+    contrast_head = contrastive_head_example(head_rows)
+    high_t_ground = as_float(text_head, "text_mass_grounded")
+    high_t_hall = as_float(text_head, "text_mass_hallucinated")
+    contrast_ground = as_float(contrast_head, "bounded_ratio_grounded")
+    contrast_hall = as_float(contrast_head, "bounded_ratio_hallucinated")
+
+    path = os.path.join(output_dir, "method_teaser_dark.svg")
+    parts = [
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1444" height="884" viewBox="0 0 722 442">',
+        "<defs>",
+        '<marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">',
+        f'<path d="M0,0 L7,3.5 L0,7 Z" fill="{SVG["muted"]}"/>',
+        "</marker>",
+        "</defs>",
+        svg_rect(0, 0, 722, 442, SVG["bg"], stroke=None, rx=0),
+        svg_rect(8, 8, 706, 196, "#171714", SVG["stroke"], rx=10, width=1.0, dash="4 4"),
+        svg_text(18, 23, "Phase 1: offline head-pool selection", size=10, fill=SVG["text"], weight="800"),
+        svg_text(430, 23, "Choose actuators: leverage + hallucination specificity", size=7.4, fill=SVG["muted"]),
+        teaser_card(
+            18,
+            36,
+            138,
+            55,
+            "Text-side mass",
+            ["I_text = E sum_T A", f"example {text_head.get('head_key', '')}: T={max(high_t_ground, high_t_hall):.2f}", "leverage signal"],
+            SVG["blue"],
+        ),
+        teaser_card(
+            171,
+            36,
+            148,
+            55,
+            "Contrastive bias",
+            ["C_toi = E_H r - E_G r", f"example {contrast_head.get('head_key', '')}: d r={contrast_hall - contrast_ground:.2f}", "specificity signal"],
+            SVG["orange"],
+        ),
+        teaser_card(
+            80,
+            109,
+            158,
+            45,
+            "Rank fusion",
+            ["S(l,h)=0.5 P(I_text)", "+ 0.5 P(C_toi)"],
+            SVG["purple"],
+            title_size=7.8,
+        ),
+        teaser_card(
+            258,
+            109,
+            118,
+            45,
+            "Head pool",
+            [f"Top-{top_k}", f"restricted to {layer_text}"],
+            SVG["yellow"],
+            title_size=7.8,
+        ),
+        svg_line(94, 91, 130, 109, SVG["muted"], width=1.0, marker=True),
+        svg_line(242, 91, 190, 109, SVG["muted"], width=1.0, marker=True),
+        svg_line(238, 132, 258, 132, SVG["muted"], width=1.0, marker=True),
+        svg_rect(402, 34, 300, 126, "#1a1a17", SVG["stroke"], rx=9, width=0.9),
+        svg_text(414, 50, "Two concrete head signals", size=8.6, fill=SVG["text"], weight="800"),
+        svg_text(416, 69, f"High-text head {text_head.get('head_key', '')}", size=7.0, fill=SVG["blue"], weight="700"),
+        svg_text(545, 69, f"Contrastive head {contrast_head.get('head_key', '')}", size=7.0, fill=SVG["orange"], weight="700"),
+    ]
+    # Mini high-text stacked bars.
+    text_parts_ground = [
+        (max(0.0, 1.0 - high_t_ground - as_float(text_head, "image_mass_grounded")), SVG["gray"], ""),
+        (as_float(text_head, "image_mass_grounded"), SVG["blue"], "I"),
+        (high_t_ground, SVG["orange"], "T"),
+    ]
+    text_parts_hall = [
+        (max(0.0, 1.0 - high_t_hall - as_float(text_head, "image_mass_hallucinated")), SVG["gray"], ""),
+        (as_float(text_head, "image_mass_hallucinated"), SVG["blue"], "I"),
+        (high_t_hall, SVG["orange"], "T"),
+    ]
+    parts.extend(
+        [
+            teaser_stacked_bar(420, 80, 24, 58, text_parts_ground),
+            teaser_stacked_bar(456, 80, 24, 58, text_parts_hall),
+            svg_text(432, 150, "G", size=6.4, fill=SVG["green"], anchor="middle", weight="700"),
+            svg_text(468, 150, "H", size=6.4, fill=SVG["red"], anchor="middle", weight="700"),
+        ]
+    )
+    # Mini contrastive bars.
+    bar_max = 1.0
+    for idx, (label, value, color) in enumerate([("G", contrast_ground, SVG["green"]), ("H", contrast_hall, SVG["red"])]):
+        bx = 560 + idx * 46
+        bh = 58 * value / bar_max
+        parts.append(svg_rect(bx, 138 - bh, 28, bh, color, stroke=None, rx=3))
+        parts.append(svg_rect(bx, 80, 28, 58, "none", SVG["stroke"], rx=3, width=0.7))
+        parts.append(svg_text(bx + 14, 150, label, size=6.4, fill=color, anchor="middle", weight="700"))
+        parts.append(svg_text(bx + 14, 75, f"{value:.2f}", size=6.2, fill=color, anchor="middle", weight="700"))
+    parts.append(teaser_layer_strip(head_rows, layers, 18, 166, 684, 28))
+
+    parts.extend(
+        [
+            svg_rect(8, 218, 706, 214, "#171714", SVG["stroke"], rx=10, width=1.0, dash="4 4"),
+            svg_text(18, 234, "Phase 2: dynamic suppression", size=10, fill=SVG["text"], weight="800"),
+            svg_text(444, 234, "Offline score gates online text reliance continuously", size=7.4, fill=SVG["muted"]),
+        ]
+    )
+    flow_y = 248
+    cards = [
+        (20, "Attention head", ["A_t,l,h"]),
+        (154, "Text ratio", ["r = T/(T+I)"]),
+        (288, "Exp gate", ["g = exp(q(r-tau))"]),
+        (422, "Strength", ["delta = clip(S*g,0,1)"]),
+        (556, "Action", ["A_T *= 1-delta", "renormalize"]),
+    ]
+    for x, title, lines in cards:
+        parts.append(teaser_card(x, flow_y, 118, 56, title, lines, SVG["purple"] if title in {"Exp gate", "Strength"} else SVG["blue"], title_size=7.6))
+    for x1, x2 in [(138, 154), (272, 288), (406, 422), (540, 556)]:
+        parts.append(svg_line(x1, flow_y + 28, x2, flow_y + 28, SVG["muted"], width=1.0, marker=True))
+    parts.append(teaser_gate_curve(source["gate_curve"], source["gate_markers"], 28, 340, 220, 62))
+    parts.append(teaser_redistribution(source["redistribution"], 286, 318, 404, 104))
+    parts.append(svg_text(32, 428, "Method: suppress only text-side attention in selected heads, then proportionally renormalize.", size=7.2, fill=SVG["muted"]))
+    if caption_text:
+        clipped = textwrap.shorten(" ".join(caption_text.split()), width=88, placeholder="...")
+        parts.append(svg_text(386, 428, f"example caption: {clipped}", size=6.8, fill=SVG["muted"]))
+    parts.append("</svg>")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(parts))
+    return {"svg": path}
+
+
 def plot_text_mass_on_axis(ax, head_rows):
     ranked = sorted(head_rows, key=lambda row: as_float(row, "text_mass_all"), reverse=True)
     values = np.array([as_float(row, "text_mass_all") for row in ranked], dtype=np.float64)
@@ -1424,6 +1738,7 @@ def main():
     if not args.no_overview_panel:
         figures["method_phase_overview_panel"] = figure_overview_panel(source, output_dir, formats, layers)
         figures["method_claim_compact_panel"] = figure_method_claim_panel(source, output_dir, formats, layers, caption_text)
+        figures["method_teaser_dark"] = figure_method_teaser_dark_svg(source, output_dir, layers, caption_text)
 
     numeric_summary = build_numeric_summary(source, ratio_stats, delta_stats, layers)
     if window_stats:
