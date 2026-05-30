@@ -11,6 +11,7 @@ TOP_K="${TOP_K:-0}"
 SELECTION_LAYERS="${SELECTION_LAYERS:-}"
 RATIO_SOURCE="${RATIO_SOURCE:-selected}"
 FIGURE_FORMATS="${FIGURE_FORMATS:-png,pdf,svg}"
+CAPTION_TEXT="${CAPTION_TEXT:-}"
 
 if [ ! -f "${SOURCE_DIR}/head_scores_all.csv" ]; then
     echo "[error] missing source trace files in: ${SOURCE_DIR}" >&2
@@ -34,7 +35,8 @@ python -m eval_scripts.soft_routing.visualize_method_figure_source_data \
     "${top_k_args[@]}" \
     "${selection_layer_args[@]}" \
     --ratio-source "${RATIO_SOURCE}" \
-    --formats "${FIGURE_FORMATS}"
+    --formats "${FIGURE_FORMATS}" \
+    --caption-text "${CAPTION_TEXT}"
 
 echo "[summary] visualization outputs"
 cat "${OUTPUT_DIR}/method_figure_visualization_manifest.json"

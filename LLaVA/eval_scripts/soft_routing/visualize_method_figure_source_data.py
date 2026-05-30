@@ -4,6 +4,7 @@ import csv
 import json
 import math
 import os
+import textwrap
 from collections import defaultdict
 
 os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/matplotlib")
@@ -253,6 +254,40 @@ def figure_text_mass_sorted(head_rows, output_dir, formats):
     return save_figure(fig, output_dir, "phase1_text_mass_sorted", formats)
 
 
+def positive_contrast(row):
+    return max(as_float(row, "raw_toi_gap_hall_minus_grounded"), 0.0)
+
+
+def figure_contrastive_specificity_sorted(head_rows, output_dir, formats):
+    ranked = sorted(head_rows, key=positive_contrast, reverse=True)
+    raw_values = np.array([positive_contrast(row) for row in ranked], dtype=np.float64)
+    values = np.log1p(raw_values)
+    selected = np.array([as_int(row, "selected") == 1 for row in ranked], dtype=bool)
+    x = np.arange(1, len(values) + 1)
+
+    fig, ax = plt.subplots(figsize=(3.2, 1.75))
+    ax.bar(x, values, width=1.0, color=COLORS["tail"], linewidth=0)
+    if np.any(selected):
+        ax.bar(x[selected], values[selected], width=1.0, color=COLORS["image"], linewidth=0)
+    ax.set_xlim(0, len(values) + 1)
+    ax.set_ylim(0, max(0.2, float(values.max()) * 1.08))
+    ax.set_title("Contrastive specificity")
+    ax.set_xlabel(r"all heads sorted by $C_{\mathrm{toi}}$")
+    ax.set_ylabel(r"$\log(1+C_{\mathrm{toi}})$")
+    ax.grid(axis="y")
+    positive_rate = float(np.mean(raw_values > 0.0)) if raw_values.size else 0.0
+    ax.text(
+        0.98,
+        0.92,
+        f"positive heads: {positive_rate:.0%}",
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        color=COLORS["muted"],
+    )
+    return save_figure(fig, output_dir, "phase1_contrastive_specificity_sorted", formats)
+
+
 def figure_ratio_distribution(ratio_rows, output_dir, formats):
     grouped = ratio_values(ratio_rows, "bounded_ratio")
     fig, ax = plt.subplots(figsize=(3.05, 1.85))
@@ -335,6 +370,44 @@ def figure_head_score_heatmap(head_rows, layers, output_dir, formats):
     cbar = fig.colorbar(im, ax=ax, fraction=0.034, pad=0.02)
     cbar.set_label("score")
     return save_figure(fig, output_dir, "phase1_head_score_heatmap", formats)
+
+
+def figure_final_head_selection_map(head_rows, layers, output_dir, formats):
+    max_layer = max(as_int(row, "layer") for row in head_rows)
+    max_head = max(as_int(row, "head") for row in head_rows)
+    matrix = np.zeros((max_layer + 1, max_head + 1), dtype=np.float64)
+    selected = np.zeros_like(matrix, dtype=bool)
+    for row in head_rows:
+        layer, head = as_int(row, "layer"), as_int(row, "head")
+        selected[layer, head] = as_int(row, "selected") == 1
+        if selected[layer, head]:
+            matrix[layer, head] = as_float(row, "score")
+
+    fig, ax = plt.subplots(figsize=(3.45, 2.25))
+    im = ax.imshow(matrix, aspect="auto", origin="lower", cmap="Purples", vmin=0.0, vmax=1.0)
+    if layers:
+        start, end = min(layers), max(layers)
+        ax.add_patch(
+            Rectangle(
+                (-0.5, start - 0.5),
+                max_head + 1,
+                end - start + 1,
+                fill=False,
+                edgecolor="#f59e0b",
+                linewidth=1.0,
+                zorder=3,
+            )
+        )
+    ys, xs = np.where(selected)
+    ax.scatter(xs, ys, s=9, facecolors="none", edgecolors=COLORS["dark"], linewidths=0.35)
+    ax.set_title("Final selected head pool")
+    ax.set_xlabel("head")
+    ax.set_ylabel("layer")
+    ax.set_xticks([0, 8, 16, 24, max_head])
+    ax.set_yticks([0, 4, 8, 12, 16, 20, 24, 28, max_layer])
+    cbar = fig.colorbar(im, ax=ax, fraction=0.034, pad=0.02)
+    cbar.set_label("selected score")
+    return save_figure(fig, output_dir, "phase1_final_head_selection_map", formats)
 
 
 def figure_layer_score_profiles(head_rows, layers, output_dir, formats):
@@ -701,6 +774,35 @@ def figure_overview_panel(source, output_dir, formats, layers):
     return save_figure(fig, output_dir, "method_phase_overview_panel", formats)
 
 
+def figure_method_claim_panel(source, output_dir, formats, layers, caption_text):
+    head_rows = source["head_rows"]
+    gate_rows = source["gate_curve"]
+    marker_rows = source["gate_markers"]
+
+    fig = plt.figure(figsize=(9.4, 4.35))
+    gs = fig.add_gridspec(2, 4, height_ratios=[1.0, 0.86], wspace=0.48, hspace=0.76)
+    axes = [
+        fig.add_subplot(gs[0, 0]),
+        fig.add_subplot(gs[0, 1]),
+        fig.add_subplot(gs[0, 2]),
+        fig.add_subplot(gs[0, 3]),
+        fig.add_subplot(gs[1, 0:2]),
+        fig.add_subplot(gs[1, 2:4]),
+    ]
+    plot_text_mass_on_axis(axes[0], head_rows)
+    plot_contrastive_specificity_on_axis(axes[1], head_rows)
+    plot_rank_fusion_scatter_on_axis(axes[2], head_rows, layers)
+    axes[2].set_title("C. Rank fusion")
+    plot_selected_head_map_on_axis(axes[3], head_rows, layers)
+    plot_gate_on_axis(axes[4], gate_rows, marker_rows)
+    plot_caption_or_formula_on_axis(axes[5], caption_text)
+    fig.text(0.5, 0.985, "Phase 1: why this head pool?", ha="center", va="top", color=COLORS["dark"], fontsize=9.2, weight="bold")
+    fig.text(0.5, 0.455, "Phase 2: how suppression is applied", ha="center", va="top", color=COLORS["dark"], fontsize=9.2, weight="bold")
+    fig.add_artist(plt.Line2D([0.03, 0.97], [0.955, 0.955], transform=fig.transFigure, color=COLORS["grid"], linewidth=1.0))
+    fig.add_artist(plt.Line2D([0.03, 0.97], [0.427, 0.427], transform=fig.transFigure, color=COLORS["grid"], linewidth=1.0))
+    return save_figure(fig, output_dir, "method_claim_compact_panel", formats)
+
+
 def plot_text_mass_on_axis(ax, head_rows):
     ranked = sorted(head_rows, key=lambda row: as_float(row, "text_mass_all"), reverse=True)
     values = np.array([as_float(row, "text_mass_all") for row in ranked], dtype=np.float64)
@@ -712,6 +814,22 @@ def plot_text_mass_on_axis(ax, head_rows):
     ax.set_title("A. Text leverage")
     ax.set_xlabel("heads sorted")
     ax.set_ylabel(r"$I_{\mathrm{text}}$")
+    ax.set_xlim(0, len(values))
+    ax.grid(axis="y")
+
+
+def plot_contrastive_specificity_on_axis(ax, head_rows):
+    ranked = sorted(head_rows, key=positive_contrast, reverse=True)
+    raw_values = np.array([positive_contrast(row) for row in ranked], dtype=np.float64)
+    values = np.log1p(raw_values)
+    selected = np.array([as_int(row, "selected") == 1 for row in ranked], dtype=bool)
+    x = np.arange(len(values))
+    ax.bar(x, values, width=1.0, color=COLORS["tail"], linewidth=0)
+    if np.any(selected):
+        ax.bar(x[selected], values[selected], width=1.0, color=COLORS["image"], linewidth=0)
+    ax.set_title("B. Contrastive specificity")
+    ax.set_xlabel("heads sorted")
+    ax.set_ylabel(r"$\log(1+C_{\mathrm{toi}})$")
     ax.set_xlim(0, len(values))
     ax.grid(axis="y")
 
@@ -730,6 +848,26 @@ def plot_ratio_on_axis(ax, ratio_rows):
     ax.set_xlim(0.45, 1.0)
     ax.grid(axis="y")
     ax.legend(frameon=False, loc="upper left")
+
+
+def plot_selected_head_map_on_axis(ax, head_rows, layers):
+    max_layer = max(as_int(row, "layer") for row in head_rows)
+    max_head = max(as_int(row, "head") for row in head_rows)
+    matrix = np.zeros((max_layer + 1, max_head + 1), dtype=np.float64)
+    selected = np.zeros_like(matrix, dtype=bool)
+    for row in head_rows:
+        layer, head = as_int(row, "layer"), as_int(row, "head")
+        selected[layer, head] = as_int(row, "selected") == 1
+        if selected[layer, head]:
+            matrix[layer, head] = as_float(row, "score")
+    ax.imshow(matrix, aspect="auto", origin="lower", cmap="Purples", vmin=0.0, vmax=1.0)
+    if layers:
+        ax.add_patch(Rectangle((-0.5, min(layers) - 0.5), max_head + 1, max(layers) - min(layers) + 1, fill=False, edgecolor="#f59e0b", linewidth=0.9))
+    ys, xs = np.where(selected)
+    ax.scatter(xs, ys, s=5, facecolors="none", edgecolors=COLORS["dark"], linewidths=0.25)
+    ax.set_title("D. Final head pool")
+    ax.set_xlabel("head")
+    ax.set_ylabel("layer")
 
 
 def plot_heatmap_on_axis(ax, head_rows, layers):
@@ -825,6 +963,41 @@ def plot_gate_on_axis(ax, gate_rows, marker_rows):
     ax.grid(axis="y")
 
 
+def plot_caption_or_formula_on_axis(ax, caption_text):
+    ax.axis("off")
+    ax.set_title("Caption output" if caption_text else "Suppression action")
+    if caption_text:
+        wrapped = "\n".join(textwrap.wrap(caption_text, width=62))
+        ax.text(
+            0.02,
+            0.82,
+            wrapped,
+            ha="left",
+            va="top",
+            color=COLORS["dark"],
+            fontsize=7.3,
+            linespacing=1.25,
+            transform=ax.transAxes,
+        )
+    else:
+        lines = [
+            r"$\delta_{t,l,h}=\mathrm{clip}(S(l,h)\exp(q(r_{t,l,h}-\tau)),0,1)$",
+            r"$A'_{t,l,h,j}=(1-\delta_{t,l,h})A_{t,l,h,j},\quad j\in T$",
+            "then renormalize the attention row",
+        ]
+        ax.text(
+            0.02,
+            0.78,
+            "\n".join(lines),
+            ha="left",
+            va="top",
+            color=COLORS["dark"],
+            fontsize=8.0,
+            linespacing=1.55,
+            transform=ax.transAxes,
+        )
+
+
 def plot_redistribution_on_axis(ax, redistribution_rows):
     by_label = {row["label"]: row for row in redistribution_rows}
     labels = [label for label in ("grounded", "hallucinated") if label in by_label]
@@ -890,6 +1063,7 @@ def main():
     parser.add_argument("--selection-layers", default="")
     parser.add_argument("--ratio-source", choices=["selected", "all"], default="selected")
     parser.add_argument("--formats", default="png,pdf,svg")
+    parser.add_argument("--caption-text", default="")
     parser.add_argument("--no-overview-panel", action="store_true")
     args = parser.parse_args()
 
@@ -904,9 +1078,11 @@ def main():
 
     figures = {}
     figures["phase1_text_mass_sorted"] = figure_text_mass_sorted(source["head_rows"], output_dir, formats)
+    figures["phase1_contrastive_specificity_sorted"] = figure_contrastive_specificity_sorted(source["head_rows"], output_dir, formats)
     ratio_paths, ratio_stats = figure_ratio_distribution(source["ratio_rows"], output_dir, formats)
     figures["phase1_ratio_distribution"] = ratio_paths
     figures["phase1_head_score_heatmap"] = figure_head_score_heatmap(source["head_rows"], layers, output_dir, formats)
+    figures["phase1_final_head_selection_map"] = figure_final_head_selection_map(source["head_rows"], layers, output_dir, formats)
     figures["phase1_layer_component_scores"] = figure_layer_score_profiles(source["head_rows"], layers, output_dir, formats)
     window_paths, window_stats = figure_layer_window_comparison(source["head_rows"], layers, output_dir, formats)
     figures["phase1_layer_window_comparison"] = window_paths
@@ -927,6 +1103,7 @@ def main():
     )
     if not args.no_overview_panel:
         figures["method_phase_overview_panel"] = figure_overview_panel(source, output_dir, formats, layers)
+        figures["method_claim_compact_panel"] = figure_method_claim_panel(source, output_dir, formats, layers, args.caption_text)
 
     numeric_summary = build_numeric_summary(source, ratio_stats, delta_stats, layers)
     if window_stats:

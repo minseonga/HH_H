@@ -28,6 +28,7 @@ BUILD_FIGURES="${BUILD_FIGURES:-1}"
 FIGURE_OUTPUT_DIR="${FIGURE_OUTPUT_DIR:-${OUTPUT_DIR}/figures}"
 FIGURE_RATIO_SOURCE="${FIGURE_RATIO_SOURCE:-selected}"
 FIGURE_FORMATS="${FIGURE_FORMATS:-png,pdf,svg}"
+FIGURE_CAPTION_TEXT="${FIGURE_CAPTION_TEXT:-}"
 LOG_DIR="${LOG_DIR:-./logs/soft_routing}"
 
 mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
@@ -81,7 +82,8 @@ if [ "${BUILD_FIGURES}" = "1" ]; then
         --top-k "${TOP_K}" \
         --selection-layers "${SELECTION_LAYERS}" \
         --ratio-source "${FIGURE_RATIO_SOURCE}" \
-        --formats "${FIGURE_FORMATS}"
+        --formats "${FIGURE_FORMATS}" \
+        --caption-text "${FIGURE_CAPTION_TEXT}"
 
     echo
     echo "[summary] figure numeric summary"
