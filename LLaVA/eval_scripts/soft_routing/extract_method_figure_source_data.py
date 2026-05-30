@@ -1003,7 +1003,7 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", default="Please describe this image in detail.")
     parser.add_argument("--top-k", type=int, default=150)
     parser.add_argument("--selection-layers", default="")
-    parser.add_argument("--gate-strength", type=float, default=0.7)
+    parser.add_argument("--gate-strength", type=float, default=1.0)
     parser.add_argument("--gate-beta", type=float, default=10.0)
     parser.add_argument("--gate-tau", type=float, default=0.9)
     parser.add_argument("--gate-x-min", type=float, default=0.5)

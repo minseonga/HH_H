@@ -207,6 +207,10 @@ def selected_rows(head_rows):
     return sorted(rows, key=lambda row: as_int(row, "rank"))
 
 
+def in_layer_window(row, layers):
+    return bool(layers) and as_int(row, "layer") in set(layers)
+
+
 def source_top_k(summary, head_rows, fallback):
     if fallback:
         return int(fallback)
@@ -260,14 +264,24 @@ def figure_ratio_distribution(ratio_rows, output_dir, formats):
         values = values[(values >= 0.0) & (values <= 1.0)]
         if values.size == 0:
             continue
-        ax.hist(values, bins=bins, density=True, alpha=0.40, color=color, label=label)
+        ax.hist(
+            values,
+            bins=bins,
+            density=True,
+            histtype="stepfilled",
+            alpha=0.36,
+            color=color,
+            edgecolor=color,
+            linewidth=0.7,
+            label=f"{label} (area=1)",
+        )
         median = float(np.median(values))
         ax.axvline(median, color=color, linewidth=1.4)
         stats[label] = {"median": median, "mean": float(np.mean(values)), "n": int(values.size)}
     ax.set_xlim(0.45, 1.0)
     ax.set_title("Online text-ratio overlap")
     ax.set_xlabel(r"$r=T/(T+I)$")
-    ax.set_ylabel("density")
+    ax.set_ylabel("density (area=1)")
     ax.legend(frameon=False, loc="upper left")
     ax.grid(axis="y")
     if "grounded" in stats and "hallucinated" in stats:
@@ -369,6 +383,67 @@ def figure_layer_score_profiles(head_rows, layers, output_dir, formats):
     return {"sum": paths_sum, "share": paths_share}
 
 
+def layer_window_stats(head_rows, layers):
+    layer_set = set(layers)
+    window = [row for row in head_rows if as_int(row, "layer") in layer_set]
+    outside = [row for row in head_rows if as_int(row, "layer") not in layer_set]
+    metrics = {
+        "score": "score",
+        "text_percentile": "text_percentile",
+        "contrast_percentile": "contrast_percentile",
+        "text_mass_all": "text_mass_all",
+    }
+
+    def summarize(rows, prefix):
+        out = {
+            f"{prefix}_n_heads": len(rows),
+            f"{prefix}_selected_fraction": mean(as_int(row, "selected") for row in rows),
+        }
+        for name, key in metrics.items():
+            values = np.array([as_float(row, key) for row in rows], dtype=np.float64)
+            out[f"{prefix}_mean_{name}"] = float(np.mean(values)) if values.size else 0.0
+            out[f"{prefix}_q90_{name}"] = float(np.quantile(values, 0.9)) if values.size else 0.0
+        return out
+
+    return {**summarize(window, "window"), **summarize(outside, "outside")}
+
+
+def figure_layer_window_comparison(head_rows, layers, output_dir, formats):
+    if not layers:
+        return {}, {}
+    layer_set = set(layers)
+    groups = {
+        f"L{min(layers)}-L{max(layers)}": [row for row in head_rows if as_int(row, "layer") in layer_set],
+        "other layers": [row for row in head_rows if as_int(row, "layer") not in layer_set],
+    }
+    metrics = [
+        ("score", "fused\nscore", COLORS["score"]),
+        ("text_percentile", "text\nrank", COLORS["text"]),
+        ("contrast_percentile", "contrast\nrank", COLORS["image"]),
+        ("text_mass_all", r"$I_{text}$", COLORS["muted"]),
+    ]
+    labels = list(groups)
+    x = np.arange(len(metrics))
+    width = 0.34
+
+    fig, ax = plt.subplots(figsize=(3.7, 1.9))
+    for group_idx, group in enumerate(labels):
+        rows = groups[group]
+        vals = [mean(as_float(row, key) for row in rows) for key, _, _ in metrics]
+        color = COLORS["dark"] if group_idx == 0 else COLORS["tail"]
+        ax.bar(x + (group_idx - 0.5) * width, vals, width, color=color, alpha=0.88, label=group)
+    for tick, (_, label, color) in zip(x, metrics):
+        ax.text(tick, -0.14, label, transform=ax.get_xaxis_transform(), ha="center", va="top", color=color)
+    ax.set_xticks([])
+    ax.set_ylim(0, 1.0)
+    ax.set_ylabel("mean value")
+    ax.set_title("Layer window vs. other layers")
+    ax.grid(axis="y")
+    ax.legend(frameon=False, loc="upper left")
+    paths = save_figure(fig, output_dir, "phase1_layer_window_comparison", formats)
+    return paths, layer_window_stats(head_rows, layers)
+
+
 def figure_rank_fusion(head_rows, rank_fusion_rows, output_dir, formats):
     if not rank_fusion_rows:
         selected = selected_rows(head_rows)
@@ -412,6 +487,44 @@ def figure_rank_fusion(head_rows, rank_fusion_rows, output_dir, formats):
     ax.grid(axis="y")
     ax.legend(frameon=False, loc="upper left")
     return save_figure(fig, output_dir, "phase1_rank_fusion_bars", formats)
+
+
+def figure_rank_fusion_scatter(head_rows, output_dir, formats, layers):
+    layer_set = set(layers)
+    selected = [row for row in head_rows if as_int(row, "selected") == 1]
+    window = [row for row in head_rows if as_int(row, "layer") in layer_set and as_int(row, "selected") != 1]
+    outside = [row for row in head_rows if as_int(row, "layer") not in layer_set]
+
+    fig, ax = plt.subplots(figsize=(3.05, 2.35))
+    for rows, color, alpha, size, label, zorder in [
+        (outside, COLORS["tail"], 0.36, 10, "other layers", 1),
+        (window, "#fbbf24", 0.45, 12, "L-window not selected", 2),
+        (selected, COLORS["score"], 0.88, 18, "selected", 3),
+    ]:
+        if not rows:
+            continue
+        ax.scatter(
+            [as_float(row, "text_percentile") for row in rows],
+            [as_float(row, "contrast_percentile") for row in rows],
+            s=size,
+            color=color,
+            alpha=alpha,
+            linewidths=0,
+            label=label,
+            zorder=zorder,
+        )
+    ax.axvline(0.75, color=COLORS["grid"], linestyle="--", linewidth=0.9)
+    ax.axhline(0.75, color=COLORS["grid"], linestyle="--", linewidth=0.9)
+    ax.text(0.93, 0.18, "text-heavy\nonly", ha="right", va="center", color=COLORS["text"], fontsize=6.6)
+    ax.text(0.93, 0.92, "high leverage\n+ specificity", ha="right", va="top", color=COLORS["score"], fontsize=6.6)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_xlabel("text leverage rank")
+    ax.set_ylabel("contrastive rank")
+    ax.set_title("Text leverage vs. contrastive specificity")
+    ax.grid(True)
+    ax.legend(frameon=False, loc="lower left", handletextpad=0.1, borderpad=0.1)
+    return save_figure(fig, output_dir, "phase1_rank_fusion_scatter", formats)
 
 
 def ratio_values(rows, key):
@@ -474,10 +587,11 @@ def figure_attention_redistribution(redistribution_rows, output_dir, formats):
     for label in labels:
         row = by_label[label]
         names.append(f"{label}\nbefore")
-        bars.append((as_float(row, "system_before"), as_float(row, "image_before"), as_float(row, "text_before")))
+        bars.append((label, as_float(row, "system_before"), as_float(row, "image_before"), as_float(row, "text_before")))
         names.append(f"{label}\nafter")
-        bars.append((as_float(row, "system_after"), as_float(row, "image_after"), as_float(row, "text_after")))
-    values = np.array(bars, dtype=np.float64) if bars else np.zeros((0, 3))
+        bars.append((label, as_float(row, "system_after"), as_float(row, "image_after"), as_float(row, "text_after")))
+    values = np.array([bar[1:] for bar in bars], dtype=np.float64) if bars else np.zeros((0, 3))
+    edgecolors = [COLORS["hall"] if bar[0] == "hallucinated" else COLORS["ground"] for bar in bars]
 
     fig, ax = plt.subplots(figsize=(3.35, 1.95))
     bottom = np.zeros(len(values))
@@ -491,6 +605,8 @@ def figure_attention_redistribution(redistribution_rows, output_dir, formats):
         vals = values[:, idx] if len(values) else []
         ax.bar(x, vals, bottom=bottom, color=color, width=0.62, alpha=0.86, label=label)
         bottom = bottom + vals
+    for xpos, edgecolor in zip(x, edgecolors):
+        ax.add_patch(Rectangle((xpos - 0.31, 0), 0.62, 1.0, fill=False, edgecolor=edgecolor, linewidth=1.0))
     for idx in range(1, len(x), 2):
         ax.axvline(idx - 0.5, color=COLORS["grid"], linewidth=0.8)
     ax.set_ylim(0, 1.0)
@@ -528,13 +644,13 @@ def figure_delta_distribution(ratio_rows, output_dir, formats):
     return save_figure(fig, output_dir, "phase2_delta_distribution", formats), stats
 
 
-def figure_delta_flow(head_rows, gate_markers, output_dir, formats, strength, beta, tau):
+def figure_delta_flow(head_rows, gate_markers, output_dir, formats, beta, tau):
     selected = selected_rows(head_rows)
     mean_score = mean(as_float(row, "score") for row in selected)
     markers = {row["label"]: row for row in gate_markers}
     hall_r = as_float(markers.get("hallucinated", {}), "bounded_ratio_median", tau)
     gate = math.exp(beta * (hall_r - tau))
-    delta = min(max(strength * mean_score * gate, 0.0), 1.0)
+    delta = min(max(mean_score * gate, 0.0), 1.0)
 
     fig, ax = plt.subplots(figsize=(4.2, 1.18))
     ax.axis("off")
@@ -550,7 +666,7 @@ def figure_delta_flow(head_rows, gate_markers, output_dir, formats, strength, be
         ax.text(x0 + 0.085, 0.42, value, ha="center", va="center", color=COLORS["dark"], fontsize=8.0)
     for x0, x1 in [(0.20, 0.29), (0.46, 0.55), (0.72, 0.80)]:
         ax.annotate("", xy=(x1 - 0.012, 0.50), xytext=(x0 + 0.012, 0.50), arrowprops=dict(arrowstyle="->", lw=1.0, color=COLORS["muted"]))
-    ax.text(0.5, 0.93, r"$\delta=\mathrm{clip}(s \cdot S(l,h) \cdot \exp(q(r-\tau)),0,1)$", ha="center", va="top", color=COLORS["dark"], fontsize=7.6)
+    ax.text(0.5, 0.93, r"$\delta=\mathrm{clip}(S(l,h) \cdot \exp(q(r-\tau)),0,1)$", ha="center", va="top", color=COLORS["dark"], fontsize=7.6)
     ax.text(0.5, 0.10, "text-side attention is multiplied by (1-delta), then the row is renormalized", ha="center", va="bottom", color=COLORS["muted"], fontsize=6.3)
     return save_figure(fig, output_dir, "phase2_delta_flow", formats)
 
@@ -561,16 +677,27 @@ def figure_overview_panel(source, output_dir, formats, layers):
     gate_rows = source["gate_curve"]
     marker_rows = source["gate_markers"]
     redistribution_rows = source["redistribution"]
-    rank_fusion_rows = source["rank_fusion"]
 
-    fig, axes = plt.subplots(2, 3, figsize=(7.9, 4.05))
-    plot_text_mass_on_axis(axes[0, 0], head_rows)
-    plot_ratio_on_axis(axes[0, 1], ratio_rows)
-    plot_heatmap_on_axis(axes[0, 2], head_rows, layers)
-    plot_rank_fusion_on_axis(axes[1, 0], head_rows, rank_fusion_rows)
-    plot_gate_on_axis(axes[1, 1], gate_rows, marker_rows)
-    plot_redistribution_on_axis(axes[1, 2], redistribution_rows)
-    fig.subplots_adjust(wspace=0.38, hspace=0.55)
+    fig = plt.figure(figsize=(9.4, 4.4))
+    gs = fig.add_gridspec(2, 4, height_ratios=[1.0, 0.92], wspace=0.46, hspace=0.72)
+    axes = [
+        fig.add_subplot(gs[0, 0]),
+        fig.add_subplot(gs[0, 1]),
+        fig.add_subplot(gs[0, 2]),
+        fig.add_subplot(gs[0, 3]),
+        fig.add_subplot(gs[1, 0:2]),
+        fig.add_subplot(gs[1, 2:4]),
+    ]
+    plot_text_mass_on_axis(axes[0], head_rows)
+    plot_ratio_on_axis(axes[1], ratio_rows)
+    plot_heatmap_on_axis(axes[2], head_rows, layers)
+    plot_rank_fusion_scatter_on_axis(axes[3], head_rows, layers)
+    plot_gate_on_axis(axes[4], gate_rows, marker_rows)
+    plot_redistribution_on_axis(axes[5], redistribution_rows)
+    fig.text(0.5, 0.985, "Phase 1: head attribution", ha="center", va="top", color=COLORS["dark"], fontsize=9.2, weight="bold")
+    fig.text(0.5, 0.465, "Phase 2: dynamic suppression", ha="center", va="top", color=COLORS["dark"], fontsize=9.2, weight="bold")
+    fig.add_artist(plt.Line2D([0.03, 0.97], [0.955, 0.955], transform=fig.transFigure, color=COLORS["grid"], linewidth=1.0))
+    fig.add_artist(plt.Line2D([0.03, 0.97], [0.435, 0.435], transform=fig.transFigure, color=COLORS["grid"], linewidth=1.0))
     return save_figure(fig, output_dir, "method_phase_overview_panel", formats)
 
 
@@ -595,11 +722,11 @@ def plot_ratio_on_axis(ax, ratio_rows):
     for label, color in [("grounded", COLORS["ground"]), ("hallucinated", COLORS["hall"])]:
         values = grouped.get(label, np.array([], dtype=np.float64))
         if values.size:
-            ax.hist(values, bins=bins, density=True, alpha=0.38, color=color, label=label)
+            ax.hist(values, bins=bins, density=True, histtype="stepfilled", alpha=0.34, color=color, edgecolor=color, linewidth=0.55, label=label)
             ax.axvline(float(np.median(values)), color=color, linewidth=1.2)
     ax.set_title("B. Ratio overlap")
     ax.set_xlabel(r"$T/(T+I)$")
-    ax.set_ylabel("density")
+    ax.set_ylabel("density\n(area=1)")
     ax.set_xlim(0.45, 1.0)
     ax.grid(axis="y")
     ax.legend(frameon=False, loc="upper left")
@@ -635,6 +762,8 @@ def plot_rank_fusion_on_axis(ax, head_rows, rank_fusion_rows):
         vals = [as_float(by_bucket[bucket], key) for key, _ in metrics]
         color = COLORS["dark"] if bucket == "selected" else COLORS["tail"]
         ax.bar(x + (idx - 0.5) * width, vals, width, color=color, alpha=0.82, label=bucket)
+    ax.text(0.95, 0.18, "text-only", ha="right", va="center", color=COLORS["text"], fontsize=5.8)
+    ax.text(0.95, 0.92, "both high", ha="right", va="top", color=COLORS["score"], fontsize=5.8)
     ax.set_title("D. Rank fusion")
     ax.set_ylim(0, 1.0)
     ax.set_xticks(x)
@@ -642,6 +771,39 @@ def plot_rank_fusion_on_axis(ax, head_rows, rank_fusion_rows):
     ax.set_ylabel("percentile")
     ax.grid(axis="y")
     ax.legend(frameon=False, loc="upper left")
+
+
+def plot_rank_fusion_scatter_on_axis(ax, head_rows, layers):
+    layer_set = set(layers)
+    selected = [row for row in head_rows if as_int(row, "selected") == 1]
+    window = [row for row in head_rows if as_int(row, "layer") in layer_set and as_int(row, "selected") != 1]
+    outside = [row for row in head_rows if as_int(row, "layer") not in layer_set]
+    for rows, color, alpha, size, label, zorder in [
+        (outside, COLORS["tail"], 0.32, 8, "other", 1),
+        (window, "#fbbf24", 0.40, 9, "window", 2),
+        (selected, COLORS["score"], 0.86, 12, "selected", 3),
+    ]:
+        if not rows:
+            continue
+        ax.scatter(
+            [as_float(row, "text_percentile") for row in rows],
+            [as_float(row, "contrast_percentile") for row in rows],
+            s=size,
+            color=color,
+            alpha=alpha,
+            linewidths=0,
+            label=label,
+            zorder=zorder,
+        )
+    ax.axvline(0.75, color=COLORS["grid"], linestyle="--", linewidth=0.8)
+    ax.axhline(0.75, color=COLORS["grid"], linestyle="--", linewidth=0.8)
+    ax.set_title("D. Rank fusion")
+    ax.set_xlabel("text rank")
+    ax.set_ylabel("contrast rank")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.grid(True)
+    ax.legend(frameon=False, loc="lower left", handletextpad=0.1, borderpad=0.1)
 
 
 def plot_gate_on_axis(ax, gate_rows, marker_rows):
@@ -670,17 +832,21 @@ def plot_redistribution_on_axis(ax, redistribution_rows):
     bars = []
     for label in labels:
         row = by_label[label]
-        names.append(f"{label[:4]}\nbefore")
-        bars.append((as_float(row, "system_before"), as_float(row, "image_before"), as_float(row, "text_before")))
-        names.append(f"{label[:4]}\nafter")
-        bars.append((as_float(row, "system_after"), as_float(row, "image_after"), as_float(row, "text_after")))
-    values = np.array(bars, dtype=np.float64) if bars else np.zeros((0, 3))
+        short = "ground" if label == "grounded" else "hall"
+        names.append(f"{short}\nbefore")
+        bars.append((label, as_float(row, "system_before"), as_float(row, "image_before"), as_float(row, "text_before")))
+        names.append(f"{short}\nafter")
+        bars.append((label, as_float(row, "system_after"), as_float(row, "image_after"), as_float(row, "text_after")))
+    values = np.array([bar[1:] for bar in bars], dtype=np.float64) if bars else np.zeros((0, 3))
+    edgecolors = [COLORS["hall"] if bar[0] == "hallucinated" else COLORS["ground"] for bar in bars]
     x = np.arange(len(values))
     bottom = np.zeros(len(values))
     for idx, (color, label) in enumerate([(COLORS["system"], "system"), (COLORS["image"], "visual"), (COLORS["text"], "text")]):
         vals = values[:, idx] if len(values) else []
         ax.bar(x, vals, bottom=bottom, color=color, width=0.62, alpha=0.86, label=label)
         bottom = bottom + vals
+    for xpos, edgecolor in zip(x, edgecolors):
+        ax.add_patch(Rectangle((xpos - 0.31, 0), 0.62, 1.0, fill=False, edgecolor=edgecolor, linewidth=0.9))
     ax.set_title("F. Redistribution")
     ax.set_xticks(x)
     ax.set_xticklabels(names)
@@ -710,6 +876,7 @@ def build_numeric_summary(source, ratio_stats, delta_stats, layers):
         "selected_mean_contrast_percentile": mean(as_float(row, "contrast_percentile") for row in selected),
         "selected_layer_counts": {str(layer): int(layer_counts[layer]) for layer in sorted(layer_counts)},
         "selected_layer_score_sum": {str(layer): float(layer_score[layer]) for layer in sorted(layer_score)},
+        "layer_window_stats": layer_window_stats(source["head_rows"], layers) if layers else {},
         "ratio_stats": ratio_stats,
         "delta_stats": delta_stats,
     }
@@ -741,7 +908,10 @@ def main():
     figures["phase1_ratio_distribution"] = ratio_paths
     figures["phase1_head_score_heatmap"] = figure_head_score_heatmap(source["head_rows"], layers, output_dir, formats)
     figures["phase1_layer_component_scores"] = figure_layer_score_profiles(source["head_rows"], layers, output_dir, formats)
+    window_paths, window_stats = figure_layer_window_comparison(source["head_rows"], layers, output_dir, formats)
+    figures["phase1_layer_window_comparison"] = window_paths
     figures["phase1_rank_fusion_bars"] = figure_rank_fusion(source["head_rows"], source["rank_fusion"], output_dir, formats)
+    figures["phase1_rank_fusion_scatter"] = figure_rank_fusion_scatter(source["head_rows"], output_dir, formats, layers)
     figures["phase2_gate_curve"] = figure_gate_curve(source["gate_curve"], source["gate_markers"], output_dir, formats)
     figures["phase2_attention_redistribution"] = figure_attention_redistribution(source["redistribution"], output_dir, formats)
     delta_paths, delta_stats = figure_delta_distribution(source["ratio_rows"], output_dir, formats)
@@ -752,7 +922,6 @@ def main():
         source["gate_markers"],
         output_dir,
         formats,
-        float(gate.get("strength", 0.7)),
         float(gate.get("beta", 10.0)),
         float(gate.get("tau", 0.9)),
     )
@@ -760,6 +929,8 @@ def main():
         figures["method_phase_overview_panel"] = figure_overview_panel(source, output_dir, formats, layers)
 
     numeric_summary = build_numeric_summary(source, ratio_stats, delta_stats, layers)
+    if window_stats:
+        numeric_summary["layer_window_stats"] = window_stats
     summary_csv = os.path.join(output_dir, "method_figure_visualization_numeric_summary.csv")
     write_csv(
         summary_csv,
@@ -772,6 +943,12 @@ def main():
                 "selected_mean_text_mass_all": numeric_summary["selected_mean_text_mass_all"],
                 "selected_mean_text_percentile": numeric_summary["selected_mean_text_percentile"],
                 "selected_mean_contrast_percentile": numeric_summary["selected_mean_contrast_percentile"],
+                "window_mean_score": numeric_summary.get("layer_window_stats", {}).get("window_mean_score", ""),
+                "outside_mean_score": numeric_summary.get("layer_window_stats", {}).get("outside_mean_score", ""),
+                "window_mean_text_percentile": numeric_summary.get("layer_window_stats", {}).get("window_mean_text_percentile", ""),
+                "outside_mean_text_percentile": numeric_summary.get("layer_window_stats", {}).get("outside_mean_text_percentile", ""),
+                "window_mean_contrast_percentile": numeric_summary.get("layer_window_stats", {}).get("window_mean_contrast_percentile", ""),
+                "outside_mean_contrast_percentile": numeric_summary.get("layer_window_stats", {}).get("outside_mean_contrast_percentile", ""),
                 "grounded_ratio_median": ratio_stats.get("grounded", {}).get("median", ""),
                 "hallucinated_ratio_median": ratio_stats.get("hallucinated", {}).get("median", ""),
                 "grounded_delta_mean": delta_stats.get("grounded", {}).get("mean", ""),
