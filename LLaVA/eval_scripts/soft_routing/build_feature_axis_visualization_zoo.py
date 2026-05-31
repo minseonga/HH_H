@@ -173,6 +173,47 @@ def log_raw_toi(rows, key):
     return np.log1p(arr(rows, key))
 
 
+def head_key(row):
+    return row.get("head_key") or f"{as_int(row, 'layer')}:{as_int(row, 'head')}"
+
+
+def top_by(rows, key_fn, top_k):
+    return sorted(rows, key=key_fn, reverse=True)[:top_k]
+
+
+def independent_feature_sets(rows, top_k):
+    return {
+        "text_mass": top_by(rows, lambda row: as_float(row, "text_mass_all"), top_k),
+        "contrastive": top_by(rows, lambda row: max(as_float(row, "raw_toi_gap_hall_minus_grounded"), 0.0), top_k),
+        "fused": top_by(rows, lambda row: as_float(row, "score"), top_k),
+    }
+
+
+def row_lookup(rows):
+    return {head_key(row): row for row in rows}
+
+
+def feature_relation_stats(rows, top_k):
+    sets = independent_feature_sets(rows, top_k)
+    text_keys = {head_key(row) for row in sets["text_mass"]}
+    contrast_keys = {head_key(row) for row in sets["contrastive"]}
+    fused_keys = {head_key(row) for row in sets["fused"]}
+    overlap = text_keys & contrast_keys
+    union = text_keys | contrast_keys
+    corr = float(np.corrcoef(arr(rows, "text_percentile"), arr(rows, "contrast_percentile"))[0, 1]) if len(rows) > 1 else 0.0
+    return {
+        "sets": sets,
+        "text_keys": text_keys,
+        "contrast_keys": contrast_keys,
+        "fused_keys": fused_keys,
+        "overlap": overlap,
+        "jaccard": len(overlap) / max(len(union), 1),
+        "corr": corr,
+        "fused_text_overlap": len(fused_keys & text_keys),
+        "fused_contrast_overlap": len(fused_keys & contrast_keys),
+    }
+
+
 def layer_head_matrix(rows, values):
     max_layer = max(as_int(row, "layer") for row in rows)
     max_head = max(as_int(row, "head") for row in rows)
@@ -585,6 +626,409 @@ def plot_top_rank_curves(rows, output_dir, formats):
     return {"curve_fused_rank_feature_values": save(fig, output_dir, "curve_fused_rank_feature_values", formats)}
 
 
+def draw_head_grid(ax, group, color, title, subtitle, max_layer, max_head, marker="o"):
+    ax.set_facecolor("#f8fafc")
+    ax.scatter(
+        [as_int(row, "head") for row in group],
+        [as_int(row, "layer") for row in group],
+        s=18,
+        color=color,
+        alpha=0.86,
+        linewidths=0,
+        marker=marker,
+    )
+    ax.set_title(title, fontsize=8.2, pad=4)
+    ax.set_xlim(-0.5, max_head + 0.5)
+    ax.set_ylim(-0.5, max_layer + 0.5)
+    ax.set_xlabel("head")
+    ax.set_ylabel("layer")
+    ax.grid(True, color="#e2e8f0", linewidth=0.45)
+    ax.text(0.02, 0.96, subtitle, transform=ax.transAxes, ha="left", va="top", fontsize=6.2, color=COLORS["muted"])
+
+
+def plot_non_circular_feature_rationale_panel(rows, output_dir, formats, top_k):
+    stats = feature_relation_stats(rows, top_k)
+    sets = stats["sets"]
+    max_layer = max(as_int(row, "layer") for row in rows)
+    max_head = max(as_int(row, "head") for row in rows)
+    text_rank = arr(rows, "text_percentile")
+    contrast_rank = arr(rows, "contrast_percentile")
+
+    fig, axes = plt.subplots(2, 2, figsize=(7.4, 5.35))
+    draw_head_grid(
+        axes[0, 0],
+        sets["text_mass"],
+        COLORS["text"],
+        "A. text_mass top-k",
+        "feature applied alone",
+        max_layer,
+        max_head,
+    )
+    draw_head_grid(
+        axes[0, 1],
+        sets["contrastive"],
+        COLORS["contrast"],
+        "B. contrastive top-k",
+        "feature applied alone",
+        max_layer,
+        max_head,
+        marker="s",
+    )
+
+    ax = axes[1, 0]
+    text_keys = stats["text_keys"]
+    contrast_keys = stats["contrast_keys"]
+    overlap = stats["overlap"]
+    text_only_x, text_only_y = [], []
+    contrast_only_x, contrast_only_y = [], []
+    overlap_x, overlap_y = [], []
+    other_x, other_y = [], []
+    for row in rows:
+        key = head_key(row)
+        point = (as_float(row, "text_percentile"), as_float(row, "contrast_percentile"))
+        if key in overlap:
+            overlap_x.append(point[0])
+            overlap_y.append(point[1])
+        elif key in text_keys:
+            text_only_x.append(point[0])
+            text_only_y.append(point[1])
+        elif key in contrast_keys:
+            contrast_only_x.append(point[0])
+            contrast_only_y.append(point[1])
+        else:
+            other_x.append(point[0])
+            other_y.append(point[1])
+    ax.scatter(other_x, other_y, s=8, color=COLORS["tail"], alpha=0.30, linewidths=0, label="other")
+    ax.scatter(text_only_x, text_only_y, s=16, color=COLORS["text"], alpha=0.78, linewidths=0, label="text only")
+    ax.scatter(contrast_only_x, contrast_only_y, s=16, color=COLORS["contrast"], alpha=0.78, linewidths=0, marker="s", label="contrast only")
+    ax.scatter(overlap_x, overlap_y, s=34, color=COLORS["selected"], alpha=0.9, linewidths=0, marker="*", label="overlap")
+    ax.set_title("C. independent feature relation", fontsize=8.2, pad=4)
+    ax.set_xlabel("text_mass percentile")
+    ax.set_ylabel("contrastive percentile")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.grid(True)
+    ax.text(
+        0.03,
+        0.97,
+        f"r={stats['corr']:.2f}\nJaccard={stats['jaccard']:.2f}\noverlap={len(overlap)}/{top_k}",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        color=COLORS["dark"],
+        fontsize=6.6,
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 1.2},
+    )
+    ax.legend(frameon=False, loc="lower right", handletextpad=0.2, borderpad=0.1)
+
+    ax = axes[1, 1]
+    labels = ["text only", "overlap", "contrast only", "fused & text", "fused & contrast"]
+    values = [
+        len(text_keys - contrast_keys),
+        len(overlap),
+        len(contrast_keys - text_keys),
+        stats["fused_text_overlap"],
+        stats["fused_contrast_overlap"],
+    ]
+    colors = [COLORS["text"], COLORS["selected"], COLORS["contrast"], COLORS["text"], COLORS["contrast"]]
+    x = np.arange(len(labels))
+    ax.bar(x, values, color=colors, alpha=0.82)
+    ax.axhline(top_k, color=COLORS["muted"], linestyle="--", linewidth=0.8)
+    ax.text(len(labels) - 0.45, top_k + max(values) * 0.015, f"top-{top_k}", ha="right", va="bottom", color=COLORS["muted"], fontsize=6.2)
+    ax.set_title("D. fused ranking overlaps both axes", fontsize=8.2, pad=4)
+    ax.set_ylabel("head count")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=24, ha="right")
+    ax.grid(axis="y")
+    ax.text(
+        0.03,
+        0.86,
+        "Feature-first: score all heads,\nthen inspect independent overlap.",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        color=COLORS["muted"],
+        fontsize=5.9,
+    )
+    fig.suptitle("Non-circular feature rationale", y=0.965, fontsize=10.0, weight="bold")
+    fig.subplots_adjust(top=0.88, bottom=0.12, left=0.08, right=0.985, hspace=0.52, wspace=0.28)
+    return {"non_circular_feature_rationale_panel": save(fig, output_dir, "non_circular_feature_rationale_panel", formats)}
+
+
+def plot_independent_topk_layer_head_maps(rows, output_dir, formats, top_k):
+    stats = feature_relation_stats(rows, top_k)
+    sets = stats["sets"]
+    max_layer = max(as_int(row, "layer") for row in rows)
+    max_head = max(as_int(row, "head") for row in rows)
+    text_keys = stats["text_keys"]
+    contrast_keys = stats["contrast_keys"]
+    overlap_keys = stats["overlap"]
+
+    fig, axes = plt.subplots(1, 3, figsize=(9.4, 2.85), sharex=True, sharey=True)
+    panels = [
+        ("A. text_mass top-k", text_keys, COLORS["text"], "text-heavy heads"),
+        ("B. contrastive top-k", contrast_keys, COLORS["contrast"], "hall-specific heads"),
+        ("C. overlap / disagreement", text_keys | contrast_keys, COLORS["selected"], "two independent feature sets"),
+    ]
+    for ax, (title, keys, color, subtitle) in zip(axes, panels):
+        ax.set_facecolor("#f8fafc")
+        ax.set_title(title)
+        ax.set_xlim(-0.5, max_head + 0.5)
+        ax.set_ylim(-0.5, max_layer + 0.5)
+        ax.set_xlabel("head")
+        ax.grid(True, color="#e2e8f0", linewidth=0.45)
+        if ax is axes[0]:
+            ax.set_ylabel("layer")
+        ax.text(0.02, 0.96, subtitle, transform=ax.transAxes, ha="left", va="top", fontsize=6.2, color=COLORS["muted"])
+    axes[0].scatter(
+        [as_int(row, "head") for row in sets["text_mass"]],
+        [as_int(row, "layer") for row in sets["text_mass"]],
+        s=18,
+        color=COLORS["text"],
+        alpha=0.86,
+        linewidths=0,
+    )
+    axes[1].scatter(
+        [as_int(row, "head") for row in sets["contrastive"]],
+        [as_int(row, "layer") for row in sets["contrastive"]],
+        s=18,
+        color=COLORS["contrast"],
+        alpha=0.86,
+        linewidths=0,
+    )
+    lookup = row_lookup(rows)
+    for key in sorted(text_keys | contrast_keys):
+        row = lookup[key]
+        if key in overlap_keys:
+            color, marker, size, label = COLORS["selected"], "*", 42, "overlap"
+        elif key in text_keys:
+            color, marker, size, label = COLORS["text"], "o", 20, "text only"
+        else:
+            color, marker, size, label = COLORS["contrast"], "s", 16, "contrast only"
+        axes[2].scatter([as_int(row, "head")], [as_int(row, "layer")], s=size, color=color, alpha=0.86, marker=marker, linewidths=0)
+    axes[2].scatter([], [], s=20, color=COLORS["text"], marker="o", label="text only")
+    axes[2].scatter([], [], s=16, color=COLORS["contrast"], marker="s", label="contrast only")
+    axes[2].scatter([], [], s=42, color=COLORS["selected"], marker="*", label="overlap")
+    axes[2].legend(frameon=False, loc="lower right", handletextpad=0.2, borderpad=0.1)
+    fig.suptitle(f"Independent top-{top_k} heads selected by each feature", y=1.02, fontsize=10.0, weight="bold")
+    return {"independent_topk_layer_head_maps": save(fig, output_dir, "independent_topk_layer_head_maps", formats)}
+
+
+def plot_independent_topk_layer_distribution(rows, output_dir, formats, top_k):
+    sets = independent_feature_sets(rows, top_k)
+    max_layer = max(as_int(row, "layer") for row in rows)
+    layers = np.arange(max_layer + 1)
+
+    def counts(group):
+        out = np.zeros(max_layer + 1, dtype=np.float64)
+        for row in group:
+            out[as_int(row, "layer")] += 1
+        return out
+
+    def score_sum(group, score_key):
+        out = np.zeros(max_layer + 1, dtype=np.float64)
+        for row in group:
+            if score_key == "log_gap":
+                value = math.log1p(max(as_float(row, "raw_toi_gap_hall_minus_grounded"), 0.0))
+            else:
+                value = as_float(row, score_key)
+            out[as_int(row, "layer")] += value
+        total = float(out.sum())
+        return out / total if total > 0 else out
+
+    fig, ax = plt.subplots(figsize=(5.2, 2.65))
+    ax.plot(layers, counts(sets["text_mass"]), marker="o", ms=2.6, color=COLORS["text"], linewidth=1.5, label="text_mass top-k")
+    ax.plot(layers, counts(sets["contrastive"]), marker="o", ms=2.6, color=COLORS["contrast"], linewidth=1.5, label="contrastive top-k")
+    ax.plot(layers, counts(sets["fused"]), marker="o", ms=2.6, color=COLORS["selected"], linewidth=1.5, label="fused top-k")
+    ax.set_title(f"Layer distribution of independent top-{top_k} sets")
+    ax.set_xlabel("layer")
+    ax.set_ylabel("head count")
+    ax.set_xlim(-0.5, max_layer + 0.5)
+    ax.grid(axis="y")
+    ax.legend(frameon=False, ncol=3, loc="upper left")
+    paths = {"independent_topk_layer_counts": save(fig, output_dir, "independent_topk_layer_counts", formats)}
+
+    fig, ax = plt.subplots(figsize=(5.2, 2.65))
+    ax.plot(layers, score_sum(sets["text_mass"], "text_mass_all"), marker="o", ms=2.5, color=COLORS["text"], linewidth=1.45, label="text_mass top-k: text mass share")
+    ax.plot(layers, score_sum(sets["contrastive"], "log_gap"), marker="o", ms=2.5, color=COLORS["contrast"], linewidth=1.45, label="contrastive top-k: contrast share")
+    ax.plot(layers, score_sum(sets["fused"], "score"), marker="o", ms=2.5, color=COLORS["selected"], linewidth=1.45, label="fused top-k: score share")
+    ax.set_title(f"Layer-wise score share within independent top-{top_k} sets")
+    ax.set_xlabel("layer")
+    ax.set_ylabel("share within set")
+    ax.set_xlim(-0.5, max_layer + 0.5)
+    ax.grid(axis="y")
+    ax.legend(frameon=False, loc="upper left")
+    paths["independent_topk_layer_score_share"] = save(fig, output_dir, "independent_topk_layer_score_share", formats)
+    return paths
+
+
+def plot_independent_rank_relationship(rows, output_dir, formats, top_k):
+    stats = feature_relation_stats(rows, top_k)
+    text_keys = stats["text_keys"]
+    contrast_keys = stats["contrast_keys"]
+    overlap = stats["overlap"]
+    text_rank = arr(rows, "text_percentile")
+    contrast_rank = arr(rows, "contrast_percentile")
+    corr = stats["corr"]
+
+    colors = []
+    sizes = []
+    markers = []
+    for row in rows:
+        key = head_key(row)
+        if key in overlap:
+            colors.append(COLORS["selected"])
+            sizes.append(34)
+            markers.append("*")
+        elif key in text_keys:
+            colors.append(COLORS["text"])
+            sizes.append(18)
+            markers.append("o")
+        elif key in contrast_keys:
+            colors.append(COLORS["contrast"])
+            sizes.append(16)
+            markers.append("s")
+        else:
+            colors.append(COLORS["tail"])
+            sizes.append(9)
+            markers.append("o")
+
+    fig, ax = plt.subplots(figsize=(3.75, 3.35))
+    for marker in sorted(set(markers)):
+        idx = [i for i, value in enumerate(markers) if value == marker]
+        ax.scatter(text_rank[idx], contrast_rank[idx], s=np.array(sizes)[idx], c=np.array(colors)[idx], alpha=0.74 if marker != "o" else 0.42, linewidths=0, marker=marker)
+    ax.scatter([], [], s=18, color=COLORS["text"], marker="o", label="text_mass top-k")
+    ax.scatter([], [], s=16, color=COLORS["contrast"], marker="s", label="contrastive top-k")
+    ax.scatter([], [], s=34, color=COLORS["selected"], marker="*", label="overlap")
+    ax.set_title("Independent feature rankings")
+    ax.set_xlabel("text_mass percentile")
+    ax.set_ylabel("contrastive percentile")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.grid(True)
+    ax.text(0.03, 0.97, f"Pearson r={corr:.2f}\noverlap={len(overlap)}/{top_k}", transform=ax.transAxes, ha="left", va="top", color=COLORS["dark"], fontsize=6.8, bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 1.4})
+    ax.legend(frameon=False, loc="lower right")
+    paths = {"independent_rank_scatter_text_vs_contrast": save(fig, output_dir, "independent_rank_scatter_text_vs_contrast", formats)}
+
+    fig, ax = plt.subplots(figsize=(4.3, 2.45))
+    order = np.argsort(text_rank)
+    ax.plot(text_rank[order], contrast_rank[order], color=COLORS["muted"], linewidth=1.0, alpha=0.55, label="heads ordered by text_mass")
+    ax.scatter(text_rank[order], contrast_rank[order], s=8, color=COLORS["tail"], alpha=0.45)
+    ax.set_title("Contrastive rank is not determined by text_mass rank")
+    ax.set_xlabel("text_mass percentile")
+    ax.set_ylabel("contrastive percentile")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.grid(True)
+    ax.text(0.03, 0.94, f"rank correlation proxy r={corr:.2f}", transform=ax.transAxes, ha="left", va="top", color=COLORS["dark"], fontsize=6.8)
+    paths["independent_rank_curve_contrast_given_text_order"] = save(fig, output_dir, "independent_rank_curve_contrast_given_text_order", formats)
+    return paths
+
+
+def plot_independent_feature_profile_bars(rows, output_dir, formats, top_k):
+    sets = independent_feature_sets(rows, top_k)
+    groups = [
+        ("all heads", rows, COLORS["tail"]),
+        ("text_mass top-k", sets["text_mass"], COLORS["text"]),
+        ("contrastive top-k", sets["contrastive"], COLORS["contrast"]),
+        ("fused top-k", sets["fused"], COLORS["selected"]),
+    ]
+    metrics = [
+        ("mean_text_mass", r"$I_{text}$", lambda group: mean(as_float(row, "text_mass_all") for row in group)),
+        ("mean_log_gap", r"$\log(1+C_{toi}^+)$", lambda group: mean(math.log1p(max(as_float(row, "raw_toi_gap_hall_minus_grounded"), 0.0)) for row in group)),
+        ("mean_bounded_gap", r"$\Delta T/(T+I)$", lambda group: mean(as_float(row, "bounded_ratio_hallucinated") - as_float(row, "bounded_ratio_grounded") for row in group)),
+        ("mean_score", r"$S(l,h)$", lambda group: mean(as_float(row, "score") for row in group)),
+    ]
+    fig, axes = plt.subplots(1, len(metrics), figsize=(9.4, 2.4))
+    for ax, (_, title, getter) in zip(axes, metrics):
+        values = [getter(group) for _, group, _ in groups]
+        colors = [color for _, _, color in groups]
+        x = np.arange(len(groups))
+        ax.bar(x, values, color=colors, alpha=0.82)
+        ax.set_title(title)
+        ax.set_xticks(x)
+        ax.set_xticklabels([label.replace(" ", "\n") for label, _, _ in groups], rotation=0)
+        ax.grid(axis="y")
+    fig.suptitle(f"Feature profiles of independent top-{top_k} sets", y=1.04, fontsize=9.4, weight="bold")
+    return {"independent_topk_feature_profile_bars": save(fig, output_dir, "independent_topk_feature_profile_bars", formats)}
+
+
+def plot_independent_coarse_attention_patterns(rows, output_dir, formats, top_k):
+    sets = independent_feature_sets(rows, top_k)
+    groups = [
+        ("text_mass top-k", sets["text_mass"], COLORS["text"]),
+        ("contrastive top-k", sets["contrastive"], COLORS["contrast"]),
+        ("fused top-k", sets["fused"], COLORS["selected"]),
+    ]
+    labels = []
+    bars = []
+    edgecolors = []
+    for group_name, group, color in groups:
+        for label in ("grounded", "hallucinated"):
+            text = mean(as_float(row, f"text_mass_{label}") for row in group)
+            image = mean(as_float(row, f"image_mass_{label}") for row in group)
+            other = max(0.0, 1.0 - text - image)
+            labels.append(group_name.replace(" top-k", "") + "\n" + ("G" if label == "grounded" else "H"))
+            bars.append((other, image, text))
+            edgecolors.append(COLORS["ground"] if label == "grounded" else COLORS["hall"])
+    values = np.array(bars, dtype=np.float64)
+    fig, ax = plt.subplots(figsize=(6.0, 2.65))
+    x = np.arange(len(values))
+    bottom = np.zeros(len(values), dtype=np.float64)
+    for idx, (name, color) in enumerate([("other", COLORS["muted"]), ("image", COLORS["image"]), ("text", COLORS["text"])]):
+        ax.bar(x, values[:, idx], bottom=bottom, color=color, alpha=0.82, label=name)
+        bottom += values[:, idx]
+    for xpos, edgecolor in zip(x, edgecolors):
+        ax.add_patch(plt.Rectangle((xpos - 0.4, 0), 0.8, 1.0, fill=False, edgecolor=edgecolor, linewidth=1.0))
+    ax.set_title(f"Coarse attention pattern of independent top-{top_k} sets")
+    ax.set_ylabel("mean attention mass")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_ylim(0, 1.0)
+    ax.grid(axis="y")
+    ax.legend(frameon=False, ncol=3, loc="upper left")
+    ax.text(0.99, 0.98, "border: green=grounded, red=hallucinated", transform=ax.transAxes, ha="right", va="top", color=COLORS["muted"], fontsize=6.2)
+    return {"independent_topk_coarse_attention_patterns": save(fig, output_dir, "independent_topk_coarse_attention_patterns", formats)}
+
+
+def independent_topk_summary(rows, top_k):
+    sets = independent_feature_sets(rows, top_k)
+    text_keys = {head_key(row) for row in sets["text_mass"]}
+    contrast_keys = {head_key(row) for row in sets["contrastive"]}
+    fused_keys = {head_key(row) for row in sets["fused"]}
+    output = []
+    for name, group in sets.items():
+        keys = {head_key(row) for row in group}
+        output.append(
+            {
+                "feature_set": name,
+                "top_k": top_k,
+                "n_heads": len(group),
+                "mean_layer": mean(as_int(row, "layer") for row in group),
+                "mean_text_mass_all": mean(as_float(row, "text_mass_all") for row in group),
+                "mean_text_percentile": mean(as_float(row, "text_percentile") for row in group),
+                "mean_log_positive_raw_gap": mean(math.log1p(max(as_float(row, "raw_toi_gap_hall_minus_grounded"), 0.0)) for row in group),
+                "mean_contrast_percentile": mean(as_float(row, "contrast_percentile") for row in group),
+                "mean_fused_score": mean(as_float(row, "score") for row in group),
+                "overlap_with_text_topk": len(keys & text_keys),
+                "overlap_with_contrastive_topk": len(keys & contrast_keys),
+                "overlap_with_fused_topk": len(keys & fused_keys),
+                "heads": " ".join(head_key(row) for row in group),
+            }
+        )
+    output.append(
+        {
+            "feature_set": "text_vs_contrastive_overlap",
+            "top_k": top_k,
+            "n_heads": len(text_keys & contrast_keys),
+            "jaccard_text_contrastive": len(text_keys & contrast_keys) / max(len(text_keys | contrast_keys), 1),
+            "pearson_text_contrast_percentile": float(np.corrcoef(arr(rows, "text_percentile"), arr(rows, "contrast_percentile"))[0, 1]),
+            "heads": " ".join(sorted(text_keys & contrast_keys)),
+        }
+    )
+    return output
+
+
 def build_summary(rows, layers):
     selected = selected_rows(rows)
     window = window_rows(rows, layers) if layers else []
@@ -614,6 +1058,7 @@ def main():
     parser.add_argument("--source-dir", default="./results/coco/method_figure_source_trace_n100_k150_l9_16")
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--selection-layers", default="")
+    parser.add_argument("--feature-top-k", type=int, default=0)
     parser.add_argument("--formats", default="png,pdf,svg")
     args = parser.parse_args()
 
@@ -622,9 +1067,16 @@ def main():
     output_dir = os.path.abspath(args.output_dir or os.path.join(source_dir, "feature_axis_visualization_zoo"))
     formats = [fmt.strip().lstrip(".") for fmt in args.formats.split(",") if fmt.strip()]
     rows, source_summary, layers = load_source(source_dir, parse_layers(args.selection_layers))
+    feature_top_k = int(args.feature_top_k or source_summary.get("top_k") or len(selected_rows(rows)) or 150)
 
     figures = {}
     for chunk in [
+        plot_non_circular_feature_rationale_panel(rows, output_dir, formats, feature_top_k),
+        plot_independent_topk_layer_head_maps(rows, output_dir, formats, feature_top_k),
+        plot_independent_topk_layer_distribution(rows, output_dir, formats, feature_top_k),
+        plot_independent_rank_relationship(rows, output_dir, formats, feature_top_k),
+        plot_independent_feature_profile_bars(rows, output_dir, formats, feature_top_k),
+        plot_independent_coarse_attention_patterns(rows, output_dir, formats, feature_top_k),
         plot_sorted_axis(rows, output_dir, formats),
         plot_distribution_overlays(rows, output_dir, formats, layers),
         plot_scatter_views(rows, output_dir, formats, layers),
@@ -640,17 +1092,22 @@ def main():
     summary_rows = build_summary(rows, layers)
     summary_csv = os.path.join(output_dir, "feature_axis_visualization_zoo_summary.csv")
     write_csv(summary_csv, summary_rows)
+    independent_rows = independent_topk_summary(rows, feature_top_k)
+    independent_summary_csv = os.path.join(output_dir, "feature_axis_independent_topk_summary.csv")
+    write_csv(independent_summary_csv, independent_rows)
     manifest = {
         "source_dir": source_dir,
         "output_dir": output_dir,
         "formats": formats,
         "selection_layers": layers if layers else "all",
+        "feature_top_k": feature_top_k,
         "source_summary": {
             "top_k": source_summary.get("top_k"),
             "num_samples": source_summary.get("num_samples"),
             "n_object_records": source_summary.get("n_object_records"),
         },
         "summary_csv": summary_csv,
+        "independent_topk_summary_csv": independent_summary_csv,
         "figures": figures,
     }
     manifest_path = os.path.join(output_dir, "feature_axis_visualization_zoo_manifest.json")
@@ -659,6 +1116,12 @@ def main():
     print("[summary] feature-axis groups")
     for row in summary_rows:
         print(row)
+    print("[summary] independent top-k feature sets")
+    for row in independent_rows:
+        preview = dict(row)
+        if "heads" in preview and len(str(preview["heads"])) > 180:
+            preview["heads"] = str(preview["heads"])[:180] + "..."
+        print(preview)
 
 
 if __name__ == "__main__":
