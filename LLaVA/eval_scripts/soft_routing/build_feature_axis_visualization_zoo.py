@@ -804,6 +804,175 @@ def draw_head_grid(ax, group, color, title, subtitle, max_layer, max_head, marke
     ax.text(0.02, 0.96, subtitle, transform=ax.transAxes, ha="left", va="top", fontsize=6.2, color=COLORS["muted"])
 
 
+def bounded_gap(row):
+    return as_float(row, "bounded_ratio_hallucinated") - as_float(row, "bounded_ratio_grounded")
+
+
+def log_toi_pair(row):
+    return (
+        math.log1p(max(as_float(row, "raw_toi_grounded"), 0.0)),
+        math.log1p(max(as_float(row, "raw_toi_hallucinated"), 0.0)),
+    )
+
+
+def choose_feature_axis_exemplars(rows):
+    text_only_candidates = [row for row in rows if as_float(row, "contrast_percentile") <= 0.25]
+    if not text_only_candidates:
+        text_only_candidates = rows
+    text_only = max(
+        text_only_candidates,
+        key=lambda row: (
+            as_float(row, "text_percentile"),
+            -as_float(row, "contrast_percentile"),
+            as_float(row, "text_mass_all"),
+        ),
+    )
+
+    contrast_candidates = [
+        row
+        for row in rows
+        if as_float(row, "contrast_percentile") >= 0.75
+        and 0.30 <= as_float(row, "text_percentile") <= 0.80
+        and bounded_gap(row) > 0
+    ]
+    if not contrast_candidates:
+        contrast_candidates = [row for row in rows if bounded_gap(row) > 0] or rows
+    contrast_shift = max(
+        contrast_candidates,
+        key=lambda row: (
+            bounded_gap(row),
+            as_float(row, "contrast_percentile"),
+            -abs(as_float(row, "text_percentile") - 0.55),
+        ),
+    )
+
+    fused_candidates = [row for row in rows if as_int(row, "selection_allowed") == 1]
+    if not fused_candidates:
+        fused_candidates = rows
+    fused = max(
+        fused_candidates,
+        key=lambda row: (
+            as_float(row, "score"),
+            as_float(row, "text_percentile") + as_float(row, "contrast_percentile"),
+        ),
+    )
+    return {
+        "text_only": text_only,
+        "contrast_shift": contrast_shift,
+        "fused": fused,
+    }
+
+
+def plot_feature_axis_exemplar_panel(rows, output_dir, formats):
+    exemplars = choose_feature_axis_exemplars(rows)
+    fig, axes = plt.subplots(
+        1,
+        4,
+        figsize=(10.6, 2.55),
+        gridspec_kw={"width_ratios": [1.0, 1.0, 1.0, 1.25]},
+    )
+    panels = [
+        (
+            axes[0],
+            exemplars["text_only"],
+            "A. text-heavy head",
+            "high text reliance,\nlow hall specificity",
+            COLORS["text"],
+        ),
+        (
+            axes[1],
+            exemplars["contrast_shift"],
+            "B. contrastive head",
+            "hall step shifts\ntext-over-image upward",
+            COLORS["contrast"],
+        ),
+        (
+            axes[2],
+            exemplars["fused"],
+            "C. fused head",
+            "high on both axes",
+            COLORS["selected"],
+        ),
+    ]
+    max_y = 0.0
+    for _, row, *_ in panels:
+        ground_log, hall_log = log_toi_pair(row)
+        max_y = max(max_y, ground_log, hall_log)
+    max_y = max(max_y * 1.34, 1.0)
+
+    for ax, row, title, subtitle, color in panels:
+        ground_log, hall_log = log_toi_pair(row)
+        values = [ground_log, hall_log]
+        ax.bar([0, 1], values, color=[COLORS["ground"], COLORS["hall"]], width=0.58, alpha=0.82)
+        for idx, value in enumerate(values):
+            ax.text(idx, value + max_y * 0.035, f"{value:.2f}", ha="center", va="bottom", fontsize=6.2, color=COLORS["dark"])
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(["ground", "hall"])
+        ax.set_ylim(0, max_y)
+        ax.grid(axis="y")
+        ax.set_title(title, fontsize=8.4, pad=3)
+        ax.text(0.5, 0.91, subtitle, transform=ax.transAxes, ha="center", va="top", fontsize=6.3, color=COLORS["muted"])
+        ax.text(
+            0.02,
+            0.08,
+            f"{head_key(row)}  L{as_int(row, 'layer')}:H{as_int(row, 'head')}\n"
+            f"P_text={as_float(row, 'text_percentile'):.2f}, P_contrast={as_float(row, 'contrast_percentile'):.2f}\n"
+            f"I_text={as_float(row, 'text_mass_all'):.2f}, Δlog={hall_log - ground_log:.2f}",
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=5.8,
+            color=COLORS["dark"],
+            bbox={"facecolor": "white", "edgecolor": "#e2e8f0", "alpha": 0.84, "pad": 1.5},
+        )
+        if ax is axes[0]:
+            ax.set_ylabel("log(1 + text/image)")
+
+    ax = axes[3]
+    text_vals = arr(rows, "text_percentile")
+    contrast_vals = arr(rows, "contrast_percentile")
+    ax.scatter(text_vals, contrast_vals, s=10, color=COLORS["tail"], alpha=0.26, linewidths=0)
+    markers = [
+        ("text-heavy", exemplars["text_only"], COLORS["text"], "o"),
+        ("contrastive", exemplars["contrast_shift"], COLORS["contrast"], "s"),
+        ("fused", exemplars["fused"], COLORS["selected"], "*"),
+    ]
+    for label, row, color, marker in markers:
+        x = as_float(row, "text_percentile")
+        y = as_float(row, "contrast_percentile")
+        ax.scatter([x], [y], s=88 if marker == "*" else 54, color=color, marker=marker, edgecolors="white", linewidths=0.6, zorder=4, label=label)
+        ax.annotate(
+            head_key(row),
+            (x, y),
+            xytext=(5, 4),
+            textcoords="offset points",
+            fontsize=6.2,
+            color=COLORS["dark"],
+            zorder=5,
+        )
+    ax.set_title("D. axes before top-k cutoff", fontsize=8.4, pad=3)
+    ax.set_xlabel("text leverage percentile")
+    ax.set_ylabel("contrastive percentile")
+    ax.set_xlim(-0.02, 1.02)
+    ax.set_ylim(-0.02, 1.02)
+    ax.grid(True)
+    ax.legend(frameon=False, loc="lower right")
+    ax.text(
+        0.03,
+        0.97,
+        "all 1024 heads\nfeature axes first",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=6.1,
+        color=COLORS["muted"],
+    )
+
+    fig.suptitle("Feature axes are not the final top-k pool", y=1.02, fontsize=10.2, weight="bold")
+    fig.subplots_adjust(top=0.80, bottom=0.24, left=0.055, right=0.99, wspace=0.32)
+    return {"feature_axis_exemplar_panel": save(fig, output_dir, "feature_axis_exemplar_panel", formats)}
+
+
 def plot_non_circular_feature_rationale_panel(rows, output_dir, formats, top_k):
     stats = feature_relation_stats(rows, top_k)
     sets = stats["sets"]
@@ -1229,8 +1398,8 @@ def main():
 
     figures = {}
     for chunk in [
+        plot_feature_axis_exemplar_panel(rows, output_dir, formats),
         plot_dark_feature_story_panel(rows, output_dir, formats, feature_top_k, layers),
-        plot_non_circular_feature_rationale_panel(rows, output_dir, formats, feature_top_k),
         plot_independent_topk_layer_head_maps(rows, output_dir, formats, feature_top_k),
         plot_independent_topk_layer_distribution(rows, output_dir, formats, feature_top_k),
         plot_independent_rank_relationship(rows, output_dir, formats, feature_top_k),
