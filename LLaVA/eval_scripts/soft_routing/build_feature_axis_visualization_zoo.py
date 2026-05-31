@@ -14,7 +14,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LinearSegmentedColormap, LogNorm
+from matplotlib.patches import Rectangle
 
 
 COLORS = {
@@ -142,7 +143,7 @@ def save(fig, output_dir, name, formats):
     paths = {}
     for fmt in formats:
         path = os.path.join(output_dir, f"{name}.{fmt}")
-        fig.savefig(path, bbox_inches="tight", facecolor="white")
+        fig.savefig(path, bbox_inches="tight", facecolor=fig.get_facecolor())
         paths[fmt] = path
     plt.close(fig)
     return paths
@@ -171,6 +172,36 @@ def log_raw_gap(rows):
 
 def log_raw_toi(rows, key):
     return np.log1p(arr(rows, key))
+
+
+def finite_values(values):
+    values = np.asarray(values, dtype=np.float64)
+    return values[np.isfinite(values)]
+
+
+def kde_curve(values, xmin=None, xmax=None, n_points=320):
+    values = finite_values(values)
+    if len(values) == 0:
+        grid = np.linspace(0.0, 1.0, n_points)
+        return grid, np.zeros_like(grid)
+    if xmin is None:
+        xmin = float(np.min(values))
+    if xmax is None:
+        xmax = float(np.max(values))
+    if xmax <= xmin:
+        xmax = xmin + 1.0
+    values = np.clip(values, xmin, xmax)
+    grid = np.linspace(xmin, xmax, n_points)
+    std = float(np.std(values))
+    span = xmax - xmin
+    bw = 1.06 * std * (len(values) ** -0.2) if std > 0 else span / 25.0
+    bw = max(bw, span / 80.0, 1e-4)
+    z = (grid[:, None] - values[None, :]) / bw
+    density = np.exp(-0.5 * z * z).mean(axis=1) / (bw * math.sqrt(2.0 * math.pi))
+    peak = float(np.max(density))
+    if peak > 0:
+        density = density / peak
+    return grid, density
 
 
 def head_key(row):
@@ -626,6 +657,133 @@ def plot_top_rank_curves(rows, output_dir, formats):
     return {"curve_fused_rank_feature_values": save(fig, output_dir, "curve_fused_rank_feature_values", formats)}
 
 
+def dark_axis(ax):
+    ax.set_facecolor("#20211f")
+    ax.tick_params(colors="#a8a29e", length=0)
+    for spine in ax.spines.values():
+        spine.set_color("#3f3f3a")
+    ax.grid(False)
+
+
+def plot_dark_feature_story_panel(rows, output_dir, formats, top_k, layers):
+    selected = selected_rows(rows)
+    feature_sets = independent_feature_sets(rows, top_k)
+    text_feature_rows = feature_sets["text_mass"]
+    contrast_feature_rows = feature_sets["contrastive"]
+    use_layers = layers or sorted(set(as_int(row, "layer") for row in selected))
+    layer_label = f"layers {min(use_layers)}-{max(use_layers)}" if use_layers else "selected layers"
+    dark_bg = "#1f201d"
+    muted = "#9a9690"
+    offwhite = "#f4f1e9"
+    green = "#58a88c"
+    hall = "#b46a50"
+    purple = "#6f5bd6"
+    pale = "#e8e6fb"
+    cmap = LinearSegmentedColormap.from_list("story_purple", ["#262521", pale, "#7a6be8", "#342b83"])
+
+    fig = plt.figure(figsize=(10.6, 4.05), facecolor=dark_bg)
+    ax1 = fig.add_axes([0.055, 0.25, 0.28, 0.54])
+    ax2 = fig.add_axes([0.395, 0.25, 0.28, 0.54])
+    ax3 = fig.add_axes([0.735, 0.28, 0.235, 0.50])
+    axes = [ax1, ax2, ax3]
+    for ax in axes:
+        dark_axis(ax)
+
+    fig.text(0.055, 0.92, "Text-side mass", color=offwhite, fontsize=12.5, weight="bold")
+    fig.text(0.055, 0.865, "leverage, but overlaps", color=muted, fontsize=10.2, weight="bold")
+    fig.text(0.395, 0.92, "Text-over-image ratio", color=offwhite, fontsize=12.5, weight="bold")
+    fig.text(0.395, 0.865, "contrastive: hall vs non-hall shift", color=muted, fontsize=10.2, weight="bold")
+    fig.text(0.735, 0.92, "Fused selection", color=offwhite, fontsize=12.5, weight="bold")
+    fig.text(0.735, 0.865, "S = 1/2 P(I) + 1/2 P(C)", color=muted, fontsize=10.2, weight="bold")
+
+    x_g = arr(text_feature_rows, "text_mass_grounded")
+    x_h = arr(text_feature_rows, "text_mass_hallucinated")
+    grid_g, den_g = kde_curve(x_g, 0.0, 1.0)
+    grid_h, den_h = kde_curve(x_h, 0.0, 1.0)
+    ax1.fill_between(grid_g, den_g, color=green, alpha=0.58)
+    ax1.fill_between(grid_h, den_h, color=hall, alpha=0.58)
+    ax1.plot(grid_g, den_g, color=green, linewidth=1.6)
+    ax1.plot(grid_h, den_h, color=hall, linewidth=1.6)
+    ax1.set_xlim(0, 1)
+    ax1.set_ylim(0, 1.18)
+    ax1.set_xlabel("text-side mass I", color=muted, fontsize=10.0, labelpad=6)
+    ax1.set_ylabel("density", color=muted, fontsize=10.0, labelpad=8)
+    ax1.set_xticks([])
+    ax1.set_yticks([])
+    med_g = float(np.median(x_g))
+    med_h = float(np.median(x_h))
+    y_bar = 0.91
+    ax1.plot([med_g, med_h], [y_bar, y_bar], color=muted, linewidth=0.9)
+    ax1.text((med_g + med_h) / 2, y_bar + 0.035, "heavy overlap", color=muted, fontsize=7.4, ha="center")
+    ax1.scatter([], [], s=70, marker="s", color=green, label="non-hall")
+    ax1.scatter([], [], s=70, marker="s", color=hall, label="hallucinated")
+    leg = ax1.legend(frameon=False, loc="lower left", bbox_to_anchor=(-0.03, -0.16), ncol=2, handlelength=0.8, handletextpad=0.4, columnspacing=1.0)
+    for text in leg.get_texts():
+        text.set_color(offwhite)
+        text.set_fontweight("bold")
+    ax1.text(0.5, -0.25, "cannot separate alone", transform=ax1.transAxes, color=muted, ha="center", va="top", fontsize=8.1, style="italic", weight="bold")
+
+    raw_g = np.log1p(arr(contrast_feature_rows, "raw_toi_grounded"))
+    raw_h = np.log1p(arr(contrast_feature_rows, "raw_toi_hallucinated"))
+    combined = np.concatenate([finite_values(raw_g), finite_values(raw_h)])
+    xmin = float(np.percentile(combined, 1.0)) if len(combined) else 0.0
+    xmax = float(np.percentile(combined, 99.2)) if len(combined) else 1.0
+    grid_g, den_g = kde_curve(raw_g, xmin, xmax)
+    grid_h, den_h = kde_curve(raw_h, xmin, xmax)
+    ax2.fill_between(grid_g, den_g, color=green, alpha=0.62)
+    ax2.fill_between(grid_h, den_h, color=hall, alpha=0.62)
+    ax2.plot(grid_g, den_g, color=green, linewidth=1.6)
+    ax2.plot(grid_h, den_h, color=hall, linewidth=1.6)
+    ax2.set_xlim(xmin, xmax)
+    ax2.set_ylim(0, 1.18)
+    ax2.set_xlabel("log(1 + T / I), per head", color=muted, fontsize=10.0, labelpad=6)
+    ax2.set_ylabel("density", color=muted, fontsize=10.0, labelpad=8)
+    ax2.set_xticks([])
+    ax2.set_yticks([])
+    mean_g = float(np.mean(finite_values(raw_g)))
+    mean_h = float(np.mean(finite_values(raw_h)))
+    ax2.axvline(mean_g, color=green, linestyle="--", linewidth=0.9, alpha=0.85, ymin=0.32, ymax=0.83)
+    ax2.axvline(mean_h, color=hall, linestyle="--", linewidth=0.9, alpha=0.85, ymin=0.32, ymax=0.83)
+    y_arrow = 0.96
+    ax2.plot([mean_g, mean_h], [y_arrow, y_arrow], color=muted, linewidth=0.8)
+    ax2.plot([mean_g, mean_g], [y_arrow - 0.02, y_arrow + 0.02], color=muted, linewidth=0.8)
+    ax2.plot([mean_h, mean_h], [y_arrow - 0.02, y_arrow + 0.02], color=muted, linewidth=0.8)
+    ax2.text((mean_g + mean_h) / 2, y_arrow + 0.055, "C = E[r|H] - E[r|G]", color=muted, fontsize=7.4, ha="center", weight="bold")
+    ax2.text(0.5, -0.25, "hallucination-specific separation", transform=ax2.transAxes, color=muted, ha="center", va="top", fontsize=8.1, style="italic", weight="bold")
+
+    mat, _ = layer_head_matrix(rows, arr(rows, "score"))
+    im = ax3.imshow(mat, aspect="auto", origin="lower", cmap=cmap, vmin=0.0, vmax=1.0, interpolation="nearest")
+    ax3.set_xlabel("")
+    ax3.set_ylabel("")
+    ax3.set_xticks([])
+    yticks = [0]
+    if use_layers:
+        yticks += [min(use_layers), max(use_layers)]
+    yticks += [mat.shape[0] - 1]
+    yticks = sorted(set(tick for tick in yticks if 0 <= tick < mat.shape[0]))
+    ax3.set_yticks(yticks)
+    ax3.set_yticklabels([f"L{tick}" for tick in yticks], color=muted)
+    if use_layers:
+        start, end = min(use_layers), max(use_layers)
+        ax3.add_patch(Rectangle((-0.5, start - 0.5), mat.shape[1], end - start + 1, fill=False, edgecolor="#ff5a4f", linewidth=1.1, linestyle="--"))
+    selected = selected_rows(rows)
+    if selected:
+        ax3.scatter([as_int(row, "head") for row in selected], [as_int(row, "layer") for row in selected], s=7, facecolors="none", edgecolors="#181a18", linewidths=0.35)
+    ax3.text(0.5, -0.12, f"selected pool ({layer_label})", transform=ax3.transAxes, ha="center", va="top", color=offwhite, fontsize=7.6, weight="bold")
+    cax = fig.add_axes([0.735, 0.17, 0.235, 0.022])
+    cb = fig.colorbar(im, cax=cax, orientation="horizontal")
+    cb.outline.set_visible(False)
+    cb.set_ticks([])
+    cax.set_facecolor(dark_bg)
+    fig.text(0.735, 0.13, "low", color=muted, fontsize=8.0, ha="left", weight="bold")
+    fig.text(0.970, 0.13, "high S", color=muted, fontsize=8.0, ha="right", weight="bold")
+    fig.text(0.735, 0.06, "leverage / specificity", color=muted, fontsize=8.4, ha="left", style="italic", weight="bold")
+
+    fig.text(0.352, 0.505, "->", color="#6d6a64", fontsize=21.0, ha="center", va="center")
+    fig.text(0.694, 0.505, "->", color="#6d6a64", fontsize=21.0, ha="center", va="center")
+    return {"dark_feature_story_panel": save(fig, output_dir, "dark_feature_story_panel", formats)}
+
+
 def draw_head_grid(ax, group, color, title, subtitle, max_layer, max_head, marker="o"):
     ax.set_facecolor("#f8fafc")
     ax.scatter(
@@ -1071,6 +1229,7 @@ def main():
 
     figures = {}
     for chunk in [
+        plot_dark_feature_story_panel(rows, output_dir, formats, feature_top_k, layers),
         plot_non_circular_feature_rationale_panel(rows, output_dir, formats, feature_top_k),
         plot_independent_topk_layer_head_maps(rows, output_dir, formats, feature_top_k),
         plot_independent_topk_layer_distribution(rows, output_dir, formats, feature_top_k),
