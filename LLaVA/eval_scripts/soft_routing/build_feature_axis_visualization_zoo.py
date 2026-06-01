@@ -973,6 +973,144 @@ def plot_feature_axis_exemplar_panel(rows, output_dir, formats):
     return {"feature_axis_exemplar_panel": save(fig, output_dir, "feature_axis_exemplar_panel", formats)}
 
 
+def choose_mass_split_exemplars(rows, layers):
+    base = window_rows(rows, layers) if layers else rows
+    if not base:
+        base = rows
+
+    text_candidates = [
+        row
+        for row in base
+        if as_float(row, "text_percentile") >= 0.85
+        and as_float(row, "contrast_percentile") <= 0.35
+    ]
+    if not text_candidates:
+        text_candidates = base
+    text_only = max(
+        text_candidates,
+        key=lambda row: (
+            as_float(row, "text_mass_all"),
+            as_float(row, "text_percentile"),
+            -as_float(row, "contrast_percentile"),
+        ),
+    )
+
+    contrast_candidates = [
+        row
+        for row in base
+        if as_float(row, "contrast_percentile") >= 0.75
+        and as_float(row, "text_percentile") <= 0.80
+        and bounded_gap(row) > 0.0
+    ]
+    if not contrast_candidates:
+        contrast_candidates = [row for row in base if bounded_gap(row) > 0.0] or base
+    contrastive = max(
+        contrast_candidates,
+        key=lambda row: (
+            bounded_gap(row),
+            as_float(row, "contrast_percentile"),
+            -abs(as_float(row, "text_percentile") - 0.55),
+        ),
+    )
+
+    fused_candidates = [row for row in base if as_float(row, "text_percentile") >= 0.75 and as_float(row, "contrast_percentile") >= 0.75]
+    if not fused_candidates:
+        fused_candidates = base
+    fused = max(
+        fused_candidates,
+        key=lambda row: (
+            as_float(row, "score"),
+            as_float(row, "text_percentile") + as_float(row, "contrast_percentile"),
+        ),
+    )
+    return {
+        "text-only": text_only,
+        "contrastive": contrastive,
+        "fused": fused,
+    }
+
+
+def mass_split_row(name, row):
+    ground_log, hall_log = log_toi_pair(row)
+    return {
+        "exemplar": name,
+        "head_key": head_key(row),
+        "layer": as_int(row, "layer"),
+        "head": as_int(row, "head"),
+        "selected": as_int(row, "selected"),
+        "score": as_float(row, "score"),
+        "text_percentile": as_float(row, "text_percentile"),
+        "contrast_percentile": as_float(row, "contrast_percentile"),
+        "text_mass_grounded": as_float(row, "text_mass_grounded"),
+        "text_mass_hallucinated": as_float(row, "text_mass_hallucinated"),
+        "image_mass_grounded": as_float(row, "image_mass_grounded"),
+        "image_mass_hallucinated": as_float(row, "image_mass_hallucinated"),
+        "bounded_ratio_grounded": as_float(row, "bounded_ratio_grounded"),
+        "bounded_ratio_hallucinated": as_float(row, "bounded_ratio_hallucinated"),
+        "bounded_ratio_gap_hall_minus_grounded": bounded_gap(row),
+        "log_toi_grounded": ground_log,
+        "log_toi_hallucinated": hall_log,
+        "log_toi_gap_hall_minus_grounded": hall_log - ground_log,
+    }
+
+
+def plot_mass_split_feature_exemplar_panel(rows, output_dir, formats, layers):
+    exemplars = choose_mass_split_exemplars(rows, layers)
+    labels = [
+        ("text-only", "A. text-mass axis", "text dominates both cases", COLORS["text"]),
+        ("contrastive", "B. contrastive axis", "hall shifts toward text", COLORS["contrast"]),
+        ("fused", "C. fused axis", "high leverage and specificity", COLORS["selected"]),
+    ]
+    exemplar_rows = [mass_split_row(name, exemplars[name]) for name, *_ in labels]
+    write_csv(os.path.join(output_dir, "mass_split_feature_exemplars.csv"), exemplar_rows)
+
+    fig, axes = plt.subplots(1, 3, figsize=(7.4, 2.72), sharey=True)
+    width = 0.34
+    x = np.array([0.0, 1.0])
+    for ax, (name, title, subtitle, accent) in zip(axes, labels):
+        row = exemplars[name]
+        image_vals = np.array([
+            as_float(row, "image_mass_grounded"),
+            as_float(row, "image_mass_hallucinated"),
+        ])
+        text_vals = np.array([
+            as_float(row, "text_mass_grounded"),
+            as_float(row, "text_mass_hallucinated"),
+        ])
+        ax.bar(x - width / 2, image_vals, width=width, color=COLORS["image"], alpha=0.82, label="image mass")
+        ax.bar(x + width / 2, text_vals, width=width, color=COLORS["text"], alpha=0.82, label="text mass")
+        for idx in range(2):
+            ax.text(x[idx] - width / 2, image_vals[idx] + 0.025, f"{image_vals[idx]:.2f}", ha="center", va="bottom", fontsize=5.8, color=COLORS["image"])
+            ax.text(x[idx] + width / 2, text_vals[idx] + 0.025, f"{text_vals[idx]:.2f}", ha="center", va="bottom", fontsize=5.8, color=COLORS["text"])
+        ground_log, hall_log = log_toi_pair(row)
+        ax.set_title(title, fontsize=8.6, pad=4)
+        ax.text(0.5, 0.95, subtitle, transform=ax.transAxes, ha="center", va="top", fontsize=6.4, color=COLORS["muted"])
+        ax.set_xticks(x)
+        ax.set_xticklabels(["non-hall", "hall"])
+        ax.set_ylim(0, 1.06)
+        ax.grid(axis="y")
+        ax.text(
+            0.5,
+            -0.30,
+            f"{head_key(row)}  L{as_int(row, 'layer')}:H{as_int(row, 'head')}\n"
+            f"P_text={as_float(row, 'text_percentile'):.2f}, P_contrast={as_float(row, 'contrast_percentile'):.2f}, "
+            f"Δlog(T/I)={hall_log - ground_log:.2f}",
+            transform=ax.transAxes,
+            ha="center",
+            va="top",
+            fontsize=5.9,
+            color=COLORS["dark"],
+        )
+        if ax is axes[0]:
+            ax.set_ylabel("attention mass")
+    layer_label = f"L{min(layers)}-{max(layers)}" if layers else "all layers"
+    handles, legend_labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, legend_labels, loc="lower center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 0.02))
+    fig.suptitle(f"Grounded vs hallucinated object steps for feature-axis exemplars ({layer_label})", y=1.02, fontsize=10.0, weight="bold")
+    fig.subplots_adjust(top=0.78, bottom=0.36, left=0.07, right=0.995, wspace=0.18)
+    return {"mass_split_feature_exemplar_panel": save(fig, output_dir, "mass_split_feature_exemplar_panel", formats)}
+
+
 def plot_non_circular_feature_rationale_panel(rows, output_dir, formats, top_k):
     stats = feature_relation_stats(rows, top_k)
     sets = stats["sets"]
@@ -1398,6 +1536,7 @@ def main():
 
     figures = {}
     for chunk in [
+        plot_mass_split_feature_exemplar_panel(rows, output_dir, formats, layers),
         plot_feature_axis_exemplar_panel(rows, output_dir, formats),
         plot_dark_feature_story_panel(rows, output_dir, formats, feature_top_k, layers),
         plot_independent_topk_layer_head_maps(rows, output_dir, formats, feature_top_k),
