@@ -482,10 +482,10 @@ A static method that suppresses the selected heads at every step therefore appli
 
 For selected head-step rows, the text-reliance ratio distributions overlap strongly:
 
-| label | median T/(T+I) | q75 T/(T+I) | frac ratio >= 0.9 |
+| label | median T/(T+I) | q75 T/(T+I) | q90 T/(T+I) |
 |---|---:|---:|---:|
-| grounded | {grounded_row.get('bounded_ratio_q50', 0.0):.3f} | {grounded_row.get('bounded_ratio_q75', 0.0):.3f} | {grounded_row.get('frac_bounded_ratio_ge_0p9', 0.0) * 100:.1f}% |
-| hallucinated | {hall_row.get('bounded_ratio_q50', 0.0):.3f} | {hall_row.get('bounded_ratio_q75', 0.0):.3f} | {hall_row.get('frac_bounded_ratio_ge_0p9', 0.0) * 100:.1f}% |
+| grounded | {grounded_row.get('bounded_ratio_q50', 0.0):.3f} | {grounded_row.get('bounded_ratio_q75', 0.0):.3f} | {grounded_row.get('bounded_ratio_q90', 0.0):.3f} |
+| hallucinated | {hall_row.get('bounded_ratio_q50', 0.0):.3f} | {hall_row.get('bounded_ratio_q75', 0.0):.3f} | {hall_row.get('bounded_ratio_q90', 0.0):.3f} |
 
 At the object-step level, after averaging over selected heads, the same overlap remains:
 
