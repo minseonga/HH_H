@@ -59,6 +59,18 @@ def analyze(base_rows, target_rows):
         target_ground = node_words(target.get("mscoco_non_hallucinated_words"))
         removed_hall, added_hall = counter_diff(base_hall, target_hall)
         removed_ground, added_ground = counter_diff(base_ground, target_ground)
+        base_ground_counts = collections.Counter(base_ground)
+        target_ground_counts = collections.Counter(target_ground)
+        reduced_ground_nodes = 0
+        disappeared_ground_nodes = 0
+        disappeared_ground_mentions = 0
+        for word, base_count in base_ground_counts.items():
+            target_count = target_ground_counts.get(word, 0)
+            if target_count < base_count:
+                reduced_ground_nodes += 1
+            if target_count == 0:
+                disappeared_ground_nodes += 1
+                disappeared_ground_mentions += base_count
 
         row = {
             "key": key,
@@ -71,6 +83,10 @@ def analyze(base_rows, target_rows):
             "target_ground_mentions": len(target_ground),
             "removed_ground_mentions": sum(removed_ground.values()),
             "added_ground_mentions": sum(added_ground.values()),
+            "base_ground_nodes": len(base_ground_counts),
+            "reduced_ground_nodes": reduced_ground_nodes,
+            "disappeared_ground_nodes": disappeared_ground_nodes,
+            "disappeared_ground_mentions": disappeared_ground_mentions,
             "removed_hall_words": "; ".join(
                 f"{word}x{count}" if count > 1 else word for word, count in sorted(removed_hall.items())
             ),
@@ -97,6 +113,10 @@ def analyze(base_rows, target_rows):
             "target_ground_mentions",
             "removed_ground_mentions",
             "added_ground_mentions",
+            "base_ground_nodes",
+            "reduced_ground_nodes",
+            "disappeared_ground_nodes",
+            "disappeared_ground_mentions",
         ):
             totals[field] += row[field]
         totals["images"] += 1
@@ -160,16 +180,20 @@ def draw_bar_figure(path, summary):
     ground_rate = summary["grounded_loss_rate"] * 100.0
     image_hall_rate = summary["images_with_hall_removed_rate"] * 100.0
     image_ground_rate = summary["images_with_ground_lost_rate"] * 100.0
+    ground_disappear_mention_rate = summary["grounded_disappeared_mention_rate"] * 100.0
+    ground_disappear_node_rate = summary["grounded_disappeared_node_rate"] * 100.0
+    ground_partial_node_rate = summary["grounded_partial_loss_node_rate"] * 100.0
+    ground_unchanged_node_rate = max(0.0, 100.0 - ground_disappear_node_rate - ground_partial_node_rate)
 
-    width, height = 860, 430
-    chart_x, chart_y, chart_w, chart_h = 118, 96, 650, 220
+    width, height = 900, 500
+    chart_x, chart_y, chart_w, chart_h = 118, 96, 650, 190
     ymax = 75.0
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         svg_rect(0, 0, width, height, "white"),
         svg_text(width / 2, 34, "AD-HH hard removes hallucinations, but also loses grounded mentions", 18, colors["dark"], "middle", "800"),
         svg_text(width / 2, 58, "Greedy -> AD-HH hard tau=0.4, COCO n=500; mention-level multiset comparison.", 12, colors["muted"], "middle"),
-        svg_rect(48, 76, 780, 300, colors["panel"], "#e5e7eb", 1, 8),
+        svg_rect(48, 76, 820, 385, colors["panel"], "#e5e7eb", 1, 8),
     ]
 
     for tick in [0, 0.25, 0.5, 0.75, 1.0]:
@@ -194,9 +218,23 @@ def draw_bar_figure(path, summary):
             parts.append(svg_text(cx, chart_y + chart_h + 26 + line_idx * 17, text_line, 12, colors["muted"], "middle", "700"))
 
     parts.append(svg_text(64, 200, "mention-level affected rate", 12, colors["muted"], "middle", "700"))
-    parts.append(svg_text(76, 352, f"Images with any hallucination removed: {image_hall_rate:.1f}%", 12, colors["hall"], "start", "700"))
-    parts.append(svg_text(430, 352, f"Images with any grounded mention lost: {image_ground_rate:.1f}%", 12, colors["ground"], "start", "700"))
-    parts.append(svg_text(width / 2, 404, "Takeaway: hard suppression is effective, but its caption-level effect is not hallucination-only.", 12, colors["dark"], "middle", "700"))
+    # Grounded severity breakdown.
+    bx, by, bw, bh = 98, 342, 700, 34
+    partial_w = bw * ground_partial_node_rate / 100.0
+    disappear_w = bw * ground_disappear_node_rate / 100.0
+    unchanged_w = max(0.0, bw - partial_w - disappear_w)
+    parts.append(svg_text(bx, by - 16, "Grounded object-node outcome under AD-HH hard", 13, colors["dark"], "start", "800"))
+    parts.append(svg_rect(bx, by, bw, bh, "#e5e7eb", "none", 1, 5))
+    parts.append(svg_rect(bx, by, unchanged_w, bh, "#cbd5e1", "none", 0.95, 5))
+    parts.append(svg_rect(bx + unchanged_w, by, partial_w, bh, "#8fd0ae", "none", 0.95, 0))
+    parts.append(svg_rect(bx + unchanged_w + partial_w, by, disappear_w, bh, colors["ground"], "none", 0.95, 0))
+    parts.append(svg_text(bx + unchanged_w / 2, by + 22, f"not reduced {ground_unchanged_node_rate:.1f}%", 11, colors["dark"], "middle", "700"))
+    parts.append(svg_text(bx + unchanged_w + partial_w / 2, by + 22, f"partial loss {ground_partial_node_rate:.1f}%", 11, colors["dark"], "middle", "700"))
+    parts.append(svg_text(bx + unchanged_w + partial_w + disappear_w / 2, by + 22, f"disappeared {ground_disappear_node_rate:.1f}%", 11, "white", "middle", "800"))
+    parts.append(svg_text(76, 412, f"Images with any hallucination removed: {image_hall_rate:.1f}%", 12, colors["hall"], "start", "700"))
+    parts.append(svg_text(430, 412, f"Images with any grounded mention lost: {image_ground_rate:.1f}%", 12, colors["ground"], "start", "700"))
+    parts.append(svg_text(76, 438, f"Full disappearance accounts for {ground_disappear_mention_rate:.1f}% of all grounded mentions and {summary['grounded_loss_due_to_disappearance_fraction'] * 100.0:.1f}% of grounded losses.", 12, colors["ground"], "start", "700"))
+    parts.append(svg_text(width / 2, 482, "Takeaway: hard suppression is effective, but grounded losses include complete object disappearance.", 12, colors["dark"], "middle", "700"))
     parts.append("</svg>")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(parts))
@@ -277,6 +315,21 @@ def main():
         "removed_ground_mentions": totals["removed_ground_mentions"],
         "added_ground_mentions": totals["added_ground_mentions"],
         "grounded_loss_rate": rate(totals["removed_ground_mentions"], totals["base_ground_mentions"]),
+        "base_ground_nodes": totals["base_ground_nodes"],
+        "reduced_ground_nodes": totals["reduced_ground_nodes"],
+        "grounded_reduced_node_rate": rate(totals["reduced_ground_nodes"], totals["base_ground_nodes"]),
+        "partial_loss_ground_nodes": totals["reduced_ground_nodes"] - totals["disappeared_ground_nodes"],
+        "grounded_partial_loss_node_rate": rate(
+            totals["reduced_ground_nodes"] - totals["disappeared_ground_nodes"],
+            totals["base_ground_nodes"],
+        ),
+        "disappeared_ground_nodes": totals["disappeared_ground_nodes"],
+        "grounded_disappeared_node_rate": rate(totals["disappeared_ground_nodes"], totals["base_ground_nodes"]),
+        "disappeared_ground_mentions": totals["disappeared_ground_mentions"],
+        "grounded_disappeared_mention_rate": rate(totals["disappeared_ground_mentions"], totals["base_ground_mentions"]),
+        "grounded_loss_due_to_disappearance_fraction": rate(
+            totals["disappeared_ground_mentions"], totals["removed_ground_mentions"]
+        ),
         "images_with_hall_removed": totals["images_with_hall_removed"],
         "images_with_hall_removed_rate": rate(totals["images_with_hall_removed"], totals["images"]),
         "images_with_ground_lost": totals["images_with_ground_lost"],
