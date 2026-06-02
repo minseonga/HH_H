@@ -118,11 +118,48 @@ def is_readable_token(token):
     return bool(re.match(r"^[A-Za-z][A-Za-z-]{2,}$", token))
 
 
-def token_label(row):
-    return f"{row['token_text']}@{row['step_idx']}"
+def normalize_object_key(text):
+    text = str(text or "").strip().lower()
+    text = re.sub(r"[^a-z0-9 ]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    parts = []
+    for part in text.split():
+        if len(part) > 3 and part.endswith("s"):
+            part = part[:-1]
+        parts.append(part)
+    return " ".join(parts)
 
 
-def aggregate_mentions(trace_rows):
+def parse_label_map(spec):
+    mapping = {}
+    for item in str(spec or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"label map entries must be old=new: {item}")
+        old, new = item.split("=", 1)
+        mapping[normalize_object_key(old)] = new.strip()
+    return mapping
+
+
+def object_text(row):
+    return (row.get("object_words") or row.get("token_text") or "").strip()
+
+
+def display_text(row, label_map=None):
+    raw = object_text(row)
+    key = normalize_object_key(raw)
+    if label_map and key in label_map:
+        return label_map[key]
+    return raw or row.get("token_text", "")
+
+
+def token_label(row, label_map=None):
+    return f"{display_text(row, label_map)}@{row['step_idx']}"
+
+
+def aggregate_mentions(trace_rows, label_map=None):
     grouped = defaultdict(list)
     for row in trace_rows:
         if row.get("label") != "hallucinated":
@@ -132,11 +169,15 @@ def aggregate_mentions(trace_rows):
             row.get("image", ""),
             row["step_idx"],
             row["token_text"],
+            row.get("object_words", ""),
         )
         grouped[key].append(row)
 
     mentions = []
-    for (qid, image, step_idx, token_text), rows in grouped.items():
+    for (qid, image, step_idx, token_text, words), rows in grouped.items():
+        mention_object_text = words or token_text
+        normalized = normalize_object_key(mention_object_text)
+        shown = label_map.get(normalized, mention_object_text) if label_map else mention_object_text
         deltas = [as_float(row, "delta") for row in rows]
         ratios = [as_float(row, "bounded_ratio") for row in rows]
         gates = [as_float(row, "gate") for row in rows]
@@ -147,7 +188,10 @@ def aggregate_mentions(trace_rows):
                 "image": image,
                 "step_idx": as_int({"x": step_idx}, "x"),
                 "token_text": token_text,
-                "token_label": f"{token_text}@{step_idx}",
+                "object_words": words,
+                "object_key": normalized,
+                "display_text": shown,
+                "token_label": f"{shown}@{step_idx}",
                 "n_heads": len(rows),
                 "mean_delta": mean(deltas),
                 "median_delta": quantile(deltas, 0.5),
@@ -159,13 +203,13 @@ def aggregate_mentions(trace_rows):
                 "max_ratio": max(ratios) if ratios else 0.0,
                 "mean_gate": mean(gates),
                 "mean_head_score": mean(scores),
-                "readable_token": int(is_readable_token(token_text)),
+                "readable_token": int(is_readable_token(shown)),
             }
         )
     return sorted(mentions, key=lambda row: (row["question_id"], row["step_idx"]))
 
 
-def sample_candidates(mentions, sample_lookup):
+def sample_candidates(mentions, sample_lookup, prefer_unique=False, min_unique=0):
     by_qid = defaultdict(list)
     for mention in mentions:
         by_qid[mention["question_id"]].append(mention)
@@ -177,6 +221,14 @@ def sample_candidates(mentions, sample_lookup):
         means = [row["mean_delta"] for row in group]
         ratios = [row["mean_ratio"] for row in group]
         readable = sum(row["readable_token"] for row in group)
+        unique_keys = []
+        unique_readable_keys = []
+        for row in group:
+            key = row["object_key"] or normalize_object_key(row["token_text"])
+            if key and key not in unique_keys:
+                unique_keys.append(key)
+            if row["readable_token"] and key and key not in unique_readable_keys:
+                unique_readable_keys.append(key)
         sample = sample_lookup.get(qid, {})
         rows.append(
             {
@@ -184,6 +236,9 @@ def sample_candidates(mentions, sample_lookup):
                 "image": sample.get("image", group[0]["image"]),
                 "n_hallucinated_mentions": len(group),
                 "n_readable_tokens": readable,
+                "n_unique_object_tokens": len(unique_keys),
+                "n_unique_readable_object_tokens": len(unique_readable_keys),
+                "unique_object_tokens": " ".join(unique_keys),
                 "mean_delta_min": min(means),
                 "mean_delta_max": max(means),
                 "mean_delta_spread": max(means) - min(means),
@@ -194,7 +249,20 @@ def sample_candidates(mentions, sample_lookup):
                 "caption": sample.get("caption", ""),
             }
         )
-    rows.sort(key=lambda row: (row["n_readable_tokens"], row["mean_delta_spread"], row["n_hallucinated_mentions"]), reverse=True)
+    if min_unique:
+        rows = [row for row in rows if int(row["n_unique_readable_object_tokens"]) >= int(min_unique)]
+    if prefer_unique:
+        rows.sort(
+            key=lambda row: (
+                int(row["n_unique_readable_object_tokens"]),
+                float(row["mean_delta_spread"]),
+                int(row["n_readable_tokens"]),
+                int(row["n_hallucinated_mentions"]),
+            ),
+            reverse=True,
+        )
+    else:
+        rows.sort(key=lambda row: (row["n_readable_tokens"], row["mean_delta_spread"], row["n_hallucinated_mentions"]), reverse=True)
     return rows
 
 
@@ -209,21 +277,31 @@ def choose_sample(candidates, requested_qid=None):
     return candidates[0]
 
 
+def collapse_unique_mentions(mentions):
+    by_key = {}
+    for row in mentions:
+        key = row["object_key"] or normalize_object_key(row["token_text"])
+        current = by_key.get(key)
+        if current is None or float(row["mean_delta"]) > float(current["mean_delta"]):
+            by_key[key] = row
+    return sorted(by_key.values(), key=lambda row: row["step_idx"])
+
+
 def head_token_matrix(trace_rows, qid, mentions, max_heads):
-    mention_keys = {(str(m["step_idx"]), m["token_text"]) for m in mentions}
+    mention_keys = {(str(m["step_idx"]), m["token_text"], m.get("object_words", "")) for m in mentions}
     by_head = defaultdict(dict)
     head_scores = {}
     for row in trace_rows:
         if row.get("question_id") != qid or row.get("label") != "hallucinated":
             continue
-        key = (row["step_idx"], row["token_text"])
+        key = (row["step_idx"], row["token_text"], row.get("object_words", ""))
         if key not in mention_keys:
             continue
         head = row.get("head_key") or f"{row.get('layer')}:{row.get('head')}"
         by_head[head][key] = as_float(row, "delta")
         head_scores[head] = as_float(row, "score")
 
-    token_keys = [(str(m["step_idx"]), m["token_text"]) for m in mentions]
+    token_keys = [(str(m["step_idx"]), m["token_text"], m.get("object_words", "")) for m in mentions]
     head_order = []
     for head, vals in by_head.items():
         vector = [vals.get(key, 0.0) for key in token_keys]
@@ -243,7 +321,7 @@ def head_token_matrix(trace_rows, qid, mentions, max_heads):
     for _, _, score, head in head_order:
         vals = [by_head[head].get(key, 0.0) for key in token_keys]
         matrix.append(vals)
-        rows.append({"head_key": head, "head_score": score, **{f"delta_{token}@{step}": val for (step, token), val in zip(token_keys, vals)}})
+        rows.append({"head_key": head, "head_score": score, **{f"delta_{token}@{step}": val for (step, token, _), val in zip(token_keys, vals)}})
     return token_keys, [item[3] for item in head_order], np.asarray(matrix, dtype=np.float64), rows
 
 
@@ -327,6 +405,10 @@ def main():
     parser.add_argument("--question-id", default="")
     parser.add_argument("--max-heads", type=int, default=35)
     parser.add_argument("--formats", default="png,pdf,svg")
+    parser.add_argument("--prefer-unique-object-tokens", action="store_true")
+    parser.add_argument("--unique-object-tokens", action="store_true")
+    parser.add_argument("--min-unique-readable-object-tokens", type=int, default=0)
+    parser.add_argument("--token-label-map", default="")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -336,11 +418,19 @@ def main():
     samples = read_csv(args.samples_csv)
     sample_lookup = {row["question_id"]: row for row in samples}
 
-    mentions = aggregate_mentions(trace_rows)
-    candidates = sample_candidates(mentions, sample_lookup)
+    label_map = parse_label_map(args.token_label_map)
+    mentions = aggregate_mentions(trace_rows, label_map)
+    candidates = sample_candidates(
+        mentions,
+        sample_lookup,
+        prefer_unique=args.prefer_unique_object_tokens,
+        min_unique=args.min_unique_readable_object_tokens,
+    )
     chosen = choose_sample(candidates, args.question_id or None)
     chosen_mentions = [row for row in mentions if row["question_id"] == chosen["question_id"]]
     chosen_mentions.sort(key=lambda row: row["step_idx"])
+    if args.unique_object_tokens:
+        chosen_mentions = collapse_unique_mentions(chosen_mentions)
 
     token_keys, head_order, matrix, matrix_rows = head_token_matrix(
         trace_rows, chosen["question_id"], chosen_mentions, args.max_heads

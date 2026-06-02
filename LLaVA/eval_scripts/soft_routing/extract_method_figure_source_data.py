@@ -811,6 +811,10 @@ def main(args):
                 "token_id": record["token_id"],
                 "token_text": record["token_text"],
                 "label": record["label"],
+                "object_words": " ".join(
+                    item.get("node_word", item.get("word", ""))
+                    for item in record.get("objects", [])
+                ),
                 "layer": layer,
                 "head": head,
                 "head_key": f"{layer}:{head}",
