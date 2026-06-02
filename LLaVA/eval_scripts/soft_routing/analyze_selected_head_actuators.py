@@ -291,7 +291,7 @@ The selected heads are not reliable hallucination detectors. Instead, they are b
 | metric | selected top-{top_k} | non-selected |
 |---|---:|---:|
 | mean text-side mass $I_{{text}}$ | {selected['mean_Itext_all']:.3f} | {non['mean_Itext_all']:.3f} |
-| mean contrastive $C_{{toi}}$ H-G | {selected['mean_C_toi_HminusG']:.3f} | {non['mean_C_toi_HminusG']:.3f} |
+| mean positive contrast score $\\max(C_{{toi}},0)$ | {selected['mean_C_toi_HminusG']:.3f} | {non['mean_C_toi_HminusG']:.3f} |
 | mean log-TOI gap H-G | {selected['mean_LogTOI_gap_HminusG']:.3f} | {non['mean_LogTOI_gap_HminusG']:.3f} |
 | mean image drop G-H | {selected['mean_image_drop_GminusH']:.3f} | {non['mean_image_drop_GminusH']:.3f} |
 
@@ -305,7 +305,7 @@ Directionality among selected heads:
 Effect sizes selected vs non-selected:
 
 - text-side mass: Cohen's d = {text_d:.3f}
-- contrastive raw TOI gap: Cohen's d = {contrast_d:.3f}
+- positive contrast score: Cohen's d = {contrast_d:.3f}
 - log TOI gap: Cohen's d = {logtoi_d:.3f}
 - image drop: Cohen's d = {image_d:.3f}
 
