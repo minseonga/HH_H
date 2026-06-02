@@ -233,6 +233,96 @@ def plot_gap_summary(output_dir, formats, summaries):
     return save(fig, output_dir, "selected_head_gap_summary", formats)
 
 
+def plot_selected_vs_nonselected_metrics(output_dir, formats, summaries):
+    setup_style()
+    selected = summaries["selected"]
+    non = summaries["non-selected"]
+    metrics = [
+        (
+            "Text-side\nmass",
+            "Itext_all",
+            selected["mean_Itext_all"],
+            non["mean_Itext_all"],
+            "overall leverage",
+            "{:.3f}",
+        ),
+        (
+            "Contrastive\nTOI score",
+            "C_toi",
+            selected["mean_C_toi_HminusG"],
+            non["mean_C_toi_HminusG"],
+            "hall-specific bias",
+            "{:.2f}",
+        ),
+        (
+            "Log TOI\ngap H-G",
+            "log TOI",
+            selected["mean_LogTOI_gap_HminusG"],
+            non["mean_LogTOI_gap_HminusG"],
+            "robust shift",
+            "{:.3f}",
+        ),
+        (
+            "Image mass\ndrop G-H",
+            "image drop",
+            selected["mean_image_drop_GminusH"],
+            non["mean_image_drop_GminusH"],
+            "visual weakening",
+            "{:.3f}",
+        ),
+    ]
+
+    fig, axes = plt.subplots(1, len(metrics), figsize=(7.4, 2.35), constrained_layout=True)
+    for ax, (title, ylabel, sel, tail, subtitle, fmt) in zip(axes, metrics):
+        ymax = max(sel, tail) * 1.42 if max(sel, tail) > 0 else 1.0
+        ax.bar([0], [tail], width=0.58, color=COLORS["nonselected"], alpha=0.78)
+        ax.bar([1], [sel], width=0.58, color=COLORS["selected"], alpha=0.92)
+        ax.plot([0, 1], [tail, sel], color=COLORS["dark"], alpha=0.45, linewidth=1.0)
+        ax.set_ylim(0, ymax)
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(["non", "sel"])
+        ax.set_title(title, pad=7, fontweight="bold")
+        ax.set_ylabel(ylabel)
+        ax.grid(axis="y")
+
+        ax.text(0, tail + ymax * 0.045, fmt.format(tail), ha="center", va="bottom", fontsize=7.0, color=COLORS["dark"])
+        ax.text(1, sel + ymax * 0.045, fmt.format(sel), ha="center", va="bottom", fontsize=7.0, color=COLORS["dark"])
+        if tail > 0:
+            ratio = sel / tail
+            ratio_label = f"{ratio:.1f}x"
+        else:
+            ratio_label = "higher"
+        ax.text(
+            0.5,
+            ymax * 0.92,
+            ratio_label,
+            ha="center",
+            va="center",
+            fontsize=8.0,
+            color=COLORS["selected"],
+            fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.18", facecolor="#f5f3ff", edgecolor="none"),
+        )
+        ax.text(
+            0.5,
+            -0.30,
+            subtitle,
+            transform=ax.transAxes,
+            ha="center",
+            va="top",
+            fontsize=6.7,
+            color=COLORS["muted"],
+        )
+
+    fig.suptitle(
+        "Selected heads are stronger text-side actuators than non-selected heads",
+        y=1.06,
+        fontsize=10.5,
+        fontweight="bold",
+    )
+    return save(fig, output_dir, "selected_vs_nonselected_actuator_metrics", formats)
+
+
 def plot_head_space(output_dir, formats, heads, top_k):
     setup_style()
     fig, ax = plt.subplots(figsize=(3.5, 3.05), constrained_layout=True)
@@ -424,6 +514,7 @@ def main():
     write_csv(os.path.join(args.output_dir, "selected_top_heads.csv"), top_head_rows)
 
     figure_paths = {}
+    figure_paths["selected_vs_nonselected_metrics"] = plot_selected_vs_nonselected_metrics(args.output_dir, formats, summaries)
     figure_paths["hall_ground_bars"] = plot_hall_ground_bars(args.output_dir, formats, region_rows, summaries)
     figure_paths["gap_summary"] = plot_gap_summary(args.output_dir, formats, summaries)
     figure_paths["head_space"] = plot_head_space(args.output_dir, formats, heads, top_k)
