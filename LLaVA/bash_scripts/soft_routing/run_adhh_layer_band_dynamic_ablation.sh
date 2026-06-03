@@ -24,6 +24,9 @@ model_name="${MODEL_NAME:-llava-v1.5-7b}"
 model_path="${MODEL_PATH:-liuhaotian/llava-v1.5-7b}"
 dataset="${DATASET:-coco}"
 data_path="${DATA_PATH:-../dataset}"
+annotation_dir="${ANNOTATION_DIR:-${data_path}/coco/annotations}"
+image_folder="${IMAGE_FOLDER:-${data_path}/coco/val2014}"
+caption_file_path="${CAPTION_FILE_PATH:-${annotation_dir}/captions_val2014.json}"
 seed="${SEED:-42}"
 num_samples="${NUM_SAMPLES:-500}"
 
@@ -67,7 +70,7 @@ if [[ ! -f "${sample_id_file}" ]]; then
 import json, random
 from pycocotools.coco import COCO
 
-caption_file = "${data_path}/coco/annotations/captions_val2014.json"
+caption_file = "${caption_file_path}"
 seed = ${seed}
 num_samples = ${num_samples}
 out_file = "${sample_id_file}"
@@ -112,8 +115,8 @@ run_band() {
     cd "${ADHH_LLAVA_DIR}"
     CUDA_VISIBLE_DEVICES="${gpu}" "${python_bin}" -m eval_scripts.eval_caption_dynamic \
       --model-path "${model_path}" \
-      --image-folder "${data_path}/coco/val2014" \
-      --caption_file_path "${data_path}/coco/annotations/captions_val2014.json" \
+      --image-folder "${image_folder}" \
+      --caption_file_path "${caption_file_path}" \
       --answers-file "${result_path}/captions.jsonl" \
       --dataset "${dataset}" \
       --temperature 0 \
@@ -139,7 +142,7 @@ run_band() {
       > "${result_path}/decode.log" 2>&1
 
     "${python_bin}" eval_scripts/eval_utils/eval_chair.py \
-      --annotation-dir "${data_path}/coco/annotations" \
+      --annotation-dir "${annotation_dir}" \
       --answers-file "${result_path}/captions.jsonl" \
       --caption_file captions_val2014.json \
       > "${result_path}/chair.log" 2>&1
