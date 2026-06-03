@@ -1,0 +1,62 @@
+{
+  "base": "../experiments_in_server/soft_routing_smoke_n500_seed42_tau0.4_T0.05/greedy/captions_eval_results.json",
+  "target": "../experiments_in_server/soft_routing_smoke_n500_seed42_tau0.4_T0.05/hard_tau0.4/captions_eval_results.json",
+  "base_name": "greedy",
+  "target_name": "adhh_hard_tau0.4",
+  "base_metrics": {
+    "CHAIRs": 0.534,
+    "CHAIRi": 0.14278269932256382,
+    "Bleu": [
+      0.18094308352441302,
+      0.12138394232732559,
+      0.07488727879863676,
+      0.04611106691548673
+    ],
+    "avg_caption_length": 87.928
+  },
+  "target_metrics": {
+    "CHAIRs": 0.342,
+    "CHAIRi": 0.08859920459566946,
+    "Bleu": [
+      0.17558387354586238,
+      0.12214639335686735,
+      0.07873711677891142,
+      0.05016659933707007
+    ],
+    "avg_caption_length": 89.798
+  },
+  "n_common": 500,
+  "base_hall_mentions": 548,
+  "target_hall_mentions": 401,
+  "removed_hall_mentions": 372,
+  "added_hall_mentions": 225,
+  "hallucinated_removal_rate": 0.6788321167883211,
+  "base_ground_mentions": 3290,
+  "target_ground_mentions": 4125,
+  "removed_ground_mentions": 490,
+  "added_ground_mentions": 1325,
+  "grounded_loss_rate": 0.14893617021276595,
+  "base_ground_nodes": 1299,
+  "reduced_ground_nodes": 363,
+  "grounded_reduced_node_rate": 0.279445727482679,
+  "partial_loss_ground_nodes": 175,
+  "grounded_partial_loss_node_rate": 0.13471901462663588,
+  "disappeared_ground_nodes": 188,
+  "grounded_disappeared_node_rate": 0.1447267128560431,
+  "disappeared_ground_mentions": 245,
+  "grounded_disappeared_mention_rate": 0.07446808510638298,
+  "grounded_loss_due_to_disappearance_fraction": 0.5,
+  "images_with_hall_removed": 220,
+  "images_with_hall_removed_rate": 0.44,
+  "images_with_ground_lost": 248,
+  "images_with_ground_lost_rate": 0.496,
+  "disappear_case": {
+    "key": "153976",
+    "image": "COCO_val2014_000000153976.jpg",
+    "base_gt_words": "car, skateboard, person",
+    "removed_ground_words": "carx2",
+    "added_hall_words": "",
+    "base_caption": "The image captures a group of young men performing skateboard tricks in a parking lot. There are five skateboarders in total, with one of them riding a skateboard on top of a car. The other four skateboarders are scattered around the parking lot, with some of them jumping in the air while others are in motion.\n\nThere are two cars in the parking lot, one on the left side and another on the right side. A few skateboards can be seen lying on the ground, with one near the center of the parking lot and another closer to",
+    "target_caption": "The image captures a group of skateboarders performing tricks on a cement wall. There are five skateboarders in total, with some of them riding their skateboards up the side of the wall while others are in the process of jumping off the wall. \n\nThe skateboarders are spread out across the scene, with some skateboarders closer to the foreground and others further back. There are five skateboards visible in the image, with each skateboarder having their own skateboard. The skateboarders are showcasing their skills and enjoying"
+  }
+}

@@ -1,0 +1,3 @@
+label,path,base_ground_nodes,preserved_nodes,partial_loss_ground_nodes,disappeared_ground_nodes,reduced_ground_nodes,preserved_rate,partial_rate,disappeared_rate,reduced_rate,target_chairs,target_chairi,hallucinated_removal_rate
+hard,LLaVA/results/coco/adhh_hard_tau0p4_removal_loss_disappear/adhh_removal_loss_summary.json,1299,936,175,188,363,0.7205542725173211,0.13471901462663588,0.1447267128560431,0.279445727482679,0.342,0.08859920459566946,0.6788321167883211
+dynamic_v1,LLaVA/results/coco/deact_like_dynamic_v1_grounded_node_outcome/adhh_removal_loss_summary.json,1299,939,176,184,360,0.7228637413394919,0.1354888375673595,0.14164742109314857,0.27713625866050806,0.32,0.0851586946803755,0.6879562043795621

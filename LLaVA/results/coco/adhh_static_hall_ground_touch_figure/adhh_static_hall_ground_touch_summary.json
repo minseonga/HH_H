@@ -1,0 +1,28 @@
+{
+  "sources": {
+    "exposure_summary_csv": "LLaVA/results/coco/static_suppression_fragility_analysis_l9_l16_k150/static_suppression_exposure_summary.csv",
+    "logprob_summary_csv": ""
+  },
+  "object_step_exposure": {
+    "hall_steps": 121.0,
+    "ground_steps": 716.0,
+    "hall_object_fraction": 0.14456391875746716,
+    "ground_object_fraction": 0.8554360812425329
+  },
+  "logprob_perturbation": {
+    "grounded_object": {
+      "positive_drop_fraction": 0.625,
+      "top1_loss_fraction": 0.135,
+      "mean_delta_logprob": 0.08092865523305591
+    },
+    "hallucinated_object": {
+      "positive_drop_fraction": 0.805,
+      "top1_loss_fraction": 0.345,
+      "mean_delta_logprob": 0.3864174883562373
+    }
+  },
+  "interpretation": "Object-only static exposure is dominated by grounded object steps because hard/static AD-HH-style suppression is keyed by head identity, not by whether the current object is hallucinated. The log-probability diagnostic then shows that grounded objects are measurably perturbed as well.",
+  "figure_paths": {
+    "svg": "LLaVA/results/coco/adhh_static_hall_ground_touch_figure/adhh_static_hall_ground_touch.svg"
+  }
+}

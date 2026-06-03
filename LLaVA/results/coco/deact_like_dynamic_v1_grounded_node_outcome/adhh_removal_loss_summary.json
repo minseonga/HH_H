@@ -1,0 +1,62 @@
+{
+  "base": "experiments_in_server/results/coco/soft_routing_smoke_n500_seed42_tau0.4_T0.05/greedy/captions_eval_results.json",
+  "target": "experiments_in_server/results/coco/soft_routing_smoke_n500_seed42_tau0.4_T0.05/dynamic_v1_g1.0_m1.0_r0.0_c0.5_b0.0/captions_eval_results.json",
+  "base_name": "greedy",
+  "target_name": "dynamic_v1_g1_m1_r0_c0p5",
+  "base_metrics": {
+    "CHAIRs": 0.534,
+    "CHAIRi": 0.14278269932256382,
+    "Bleu": [
+      0.18094308352441302,
+      0.12138394232732559,
+      0.07488727879863676,
+      0.04611106691548673
+    ],
+    "avg_caption_length": 87.928
+  },
+  "target_metrics": {
+    "CHAIRs": 0.32,
+    "CHAIRi": 0.0851586946803755,
+    "Bleu": [
+      0.17579147555654603,
+      0.12224551491235985,
+      0.07880575233631312,
+      0.05030048609006442
+    ],
+    "avg_caption_length": 89.112
+  },
+  "n_common": 500,
+  "base_hall_mentions": 548,
+  "target_hall_mentions": 381,
+  "removed_hall_mentions": 377,
+  "added_hall_mentions": 210,
+  "hallucinated_removal_rate": 0.6879562043795621,
+  "base_ground_mentions": 3290,
+  "target_ground_mentions": 4093,
+  "removed_ground_mentions": 488,
+  "added_ground_mentions": 1291,
+  "grounded_loss_rate": 0.14832826747720365,
+  "base_ground_nodes": 1299,
+  "reduced_ground_nodes": 360,
+  "grounded_reduced_node_rate": 0.27713625866050806,
+  "partial_loss_ground_nodes": 176,
+  "grounded_partial_loss_node_rate": 0.1354888375673595,
+  "disappeared_ground_nodes": 184,
+  "grounded_disappeared_node_rate": 0.14164742109314857,
+  "disappeared_ground_mentions": 236,
+  "grounded_disappeared_mention_rate": 0.07173252279635259,
+  "grounded_loss_due_to_disappearance_fraction": 0.48360655737704916,
+  "images_with_hall_removed": 225,
+  "images_with_hall_removed_rate": 0.45,
+  "images_with_ground_lost": 248,
+  "images_with_ground_lost_rate": 0.496,
+  "disappear_case": {
+    "key": "368510",
+    "image": "COCO_val2014_000000368510.jpg",
+    "base_gt_words": "remote, chair, dining table, laptop, mouse, cell phone, book",
+    "removed_ground_words": "book; cell phone; chair; dining tablex3; laptop",
+    "added_hall_words": "",
+    "base_caption": "The image features a cluttered desk with a laptop computer sitting on top of it. The desk is surrounded by various items, including a mouse, a keyboard, and a cell phone. There are also several cans of soda scattered around the desk, with some placed near the laptop and others closer to the edge.\n\nIn addition to the electronics, there are two books on the desk, one located near the center and the other towards the left side. A chair is positioned in front of the desk, ready for someone to sit and work or play on the laptop.",
+    "target_caption": "The image features a cluttered desk with a laptop computer sitting on top of it. The desk is cluttered with various items, including a laptop, a mouse, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad, a mouse pad"
+  }
+}

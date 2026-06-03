@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="410" viewBox="0 0 820 410">
+<rect x="0" y="0" width="820" height="410" rx="0" ry="0" fill="white" stroke="none" opacity="1.0"/>
+<text x="410.0" y="34" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#111827" text-anchor="middle" font-weight="800">Grounded object reduction under AD-HH hard</text>
+<text x="410.0" y="58" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#667085" text-anchor="middle" font-weight="400">Greedy -&gt; AD-HH hard tau=0.4, COCO n=500; grounded-only comparison.</text>
+<rect x="48" y="76" width="735" height="300" rx="8" ry="8" fill="#f8fafc" stroke="#e5e7eb" opacity="1"/>
+<line x1="132" y1="303" x2="752" y2="303" stroke="#d0d7de" stroke-width="1"/>
+<text x="120" y="307" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#667085" text-anchor="end" font-weight="400">0%</text>
+<line x1="132" y1="251.75" x2="752" y2="251.75" stroke="#d0d7de" stroke-width="1"/>
+<text x="120" y="255.75" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#667085" text-anchor="end" font-weight="400">14%</text>
+<line x1="132" y1="200.5" x2="752" y2="200.5" stroke="#d0d7de" stroke-width="1"/>
+<text x="120" y="204.5" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#667085" text-anchor="end" font-weight="400">28%</text>
+<line x1="132" y1="149.25" x2="752" y2="149.25" stroke="#d0d7de" stroke-width="1"/>
+<text x="120" y="153.25" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#667085" text-anchor="end" font-weight="400">41%</text>
+<line x1="132" y1="98.0" x2="752" y2="98.0" stroke="#d0d7de" stroke-width="1"/>
+<text x="120" y="102.0" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#667085" text-anchor="end" font-weight="400">55%</text>
+<line x1="132" y1="98" x2="132" y2="303" stroke="#98a2b3" stroke-width="1.2"/>
+<line x1="132" y1="303" x2="752" y2="303" stroke="#98a2b3" stroke-width="1.2"/>
+<rect x="262.0" y="247.71400939486045" width="112" height="55.28599060513954" rx="6" ry="6" fill="#2e8b57" stroke="none" opacity="0.88"/>
+<text x="318.0" y="235.71400939486045" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#111827" text-anchor="middle" font-weight="800">14.8%</text>
+<text x="318.0" y="215.71400939486045" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#667085" text-anchor="middle" font-weight="700">488/3290</text>
+<text x="318.0" y="329" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#667085" text-anchor="middle" font-weight="700">grounded mentions</text>
+<text x="318.0" y="346" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#667085" text-anchor="middle" font-weight="700">with count decrease</text>
+<rect x="510.0" y="199.70375813562882" width="112" height="103.29624186437118" rx="6" ry="6" fill="#8fd0ae" stroke="none" opacity="0.88"/>
+<text x="566.0" y="187.70375813562882" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#111827" text-anchor="middle" font-weight="800">27.7%</text>
+<text x="566.0" y="167.70375813562882" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#667085" text-anchor="middle" font-weight="700">360/1299</text>
+<text x="566.0" y="329" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#667085" text-anchor="middle" font-weight="700">grounded object nodes</text>
+<text x="566.0" y="346" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#667085" text-anchor="middle" font-weight="700">with count decrease</text>
+<text x="70" y="200" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#667085" text-anchor="middle" font-weight="700">grounded reduction rate</text>
+<text x="86" y="348" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#2e8b57" text-anchor="start" font-weight="700">Images with any grounded mention decrease: 49.6%</text>
+<text x="410.0" y="392" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#111827" text-anchor="middle" font-weight="700">Takeaway: hard suppression can reduce grounded object realization.</text>
+</svg>

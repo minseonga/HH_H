@@ -1,0 +1,41 @@
+{
+  "rows": [
+    {
+      "label": "hard",
+      "path": "LLaVA/results/coco/adhh_hard_tau0p4_removal_loss_disappear/adhh_removal_loss_summary.json",
+      "base_ground_nodes": 1299,
+      "preserved_nodes": 936,
+      "partial_loss_ground_nodes": 175,
+      "disappeared_ground_nodes": 188,
+      "reduced_ground_nodes": 363,
+      "preserved_rate": 0.7205542725173211,
+      "partial_rate": 0.13471901462663588,
+      "disappeared_rate": 0.1447267128560431,
+      "reduced_rate": 0.279445727482679,
+      "target_chairs": 0.342,
+      "target_chairi": 0.08859920459566946,
+      "hallucinated_removal_rate": 0.6788321167883211
+    },
+    {
+      "label": "dynamic_v1",
+      "path": "LLaVA/results/coco/deact_like_dynamic_v1_grounded_node_outcome/adhh_removal_loss_summary.json",
+      "base_ground_nodes": 1299,
+      "preserved_nodes": 939,
+      "partial_loss_ground_nodes": 176,
+      "disappeared_ground_nodes": 184,
+      "reduced_ground_nodes": 360,
+      "preserved_rate": 0.7228637413394919,
+      "partial_rate": 0.1354888375673595,
+      "disappeared_rate": 0.14164742109314857,
+      "reduced_rate": 0.27713625866050806,
+      "target_chairs": 0.32,
+      "target_chairi": 0.0851586946803755,
+      "hallucinated_removal_rate": 0.6879562043795621
+    }
+  ],
+  "figures": {
+    "svg": "LLaVA/results/coco/grounded_node_outcome_static_vs_available_dynamic/grounded_node_outcome_comparison.svg",
+    "png": "LLaVA/results/coco/grounded_node_outcome_static_vs_available_dynamic/grounded_node_outcome_comparison.png",
+    "pdf": "LLaVA/results/coco/grounded_node_outcome_static_vs_available_dynamic/grounded_node_outcome_comparison.pdf"
+  }
+}

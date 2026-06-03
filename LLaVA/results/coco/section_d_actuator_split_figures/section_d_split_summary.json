@@ -1,0 +1,32 @@
+{
+  "group_summary_csv": "LLaVA/results/coco/selected_head_actuator_analysis_l9_l16_k100/head_actuator_group_summary.csv",
+  "causal_summary_json": "LLaVA/results/coco/adhh_static_hall_ground_touch_figure/adhh_static_hall_ground_touch_summary.json",
+  "image_drop": {
+    "selected_image_drop": 0.02698936101181107,
+    "nonselected_image_drop": 0.006629390665714201,
+    "ratio": 4.071167679315431
+  },
+  "causal_fragility": {
+    "grounded_mean_delta_logprob": 0.08092865523305591,
+    "hallucinated_mean_delta_logprob": 0.3864174883562373,
+    "hall_over_ground_delta_ratio": 4.774791910769354,
+    "grounded_top1_loss_fraction": 0.135,
+    "hallucinated_top1_loss_fraction": 0.345
+  },
+  "source_meta": {
+    "exposure_summary_csv": "LLaVA/results/coco/static_suppression_fragility_analysis_l9_l16_k150/static_suppression_exposure_summary.csv",
+    "logprob_summary_csv": ""
+  },
+  "figures": {
+    "image_mass_drop": {
+      "svg": "LLaVA/results/coco/section_d_actuator_split_figures/section_d_image_mass_drop.svg",
+      "png": "LLaVA/results/coco/section_d_actuator_split_figures/section_d_image_mass_drop.png",
+      "pdf": "LLaVA/results/coco/section_d_actuator_split_figures/section_d_image_mass_drop.pdf"
+    },
+    "causal_fragility": {
+      "svg": "LLaVA/results/coco/section_d_actuator_split_figures/section_d_causal_fragility.svg",
+      "png": "LLaVA/results/coco/section_d_actuator_split_figures/section_d_causal_fragility.png",
+      "pdf": "LLaVA/results/coco/section_d_actuator_split_figures/section_d_causal_fragility.pdf"
+    }
+  }
+}
