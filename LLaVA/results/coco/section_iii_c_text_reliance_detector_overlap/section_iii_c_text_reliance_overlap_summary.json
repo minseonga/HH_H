@@ -1,0 +1,59 @@
+{
+  "ratio_csv": "experiments_in_server/method_figure_source_trace_n100_k150_l9_16/selected_head_object_ratio_distribution.csv",
+  "row_level_summary": [
+    {
+      "label": "grounded",
+      "n": 107400,
+      "mean": 0.7744406903906323,
+      "q25": 0.6875360906124115,
+      "q50": 0.865457683801651,
+      "q75": 0.9462821334600449,
+      "q90": 0.9793958783149719
+    },
+    {
+      "label": "hallucinated",
+      "n": 18150,
+      "mean": 0.8111122809166439,
+      "q25": 0.7471383213996887,
+      "q50": 0.8790566623210907,
+      "q75": 0.9476932734251022,
+      "q90": 0.9801285147666932
+    }
+  ],
+  "table_1_stats": {
+    "All tokens": {
+      "mean": 0.818,
+      "q25": 0.701,
+      "q50": 0.856,
+      "q75": 0.938,
+      "q90": 0.955
+    },
+    "Object tokens": {
+      "mean": 0.832,
+      "q25": 0.707,
+      "q50": 0.882,
+      "q75": 0.958,
+      "q90": 0.973
+    },
+    "Grounded objects": {
+      "mean": 0.822,
+      "q25": 0.697,
+      "q50": 0.878,
+      "q75": 0.956,
+      "q90": 0.971
+    },
+    "Hallucinated objects": {
+      "mean": 0.883,
+      "q25": 0.82,
+      "q50": 0.916,
+      "q75": 0.966,
+      "q90": 0.978
+    }
+  },
+  "interpretation": "Hallucinated object steps shift toward higher text reliance, but the grounded and hallucinated distributions overlap substantially. Text reliance alone is therefore not a reliable token-level hallucination detector.",
+  "figures": {
+    "svg": "LLaVA/results/coco/section_iii_c_text_reliance_detector_overlap/section_iii_c_text_reliance_overlap.svg",
+    "png": "LLaVA/results/coco/section_iii_c_text_reliance_detector_overlap/section_iii_c_text_reliance_overlap.png",
+    "pdf": "LLaVA/results/coco/section_iii_c_text_reliance_detector_overlap/section_iii_c_text_reliance_overlap.pdf"
+  }
+}
