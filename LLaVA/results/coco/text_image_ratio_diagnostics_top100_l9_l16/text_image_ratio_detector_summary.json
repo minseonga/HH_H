@@ -1,0 +1,162 @@
+{
+  "ratio_definition": "r_img = text_mass / (text_mass + image_mass + eps)",
+  "ratio_csv": "experiments_in_server/method_figure_source_trace_n100_k150_l9_16/selected_head_object_ratio_distribution.csv",
+  "head_file": "ADHH/LLaVA/results_summary/coco/ranked_heads_global__itext_all__C_toi_HminusG.json",
+  "topk": 100,
+  "tau": 0.9,
+  "q": 8.0,
+  "strength": 1.0,
+  "requested_heads": 100,
+  "seen_requested_heads": 90,
+  "missing_requested_heads": [
+    "16:17",
+    "13:10",
+    "15:28",
+    "13:20",
+    "11:30",
+    "14:24",
+    "12:18",
+    "14:4",
+    "15:3",
+    "13:5"
+  ],
+  "n_head_step_rows": 75330,
+  "n_token_rows": 837,
+  "n_grounded_tokens": 716,
+  "n_hallucinated_tokens": 121,
+  "token_auc": 0.593875525185835,
+  "token_summary": [
+    {
+      "label": "grounded",
+      "n": 716,
+      "mean": 0.8179555687475004,
+      "q25": 0.768709176928901,
+      "q50": 0.8407023796977761,
+      "q75": 0.8953582153492512,
+      "q90": 0.9256693842199277
+    },
+    {
+      "label": "hallucinated",
+      "n": 121,
+      "mean": 0.8534272436427865,
+      "q25": 0.8153779410807707,
+      "q50": 0.8689105159761262,
+      "q75": 0.9073069326242771,
+      "q90": 0.9345104440174687
+    }
+  ],
+  "head_step_summary": [
+    {
+      "label": "grounded",
+      "n": 64440,
+      "mean": 0.8179555687475003,
+      "q25": 0.7687936404386688,
+      "q50": 0.9020271909609427,
+      "q75": 0.9607622992837743,
+      "q90": 0.9839614368444315
+    },
+    {
+      "label": "hallucinated",
+      "n": 10890,
+      "mean": 0.8534272436427865,
+      "q25": 0.8178650042084131,
+      "q50": 0.9128489521417074,
+      "q75": 0.9636168077704657,
+      "q90": 0.9858728074603313
+    }
+  ],
+  "token_threshold_metrics": {
+    "field": "r_img",
+    "tau": 0.9,
+    "tp": 37,
+    "fp": 164,
+    "tn": 552,
+    "fn": 84,
+    "hall_recall": 0.30578512396694213,
+    "ground_fpr": 0.22905027932960895,
+    "precision": 0.18407960199004975,
+    "flagged_rate": 0.24014336917562723,
+    "base_hall_rate": 0.14456391875746716
+  },
+  "head_step_trigger_summary": [
+    {
+      "label": "grounded",
+      "n": 64440,
+      "triggered": 32647,
+      "trigger_rate": 0.5066263190564867
+    },
+    {
+      "label": "hallucinated",
+      "n": 10890,
+      "triggered": 5989,
+      "trigger_rate": 0.5499540863177227
+    }
+  ],
+  "token_trigger_summary": [
+    {
+      "label": "grounded",
+      "n": 716,
+      "triggered": 164,
+      "trigger_rate": 0.22905027932960895
+    },
+    {
+      "label": "hallucinated",
+      "n": 121,
+      "triggered": 37,
+      "trigger_rate": 0.30578512396694213
+    }
+  ],
+  "token_delta_summary": [
+    {
+      "label": "grounded",
+      "n": 716,
+      "mean": 0.6252230473502873,
+      "q25": 0.5277923980892907,
+      "q50": 0.6439299544611898,
+      "q75": 0.7622554208110206,
+      "q90": 0.8447011868385395
+    },
+    {
+      "label": "hallucinated",
+      "n": 121,
+      "mean": 0.6717919956793197,
+      "q25": 0.5768847104494405,
+      "q50": 0.6980938396269258,
+      "q75": 0.7805172015178573,
+      "q90": 0.8553404158256516
+    }
+  ],
+  "head_step_delta_summary": [
+    {
+      "label": "grounded",
+      "n": 64440,
+      "mean": 0.6252230473502874,
+      "q25": 0.2633884167221018,
+      "q50": 0.7252493131659337,
+      "q75": 1.0,
+      "q90": 1.0
+    },
+    {
+      "label": "hallucinated",
+      "n": 10890,
+      "mean": 0.6717919956793197,
+      "q25": 0.3724908118968844,
+      "q50": 0.7917183951479201,
+      "q75": 1.0,
+      "q90": 1.0
+    }
+  ],
+  "figures": {
+    "detector_overlap": {
+      "svg": "LLaVA/results/coco/text_image_ratio_diagnostics_top100_l9_l16/text_image_ratio_detector_overlap.svg",
+      "png": "LLaVA/results/coco/text_image_ratio_diagnostics_top100_l9_l16/text_image_ratio_detector_overlap.png",
+      "pdf": "LLaVA/results/coco/text_image_ratio_diagnostics_top100_l9_l16/text_image_ratio_detector_overlap.pdf"
+    },
+    "trigger_delta": {
+      "svg": "LLaVA/results/coco/text_image_ratio_diagnostics_top100_l9_l16/text_image_ratio_trigger_delta.svg",
+      "png": "LLaVA/results/coco/text_image_ratio_diagnostics_top100_l9_l16/text_image_ratio_trigger_delta.png",
+      "pdf": "LLaVA/results/coco/text_image_ratio_diagnostics_top100_l9_l16/text_image_ratio_trigger_delta.pdf"
+    }
+  },
+  "caveat": "This is computed from the available trace. If missing_requested_heads is non-empty, regenerate the exact top-k trace before using as final paper numbers."
+}
