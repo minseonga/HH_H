@@ -1,0 +1,5 @@
+band,path,n_heads,top100_available,top_head,top_score
+l0_l8,LLaVA/results/coco/layer_band_dynamic_ablation_head_files/ranked_heads_global__itext_all__C_toi_HminusG_l0_l8.json,288,100,1:15,0.944770283479961
+l9_l16,LLaVA/results/coco/layer_band_dynamic_ablation_head_files/ranked_heads_global__itext_all__C_toi_HminusG_l9_l16.json,256,100,14:16,0.989247311827957
+l17_l24,LLaVA/results/coco/layer_band_dynamic_ablation_head_files/ranked_heads_global__itext_all__C_toi_HminusG_l17_l24.json,256,100,24:23,0.9667644183773216
+l25_l31,LLaVA/results/coco/layer_band_dynamic_ablation_head_files/ranked_heads_global__itext_all__C_toi_HminusG_l25_l31.json,224,100,31:27,0.9990224828934506
