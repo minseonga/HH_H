@@ -1,0 +1,111 @@
+{
+  "source": "results/coco/layer_band_dynamic_ablation_head_files/ranked_heads_global__itext_all__C_toi_HminusG_l9_l16.json",
+  "score_name": "global__itext_all__C_toi_HminusG",
+  "layer_range": [
+    9,
+    16
+  ],
+  "top_k": 100,
+  "n_heads_total": 256,
+  "n_selected": 100,
+  "n_nonselected": 156,
+  "group_summaries": {
+    "selected": {
+      "group": "selected",
+      "n_heads": 100,
+      "mean_fused_score": 0.7875122189638318,
+      "mean_Itext_all": 0.34845427018808506,
+      "mean_text_percentile": 0.7439491691104594,
+      "mean_C_toi_HminusG": 6.311475284950809,
+      "mean_contrast_percentile": 0.8310752688172043,
+      "mean_Itext_hallucinated": 0.3912097383678453,
+      "mean_Itext_grounded": 0.36520132712312253,
+      "mean_Itext_gap_HminusG": 0.0260084112447227,
+      "mean_Img_hallucinated": 0.0747585517069525,
+      "mean_Img_grounded": 0.10174791271876359,
+      "mean_image_drop_GminusH": 0.02698936101181107,
+      "mean_RawTOI_gap_HminusG": 6.1536348169264405,
+      "mean_LogTOI_gap_HminusG": 0.29901797257148394,
+      "positive_Itext_gap_count": 67,
+      "positive_image_drop_count": 80,
+      "positive_RawTOI_gap_count": 97,
+      "positive_LogTOI_gap_count": 97
+    },
+    "non-selected": {
+      "group": "non-selected",
+      "n_heads": 156,
+      "mean_fused_score": 0.4540222322480387,
+      "mean_Itext_all": 0.2913767543001935,
+      "mean_text_percentile": 0.6633330826879213,
+      "mean_C_toi_HminusG": 0.0657201482974295,
+      "mean_contrast_percentile": 0.244711381808156,
+      "mean_Itext_hallucinated": 0.3044606566738592,
+      "mean_Itext_grounded": 0.32048383113244955,
+      "mean_Itext_gap_HminusG": -0.016023174458590334,
+      "mean_Img_hallucinated": 0.08051019975203885,
+      "mean_Img_grounded": 0.08713959041775306,
+      "mean_image_drop_GminusH": 0.006629390665714201,
+      "mean_RawTOI_gap_HminusG": -8.588377490105625,
+      "mean_LogTOI_gap_HminusG": -0.2353988626900866,
+      "positive_Itext_gap_count": 66,
+      "positive_image_drop_count": 71,
+      "positive_RawTOI_gap_count": 26,
+      "positive_LogTOI_gap_count": 26
+    }
+  },
+  "direction_rates": {
+    "selected": {
+      "group": "selected",
+      "n_heads": 100,
+      "positive_Itext_gap_count": 67,
+      "positive_Itext_gap_rate": 0.67,
+      "positive_image_drop_count": 80,
+      "positive_image_drop_rate": 0.8,
+      "positive_RawTOI_gap_count": 97,
+      "positive_RawTOI_gap_rate": 0.97,
+      "positive_LogTOI_gap_count": 97,
+      "positive_LogTOI_gap_rate": 0.97
+    },
+    "non-selected": {
+      "group": "non-selected",
+      "n_heads": 156,
+      "positive_Itext_gap_count": 66,
+      "positive_Itext_gap_rate": 0.4230769230769231,
+      "positive_image_drop_count": 71,
+      "positive_image_drop_rate": 0.4551282051282051,
+      "positive_RawTOI_gap_count": 26,
+      "positive_RawTOI_gap_rate": 0.16666666666666666,
+      "positive_LogTOI_gap_count": 26,
+      "positive_LogTOI_gap_rate": 0.16666666666666666
+    }
+  },
+  "effect_sizes": {
+    "Itext_all": 0.3777240111727279,
+    "C_toi_HminusG": 0.8474669290654987,
+    "LogTOI_gap": 1.7929184530717484,
+    "image_drop": 0.5815499080245118
+  },
+  "component_percentile_correlation": -0.06653312234809654,
+  "figures": {
+    "selected_vs_nonselected_metrics": {
+      "svg": "results/coco/selected_head_actuator_analysis_l9_l16_k100/selected_vs_nonselected_actuator_metrics.svg",
+      "png": "results/coco/selected_head_actuator_analysis_l9_l16_k100/selected_vs_nonselected_actuator_metrics.png",
+      "pdf": "results/coco/selected_head_actuator_analysis_l9_l16_k100/selected_vs_nonselected_actuator_metrics.pdf"
+    },
+    "hall_ground_bars": {
+      "svg": "results/coco/selected_head_actuator_analysis_l9_l16_k100/hall_ground_selected_vs_nonselected_bars.svg",
+      "png": "results/coco/selected_head_actuator_analysis_l9_l16_k100/hall_ground_selected_vs_nonselected_bars.png",
+      "pdf": "results/coco/selected_head_actuator_analysis_l9_l16_k100/hall_ground_selected_vs_nonselected_bars.pdf"
+    },
+    "gap_summary": {
+      "svg": "results/coco/selected_head_actuator_analysis_l9_l16_k100/selected_head_gap_summary.svg",
+      "png": "results/coco/selected_head_actuator_analysis_l9_l16_k100/selected_head_gap_summary.png",
+      "pdf": "results/coco/selected_head_actuator_analysis_l9_l16_k100/selected_head_gap_summary.pdf"
+    },
+    "head_space": {
+      "svg": "results/coco/selected_head_actuator_analysis_l9_l16_k100/text_leverage_vs_contrastive_head_space.svg",
+      "png": "results/coco/selected_head_actuator_analysis_l9_l16_k100/text_leverage_vs_contrastive_head_space.png",
+      "pdf": "results/coco/selected_head_actuator_analysis_l9_l16_k100/text_leverage_vs_contrastive_head_space.pdf"
+    }
+  }
+}

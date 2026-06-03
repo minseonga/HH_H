@@ -1,352 +1,276 @@
-# Section III-D/F Analysis Notes
+# Section III-D/F Revised Analysis Notes
 
-This note consolidates the analysis for:
+This note rewrites the analysis logic for:
 
 - **III-D. Hallucination Heads as Text-Side Actuators**
 - **III-F. Static Suppression Is an Over-Broad Intervention**
 
-The purpose is to support the analysis section before introducing the method. The central claim is not that the selected heads are hallucination detectors. The safer and better-supported interpretation is:
+The main correction is conceptual. The selected head pool must not be presented as a hallucination detector, and the selected-vs-non-selected feature plot must not be used as causal proof. The clean story is:
 
-> Selected heads are text-side actuator channels. They provide intervention leverage over object generation by routing attention through post-image textual context. However, because the same heads are also active during grounded object generation, static hard suppression is an over-broad intervention.
+```text
+D: selected heads are characterized by text-side leverage and hallucination-state text-over-image bias, but that characterization is partly by construction; the non-circular observation is stronger image-token mass drop, and an actuator claim needs a separate causal diagnostic.
+
+F: static hard suppression is useful but broad; at the top-100 L9-L16 operating point, grounded object head-steps still cross the hard suppression threshold at a high absolute rate, and grounded object nodes are measurably reduced or disappeared.
+```
 
 ---
 
 ## Data Sources
 
-### D. Actuator Characterization
-
-Main files:
+### D Characterization
 
 - `LLaVA/results/coco/selected_head_actuator_analysis_l9_l16_k100/head_actuator_group_summary.csv`
 - `LLaVA/results/coco/selected_head_actuator_analysis_l9_l16_k100/head_actuator_direction_counts.csv`
-- `LLaVA/results/coco/selected_head_actuator_analysis_l9_l16_k100/head_actuator_analysis_summary.json`
+- `LLaVA/results/coco/selected_head_actuator_analysis_l9_l16_k100/head_actuator_paper_notes.md`
 - `LLaVA/results/coco/selected_head_actuator_analysis_l9_l16_k100/selected_vs_nonselected_actuator_metrics.svg`
 
-Comparison:
+The figure title has been downgraded to **Selected head pool characterization**. It should explain what the selected pool captures, not prove intervention relevance.
 
-- selected: top-100 heads from the L9-L16 actuator-ranked pool
-- non-selected: remaining 156 heads in the same L9-L16 window
+### F Static Over-Broadness
 
-This is a head-pool characterization, not a token-level detector test.
-
-### F. Static Suppression Exposure and Collateral Damage
-
-Main files:
-
-- `LLaVA/results/coco/static_trigger_rate_bar_tau0p4/static_trigger_rate_summary.csv`
-- `LLaVA/results/coco/static_trigger_rate_bar_tau0p4/static_trigger_and_grounded_oversuppression_summary.csv`
-- `LLaVA/results/coco/static_trigger_rate_bar_tau0p4/static_trigger_and_grounded_oversuppression_refined.svg`
+- `LLaVA/results/coco/static_overbroad_top100_l9_l16/static_overbroad_top100.svg`
+- `LLaVA/results/coco/static_overbroad_top100_l9_l16/static_overbroad_top100_summary.json`
+- `LLaVA/results/coco/static_overbroad_top100_l9_l16/static_overbroad_top100_trigger_summary.csv`
 - `LLaVA/results/coco/adhh_hard_tau0p4_removal_loss_disappear/adhh_removal_loss_summary.json`
-- `LLaVA/results/coco/adhh_hard_tau0p4_removal_loss_disappear/adhh_removal_loss_rows.csv`
 
-Important caveat:
-
-- The trigger-rate figure currently uses the available top-150 L9-L16 trace from `method_figure_source_trace_n100_k150_l9_16`.
-- Recomputing the same trigger diagnostic on the top-100 L9-L16 subset gives the same qualitative conclusion: grounded object steps are still frequently suppressed.
+The main F figure now uses the **top-100 L9-L16** head pool, matching the current method operating point more closely than the previous top-150 version.
 
 ---
 
 # III-D. Hallucination Heads as Text-Side Actuators
 
-## Question
+## What D Can Safely Claim
 
-If the selected heads are important for hallucination mitigation, what role do they play?
-
-The detector-centric view would say:
-
-> These heads detect that the next object token is hallucinated.
-
-The actuator view says:
-
-> These heads are channels through which post-image textual context influences object generation. They are useful intervention points, but they do not need to classify the next token as hallucinated.
-
-The analysis supports the actuator view.
-
-## Selected vs Non-Selected Head Metrics
-
-| metric | selected top-100 | non-selected | ratio |
-|---|---:|---:|---:|
-| text-side mass `Itext_all` | 0.408 | 0.254 | 1.61x |
-| contrastive TOI score `C_toi H-G` | 6.604 | 0.716 | 9.22x |
-| log-TOI gap H-G | 0.259 | 0.092 | 2.82x |
-| image mass drop G-H | 0.0224 | 0.00724 | 3.09x |
-
-Interpretation by metric:
-
-- `Itext_all`: selected heads attend more strongly to post-image text-side context. This supports the claim that they have stronger language-context leverage.
-- `C_toi H-G`: selected heads show a much larger hallucinated-minus-grounded text-over-image shift. This means they are not merely text-heavy; their text-over-image reliance changes more strongly in hallucination states.
-- `log-TOI gap H-G`: the same trend remains after using a more stable log-ratio view, so the contrastive signal is not only a raw-ratio outlier artifact.
-- `image mass drop G-H`: selected heads show a stronger reduction in image-token mass when moving from grounded to hallucinated object steps. This links text-side actuation to weakened visual routing.
-
-## Directionality Counts
-
-Among selected top-100 heads:
-
-| direction | count | rate |
-|---|---:|---:|
-| positive text-mass gap H-G | 64/100 | 64% |
-| positive image drop G-H | 76/100 | 76% |
-| positive raw TOI gap H-G | 82/100 | 82% |
-| positive log TOI gap H-G | 86/100 | 86% |
-
-Among non-selected heads:
-
-| direction | count | rate |
-|---|---:|---:|
-| positive text-mass gap H-G | 74/156 | 47.4% |
-| positive image drop G-H | 90/156 | 57.7% |
-| positive raw TOI gap H-G | 68/156 | 43.6% |
-| positive log TOI gap H-G | 103/156 | 66.0% |
-
-This shows that selected heads are directionally more aligned with the actuator interpretation.
-
-## Complementarity of the Two Selection Axes
-
-The text-leverage percentile and contrastive percentile are weakly negatively correlated across the L9-L16 head pool:
+The selected pool is built from two offline axes:
 
 ```text
-Pearson r = -0.138
+S(l,h) = 1/2 P(I_text(l,h)) + 1/2 P(C_toi(l,h))
 ```
 
-This matters because the two features are not redundant:
+Therefore, the following selected-vs-non-selected differences are not independent evidence:
 
-- text-side mass identifies **where intervention can move object generation**
-- contrastive TOI identifies **where hallucinated object generation becomes more text-over-image biased**
+- text-side mass
+- contrastive TOI score
+- log-TOI gap, which is a log-ratio version of the same contrastive axis
 
-The fused selection is therefore better interpreted as:
+These metrics are still useful, but only as **pool characterization**:
 
-```text
-leverage axis + hallucination-specific bias axis
-```
+| metric | selected top-100 | non-selected | status |
+|---|---:|---:|---|
+| text-side mass `Itext_all` | 0.348 | 0.291 | by construction |
+| contrastive TOI score `C_toi H-G` | 6.311 | 0.066 | by construction |
+| log-TOI gap H-G | 0.299 | -0.235 | same contrastive axis |
+| image mass drop G-H | 0.027 | 0.0066 | least circular observation |
 
-not as simply selecting the highest text-attention heads.
+The non-circular part is the image-token mass drop. Since image drop is not the primary selection score, it can be used as observational evidence that selected heads are associated with weakened visual-token routing during hallucinated object generation.
 
-## Correct Interpretation
+## How to Phrase Figure 1
 
-The selected heads should be described as **text-side actuators**:
+Do not caption Figure 1 as proving actuator behavior.
 
-> They carry stronger post-image textual context, show larger hallucinated-minus-grounded text-over-image bias, and lose more image-token mass during hallucinated object generation.
+Use this framing:
 
-They should not be described as **hallucination detectors**:
-
-> High text-side reliance is also common during grounded object generation, so selected-head activation alone does not reliably distinguish hallucinated from grounded object tokens.
-
-## Paper-Ready Paragraph
-
-The selected heads are better understood as text-side actuators rather than hallucination detectors. Compared with non-selected heads in the same L9-L16 window, selected heads carry substantially larger post-image text-side mass (0.408 vs. 0.254) and exhibit a much stronger hallucinated-minus-grounded text-over-image contrast (6.604 vs. 0.716). This shift remains visible in log-ratio form (0.259 vs. 0.092), and selected heads also show a larger image-token mass drop when moving from grounded to hallucinated object steps (0.022 vs. 0.007). These results indicate that the selected heads are intervention-relevant channels through which language-context support can dominate object generation while visual-token routing weakens. Crucially, this does not imply that the heads detect hallucination. Their role is actuator-like: they provide a control point for reducing text-prior support, but the decision of when to intervene cannot be recovered from head identity alone.
-
-## What Not To Claim
+> Figure 1 characterizes the selected head pool. The first three panels reflect the offline axes used to construct the pool: post-image text-side mass and hallucinated-minus-grounded text-over-image contrast. These panels explain what the selection rule captures, rather than independently validating the actuator claim. The image-mass-drop panel is less circular and shows that selected heads are also associated with weaker visual-token routing in hallucinated object states.
 
 Avoid:
 
 ```text
-Selected heads detect hallucination.
-Text-side mass identifies hallucinated object tokens.
-The selected head pool is a hallucination classifier.
+These four metrics support the actuator interpretation.
+Selected heads are intervention-relevant channels.
 ```
 
 Use:
 
 ```text
-Selected heads are text-side actuator channels.
-Text-side mass is an intervention leverage signal.
-Contrastive TOI is a hallucination-specific bias signal.
-The fused head pool combines leverage and specificity.
+These metrics characterize the selected pool.
+The least circular observation is the image-token mass drop.
+The actuator interpretation requires causal evidence.
 ```
+
+## Required Causal Panel for D
+
+The word **actuator** implies a control point: suppressing the channel should change object-token likelihood. Observational attention statistics alone do not prove this.
+
+The causal D panel should therefore report a generic suppression diagnostic on the current selected pool, not AD-HH-specific settings. The target measurement should be:
+
+```text
+Delta log p(y_t) = log p_base(y_t) - log p_suppressed(y_t)
+```
+
+reported separately for hallucinated and grounded object tokens.
+
+Ideal D causal result:
+
+| bucket | desired pattern |
+|---|---|
+| hallucinated object | larger Delta log p |
+| grounded object | smaller but nonzero Delta log p |
+| hallucinated / grounded ratio | greater than 1 |
+
+This is the evidence that turns "text-heavy, contrastive heads" into "actuator channels."
+
+## Verified Local Diagnostic Available Now
+
+The local files include a single-head zero-ablation teacher diagnostic:
+
+- `LLaVA/results/coco/static_suppression_fragility_analysis_l9_l16_k150/single_head_teacher_effect_summary.csv`
+
+It is useful as mechanistic support but should not be treated as the final D causal panel because it is not the exact current selected-pool generic suppression test.
+
+Verified values:
+
+| label family | mean causal effect | positive-effect fraction | mean positive Delta log p |
+|---|---:|---:|---:|
+| hallucinated | 0.00354 | 54.3% | 0.0263 |
+| kept grounded | 0.00035 | 50.2% | 0.0172 |
+| lost grounded | 0.00900 | 55.5% | 0.0329 |
+
+Interpretation:
+
+> Single-head ablation can reduce object log-probability in hallucinated and grounded cases. This supports the idea that these heads are control channels, but it should be cited as a diagnostic, not as the final actuator proof.
+
+The previously discussed numbers, such as "4.13x hallucinated fragility" or "Spearman 0.687", should only be placed in the paper if the exact source file is attached and the metric definition is made explicit. I did not find a local source file that cleanly verifies those exact values in the current workspace.
+
+## C vs D Consistency Sentence
+
+Add this sentence to close the apparent contradiction between detector failure and contrastive head bias:
+
+> The selected heads can show a larger group-level hallucinated-minus-grounded text-over-image bias while still failing as token-level hallucination detectors, because the grounded and hallucinated distributions overlap substantially. Group-average bias identifies a useful head-pool prior; it does not provide reliable online token classification.
+
+## Paper Paragraph Draft for D
+
+The selected head pool should first be interpreted as a characterization of two offline axes rather than as causal evidence. By construction, the pool has elevated post-image text-side mass and elevated hallucinated-minus-grounded text-over-image contrast, since these quantities define the fused score. This explains what the pool captures: text-side leverage and hallucination-state text-over-image bias. The less circular observation is that selected heads also show a larger image-token mass drop from grounded to hallucinated object steps (0.027 vs. 0.0066), suggesting that hallucinated object generation in this pool is accompanied by weakened visual-token routing. However, these attention statistics alone do not prove that the heads are actuators. The actuator claim requires a separate counterfactual diagnostic showing that suppressing these channels changes object-token likelihood. Thus, the selected heads are not hallucination detectors; they are candidate text-side control channels whose group-level bias must be paired with causal suppression evidence.
 
 ---
 
 # III-F. Static Suppression Is an Over-Broad Intervention
 
-## Question
+## Correct F Claim
 
-If selected heads are useful actuator channels, why not simply suppress them statically?
+F should not argue that static suppression fails. It should argue:
 
-The analysis here should not criticize AD-HH as ineffective. Static suppression does reduce hallucination. The point is more precise:
+> Static hard suppression is effective but too broad as an intervention unit. Even at the top-100 L9-L16 operating point, grounded object head-steps cross the hard threshold at a high absolute rate, so a fixed hard gate exposes normal grounded object generation to suppression.
 
-> Static hard suppression is effective but coarse. It suppresses selected actuator heads in grounded object states almost as often as in hallucinated object states, and this broad exposure produces measurable grounded-object loss.
+The key is not that the hallucinated and grounded rates are identical. They are not identical at top-100. The key is that grounded exposure is high.
 
-## Static Trigger Exposure
+## Top-100 Static Trigger Rates
 
-The static hard gate triggers when:
-
-```text
-text_mass >= tau
-```
-
-with:
+Static hard gate:
 
 ```text
-tau = 0.4
+trigger if text_mass >= 0.4
 ```
 
-Using the available top-150 L9-L16 trace:
+Top-100 L9-L16 selected heads:
 
-| label | triggered head-steps | total head-steps | trigger rate |
+| object state | triggered head-steps | total head-steps | trigger rate |
 |---|---:|---:|---:|
-| grounded object | 47,934 | 107,400 | 44.63% |
-| hallucinated object | 8,321 | 18,150 | 45.85% |
-
-Difference:
-
-```text
-45.85% - 44.63% = 1.22 percentage points
-```
-
-This means the static gate is not selective at the object-state level. Grounded and hallucinated object steps cross the hard text-mass threshold at nearly the same rate.
-
-### Top-100 Check
-
-Because the current main team setting often uses top-100 heads, the same trigger diagnostic was recomputed by restricting the top-150 trace to the top-100 L9-L16 heads.
-
-| label | triggered head-steps | total head-steps | trigger rate |
-|---|---:|---:|---:|
-| grounded object | 28,089 | 71,600 | 39.23% |
 | hallucinated object | 5,222 | 12,100 | 43.16% |
+| grounded object | 28,089 | 71,600 | 39.23% |
 
-Difference:
+This replaces the previous top-150 headline of 45.85% vs. 44.63%.
 
-```text
-43.16% - 39.23% = 3.93 percentage points
-```
+Correct phrasing:
 
-This is somewhat more separated than the top-150 trace, but it still supports the same conclusion: grounded object steps are frequently exposed to static suppression. A grounded-object trigger rate near 40% is too high to interpret the hard gate as hallucination-specific.
-
-## Behavioral Grounded-Object Outcome
-
-Comparing greedy captions with hard-suppressed captions:
-
-| metric | count | rate |
-|---|---:|---:|
-| grounded object nodes | 1,299 | - |
-| grounded object nodes reduced | 363/1,299 | 27.94% |
-| grounded object nodes partially reduced | 175/1,299 | 13.47% |
-| grounded object nodes disappeared | 188/1,299 | 14.47% |
-| grounded mentions removed | 490/3,290 | 14.89% |
-
-Here, a **grounded object node** means a unique grounded COCO object category in an image-caption pair. This is cleaner than mention-level counts because repeated mentions of the same object do not dominate the statistic.
-
-The key behavioral result:
-
-```text
-27.9% of grounded object nodes are reduced.
-14.5% disappear entirely.
-```
-
-This is the collateral-damage evidence for static hard suppression.
-
-## Hallucination Reduction Still Happens
-
-The same hard suppression also reduces hallucination:
-
-| metric | count | rate |
-|---|---:|---:|
-| hallucinated mentions removed | 372/548 | 67.88% |
-| images with hallucination removed | 220/500 | 44.0% |
-| CHAIRs greedy -> hard | 0.534 -> 0.342 | lower is better |
-| CHAIRi greedy -> hard | 0.1428 -> 0.0886 | lower is better |
-
-This should be stated clearly:
-
-> Static suppression is not useless. It works, but its intervention unit is broad.
-
-## Representative Mixed-Outcome Case
-
-Image:
-
-```text
-COCO_val2014_000000208748.jpg
-image id: 208748
-```
-
-This image contains all three grounded outcomes within the same sample:
-
-| outcome | object transition |
-|---|---|
-| no reduction | dining table 5 -> 5 |
-| no reduction | sandwich 1 -> 1 |
-| no reduction / increased mention | wine glass 1 -> 3 |
-| partial reduction | person 2 -> 1 |
-| disappeared | cup 1 -> 0 |
-| disappeared | fork 1 -> 0 |
-| disappeared | knife 1 -> 0 |
-
-The same example also removes hallucinated objects:
-
-```text
-base hallucinated: bowl, spoon, bottle
-hard suppressed:  none
-```
-
-Interpretation:
-
-> Static suppression can remove hallucinated content, but within the same image it can also partially reduce or completely remove grounded content.
-
-This is a good qualitative example for the over-suppression argument because it shows intended and unintended effects together.
-
-## Refined Argument For Section III-F
-
-The argument should be structured as a two-stage funnel:
-
-```text
-1. Static gate exposure:
-   selected heads cross the hard threshold for grounded objects almost as often as for hallucinated objects.
-
-2. Behavioral outcome:
-   this broad exposure materializes as grounded-object reduction and disappearance.
-```
-
-Do not use the caption-disappearance analysis alone. The stronger argument is:
-
-```text
-hard trigger rate is broad -> grounded object nodes are actually reduced/disappeared
-```
-
-This connects the mechanism to the caption-level outcome.
-
-## Paper-Ready Paragraph
-
-Static hard suppression exposes the limitation of treating selected heads as hallucination detectors. Under the hard rule `text_mass >= 0.4`, suppression is triggered for grounded and hallucinated object steps at nearly the same rate: 44.63% of grounded selected head-steps and 45.85% of hallucinated selected head-steps in the available top-150 L9-L16 trace. Even when restricted to the top-100 heads, grounded object steps remain heavily exposed, with a 39.23% trigger rate compared with 43.16% for hallucinated object steps. This broad exposure produces measurable collateral damage. Comparing greedy captions with hard-suppressed captions, 27.94% of grounded object nodes are reduced, and 14.47% disappear entirely. Thus, static suppression is effective but coarse: it can remove hallucinated objects, but because the same text-side actuator heads also support grounded object realization, a fixed hard gate can suppress normal grounded content as well.
-
-## What Not To Claim
+> The rates are not identical, but grounded object steps still cross the hard threshold in 39.2% of selected head-steps, close to the hallucinated rate of 43.2%. Thus, the hard gate exposes grounded object generation to suppression at a high absolute frequency.
 
 Avoid:
 
 ```text
-Static suppression fails.
-AD-HH is wrong.
-The hard gate never distinguishes hallucination.
+The trigger rates are nearly identical.
 ```
+
+## Ratio-Axis Check
+
+The static hard baseline uses raw text mass, while the later dynamic method uses text-over-image ratio. To reduce axis-confound concerns, the same top-100 trace was also summarized with:
+
+```text
+trigger if r = T/(T+I) >= 0.9
+```
+
+| object state | ratio-triggered head-steps | total head-steps | trigger rate |
+|---|---:|---:|---:|
+| hallucinated object | 5,419 | 12,100 | 44.79% |
+| grounded object | 27,500 | 71,600 | 38.41% |
+
+The same qualitative point remains on the ratio axis: grounded object steps are still heavily exposed.
+
+## Grounded Object Outcome
+
+Hard suppression changes grounded object content:
+
+| grounded object outcome | count | rate |
+|---|---:|---:|
+| grounded object nodes | 1,299 | - |
+| preserved | 936 | 72.06% |
+| partially reduced | 175 | 13.47% |
+| disappeared | 188 | 14.47% |
+| reduced total | 363 | 27.94% |
+
+Use "partially reduced" consistently, not "reduced" when referring only to the partial category.
+
+Strongest evidence:
+
+```text
+14.5% of grounded object nodes disappear entirely.
+```
+
+Then the total grounded reduction:
+
+```text
+27.9% are reduced = 13.5% partially reduced + 14.5% disappeared.
+```
+
+## Paper Paragraph Draft for F
+
+Static hard suppression is a useful but over-broad intervention. Under the top-100 L9-L16 head pool, the hard rule `text_mass >= 0.4` triggers on 43.2% of hallucinated object head-steps, but it also triggers on 39.2% of grounded object head-steps. The rates are not identical, but the grounded exposure is high in absolute terms. A ratio-axis check gives the same qualitative result: with `T/(T+I) >= 0.9`, grounded object head-steps are still triggered 38.4% of the time, compared with 44.8% for hallucinated object head-steps. This broad exposure materializes in the generated captions. In the hard-suppressed outputs, 27.9% of grounded object nodes are reduced, including 13.5% that are partially reduced and 14.5% that disappear entirely. Static suppression therefore can lower hallucination, but it does so by applying a coarse hard gate to channels that also support ordinary grounded object realization.
+
+## D to F Bridge
+
+Use this bridge after D includes causal fragility evidence:
+
+> Even if hallucinated objects are more fragile under suppression, static triggering remains broad: grounded object steps cross the hard threshold in roughly 39% of selected head-steps. This explains why a useful actuator can still damage grounded content when controlled by a fixed hard gate. The problem is not the existence of text-side leverage; the problem is that static suppression cannot target that leverage selectively enough.
+
+## Do Not Close the Loop in Section III
+
+Do not claim here that DEACT solves the grounded damage unless the same node-level grounded-preservation metric has been computed for DEACT.
 
 Use:
 
 ```text
-Static suppression is effective but over-broad.
-The hard gate exposes grounded object generation to suppression.
-Selected heads are useful actuator channels, but head identity plus a fixed threshold is not enough for token-state selectivity.
+The quantitative comparison with the proposed dynamic method is deferred to Section V.
+```
+
+Avoid:
+
+```text
+DEACT fixes this grounded loss.
 ```
 
 ---
 
-# How D and F Connect
+# Figure Updates
 
-Section D establishes:
+## Revised Figure 1
 
-```text
-Selected heads are actuator channels.
-```
+Use:
 
-Section F establishes:
+- `LLaVA/results/coco/selected_head_actuator_analysis_l9_l16_k100/selected_vs_nonselected_actuator_metrics.svg`
 
-```text
-Static suppression of actuator channels is too broad.
-```
-
-Together:
+Caption stance:
 
 ```text
-The analysis motivates dynamic, token-state-dependent suppression without requiring the selected heads to be hallucination detectors.
+Selected pool characterization, not causal proof.
 ```
 
-This is the clean conceptual bridge into the method section.
+## Revised Figure 2
 
+Use:
+
+- `LLaVA/results/coco/static_overbroad_top100_l9_l16/static_overbroad_top100.svg`
+
+Caption stance:
+
+```text
+Static hard suppression triggers frequently on grounded object head-steps and produces grounded-object reduction/disappearance.
+```

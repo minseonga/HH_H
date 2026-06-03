@@ -1,0 +1,3 @@
+label,n_head_steps,text_tau,text_triggered_head_steps,text_trigger_rate,ratio_tau,ratio_triggered_head_steps,ratio_trigger_rate
+hallucinated,12100,0.4,5222,0.4315702479338843,0.9,5419,0.4478512396694215
+grounded,71600,0.4,28089,0.392304469273743,0.9,27500,0.3840782122905028

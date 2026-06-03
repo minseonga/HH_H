@@ -1,0 +1,17 @@
+group,layer,count,fraction
+selected,9,11,0.11
+selected,10,9,0.09
+selected,11,7,0.07
+selected,12,19,0.19
+selected,13,8,0.08
+selected,14,16,0.16
+selected,15,14,0.14
+selected,16,16,0.16
+non-selected,9,21,0.1346153846153846
+non-selected,10,23,0.14743589743589744
+non-selected,11,25,0.16025641025641027
+non-selected,12,13,0.08333333333333333
+non-selected,13,24,0.15384615384615385
+non-selected,14,16,0.10256410256410256
+non-selected,15,18,0.11538461538461539
+non-selected,16,16,0.10256410256410256

@@ -1,0 +1,45 @@
+{
+  "object_ratio_csv": "experiments_in_server/method_figure_source_trace_n100_k150_l9_16/selected_head_object_ratio_distribution.csv",
+  "ranked_heads_json": "LLaVA/results/coco/layer_band_dynamic_ablation_head_files/ranked_heads_global__itext_all__C_toi_HminusG_l9_l16.json",
+  "hard_outcome_json": "LLaVA/results/coco/adhh_hard_tau0p4_removal_loss_disappear/adhh_removal_loss_summary.json",
+  "top_k": 100,
+  "trigger_summary": [
+    {
+      "label": "hallucinated",
+      "n_head_steps": 12100,
+      "text_tau": 0.4,
+      "text_triggered_head_steps": 5222,
+      "text_trigger_rate": 0.4315702479338843,
+      "ratio_tau": 0.9,
+      "ratio_triggered_head_steps": 5419,
+      "ratio_trigger_rate": 0.4478512396694215
+    },
+    {
+      "label": "grounded",
+      "n_head_steps": 71600,
+      "text_tau": 0.4,
+      "text_triggered_head_steps": 28089,
+      "text_trigger_rate": 0.392304469273743,
+      "ratio_tau": 0.9,
+      "ratio_triggered_head_steps": 27500,
+      "ratio_trigger_rate": 0.3840782122905028
+    }
+  ],
+  "grounded_outcome": {
+    "grounded_nodes": 1299,
+    "preserved": 936,
+    "partial": 175,
+    "disappeared": 188,
+    "reduced": 363,
+    "preserved_rate": 0.7205542725173211,
+    "partial_rate": 0.13471901462663588,
+    "disappeared_rate": 0.1447267128560431,
+    "reduced_rate": 0.279445727482679,
+    "source": "LLaVA/results/coco/adhh_hard_tau0p4_removal_loss_disappear/adhh_removal_loss_summary.json"
+  },
+  "figures": {
+    "svg": "LLaVA/results/coco/static_overbroad_top100_l9_l16/static_overbroad_top100.svg",
+    "png": "LLaVA/results/coco/static_overbroad_top100_l9_l16/static_overbroad_top100.png",
+    "pdf": "LLaVA/results/coco/static_overbroad_top100_l9_l16/static_overbroad_top100.pdf"
+  }
+}

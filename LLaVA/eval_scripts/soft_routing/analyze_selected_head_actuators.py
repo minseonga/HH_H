@@ -92,6 +92,18 @@ def load_heads(path):
     heads = data.get("heads", data if isinstance(data, list) else [])
     if not isinstance(heads, list) or not heads:
         raise ValueError(f"no heads found in {path}")
+    for idx, head in enumerate(heads, start=1):
+        head.setdefault("itext_all__C_toi_HminusG", head.get("score", head.get("global__itext_all__C_toi_HminusG", 0.0)))
+        head.setdefault("Itext_all", head.get("itext_all", 0.0))
+        head.setdefault("front_percentile", head.get("text_percentile", 0.0))
+        head.setdefault("back_percentile", head.get("contrast_percentile", 0.0))
+        head.setdefault("back_raw", head.get("C_toi_HminusG", 0.0))
+        head.setdefault("global_rank", head.get("global_rank_within_band", idx))
+        if "LogTOI_hallucinated" not in head:
+            raw_h = max(float(head.get("RawTOI_hallucinated", 0.0)), 1e-9)
+            raw_g = max(float(head.get("RawTOI_non_hallucinated", 0.0)), 1e-9)
+            head["LogTOI_hallucinated"] = math.log(raw_h)
+            head["LogTOI_non_hallucinated"] = math.log(raw_g)
     return data, heads
 
 
@@ -243,37 +255,41 @@ def plot_selected_vs_nonselected_metrics(output_dir, formats, summaries):
             "Itext_all",
             selected["mean_Itext_all"],
             non["mean_Itext_all"],
-            "overall leverage",
+            "selection axis",
             "{:.3f}",
+            "selection\naxis",
         ),
         (
             "Contrastive\nTOI score",
             "C_toi",
             selected["mean_C_toi_HminusG"],
             non["mean_C_toi_HminusG"],
-            "hall-specific bias",
+            "selection axis",
             "{:.2f}",
+            "selection\naxis",
         ),
         (
             "Log TOI\ngap H-G",
             "log TOI",
             selected["mean_LogTOI_gap_HminusG"],
             non["mean_LogTOI_gap_HminusG"],
-            "robust shift",
+            "same contrastive axis",
             "{:.3f}",
+            "derived\naxis",
         ),
         (
             "Image mass\ndrop G-H",
             "image drop",
             selected["mean_image_drop_GminusH"],
             non["mean_image_drop_GminusH"],
-            "visual weakening",
+            "non-selection check",
             "{:.3f}",
+            None,
         ),
     ]
 
     fig, axes = plt.subplots(1, len(metrics), figsize=(7.4, 2.35), constrained_layout=True)
-    for ax, (title, ylabel, sel, tail, subtitle, fmt) in zip(axes, metrics):
+    for ax, (title, ylabel, sel, tail, subtitle, fmt, badge_override) in zip(axes, metrics):
         ymax = max(sel, tail) * 1.42 if max(sel, tail) > 0 else 1.0
         ax.bar([0], [tail], width=0.58, color=COLORS["nonselected"], alpha=0.78)
         ax.bar([1], [sel], width=0.58, color=COLORS["selected"], alpha=0.92)
@@ -287,7 +303,9 @@ def plot_selected_vs_nonselected_metrics(output_dir, formats, summaries):
 
         ax.text(0, tail + ymax * 0.045, fmt.format(tail), ha="center", va="bottom", fontsize=7.0, color=COLORS["dark"])
         ax.text(1, sel + ymax * 0.045, fmt.format(sel), ha="center", va="bottom", fontsize=7.0, color=COLORS["dark"])
-        if tail > 0:
+        if badge_override:
+            ratio_label = badge_override
+        elif tail > 0:
             ratio = sel / tail
             ratio_label = f"{ratio:.1f}x"
         else:
@@ -315,7 +333,7 @@ def plot_selected_vs_nonselected_metrics(output_dir, formats, summaries):
         )
 
     fig.suptitle(
-        "Selected heads are stronger text-side actuators than non-selected heads",
+        "Selected head pool characterization",
         y=1.06,
         fontsize=10.5,
         fontweight="bold",
@@ -366,7 +384,7 @@ def write_paper_notes(path, data, top_k):
     logtoi_d = data["effect_sizes"]["LogTOI_gap"]
     image_d = data["effect_sizes"]["image_drop"]
 
-    text = f"""# Head Actuator Analysis Notes
+    text = f"""# Head Pool Characterization Notes
 
 Source: `{data['source']}`
 
@@ -374,7 +392,9 @@ Selection: top-{top_k} heads from the L9--L16 ranked pool, with the remaining he
 
 ## Main Finding
 
-The selected heads are not reliable hallucination detectors. Instead, they are better interpreted as text-side actuator heads: intervention-relevant channels that increase the influence of post-image textual context during object generation.
+This file characterizes what the selected head pool captures. It should not be used by itself as the causal evidence for an actuator claim.
+
+Important circularity caveat: the pool is selected from rank percentiles of text-side mass and contrastive text-over-image score. Therefore, selected-vs-non-selected differences on text-side mass, contrastive TOI score, and log-TOI gap are partly by construction. They are useful for explaining the construction of the pool, not for independently proving that these heads are intervention-relevant.
 
 ## Selected vs Non-Selected Heads
 
@@ -399,17 +419,19 @@ Effect sizes selected vs non-selected:
 - log TOI gap: Cohen's d = {logtoi_d:.3f}
 - image drop: Cohen's d = {image_d:.3f}
 
-The text-leverage percentile and contrastive percentile are weakly correlated across the L9--L16 head pool (Pearson r = {component_corr:.3f}), so the two axes are complementary rather than redundant.
+The text-leverage percentile and contrastive percentile have low linear correlation across the L9--L16 head pool (Pearson r = {component_corr:.3f}). This is best treated as low redundancy between the two ranking axes, not as a causal result.
 
 ## Paper-Ready Interpretation
 
-The selected heads have substantially higher text-side leverage than non-selected heads in the same layer window. They also exhibit a larger hallucinated-minus-grounded text-over-image shift and a stronger drop in image-token attention at hallucinated object steps. This indicates that the selected heads are not merely high text-attention heads. They are heads whose routing behavior becomes more text-dominant and less image-grounded in the hallucination state.
+The selected pool is intentionally biased toward heads with high post-image text-side mass and high hallucinated-minus-grounded text-over-image contrast. These properties characterize the two axes used for selection: a text-side leverage axis and a hallucination-state contrast axis. Because these axes are part of the selection rule, they should be presented as a description of the selected pool rather than as independent proof of intervention relevance.
 
-Therefore, we interpret these heads as text-side actuators. High text-side mass identifies where an intervention can affect object generation, while the contrastive text-over-image gap identifies which of those leverage points are hallucination-specific. This actuator interpretation is distinct from a detector interpretation: the head does not need to classify a token as hallucinated; it only needs to provide a control point through which language-prior support can be reduced.
+The least circular observation in this table is the image-token mass drop, because image drop is not one of the two main selection axes for this pool. Selected heads show a larger grounded-to-hallucinated image-mass drop ({selected['mean_image_drop_GminusH']:.3f} vs. {non['mean_image_drop_GminusH']:.3f}), suggesting that hallucinated object generation is accompanied by weakened visual-token routing in this head pool.
+
+To justify the term "actuator", this characterization must be paired with a separate causal diagnostic showing that suppressing these channels changes object-token likelihood. Without that causal panel, the safe claim is only that the selected pool captures text-side leverage and hallucination-state text-over-image bias.
 
 ## Caution
 
-This is a head-pool characterization, not a standalone token-level hallucination detector. High text reliance also occurs for grounded objects, so the selected heads should not be described as detecting hallucination. The correct claim is that they are intervention-relevant channels whose text-over-image reliance increases in hallucination states.
+This is a head-pool characterization, not a standalone token-level hallucination detector. High text reliance also occurs for grounded objects, so the selected heads should not be described as detecting hallucination. The safe claim is that they are candidate text-side control channels whose text-over-image reliance increases in hallucination states.
 """
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
