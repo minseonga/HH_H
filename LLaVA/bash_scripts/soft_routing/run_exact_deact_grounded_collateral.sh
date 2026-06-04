@@ -41,8 +41,9 @@ sample_id_file="${SAMPLE_ID_FILE:-${output_root}/sample_ids_seed${seed}_n${num_s
 greedy_dir="${output_root}/greedy"
 deact_dir="${output_root}/dynamic_l9_l16_k${topk}_s${dynamic_strength}_q${dynamic_exp_sharpness}_tau${dynamic_tau}"
 collateral_dir="${output_root}/grounded_collateral_dynamic"
+unique_dir="${output_root}/unique_object_nodes_dynamic"
 
-mkdir -p "${greedy_dir}" "${deact_dir}" "${collateral_dir}"
+mkdir -p "${greedy_dir}" "${deact_dir}" "${collateral_dir}" "${unique_dir}"
 
 if [[ ! -d "${adhh_llava_dir}" ]]; then
   echo "[error] missing ADHH LLaVA directory: ${adhh_llava_dir}" >&2
@@ -127,13 +128,21 @@ echo "[analyze] greedy -> exact DEACT grounded collateral"
     --base-name "greedy" \
     --target-name "exact_deact_l9_l16_k${topk}_s${dynamic_strength}_q${dynamic_exp_sharpness}" \
     --output-dir "${collateral_dir}"
+
+  "${python_bin}" LLaVA/eval_scripts/soft_routing/analyze_unique_object_node_transitions.py \
+    --base "${greedy_dir}/captions_eval_results.json" \
+    --target "${deact_dir}/captions_eval_results.json" \
+    --base-name "greedy" \
+    --target-name "exact_deact_l9_l16_k${topk}_s${dynamic_strength}_q${dynamic_exp_sharpness}" \
+    --output-dir "${unique_dir}"
 )
 
 static_eval_json="${STATIC_EVAL_JSON:-}"
 if [[ -n "${static_eval_json}" ]]; then
   static_dir="${output_root}/grounded_collateral_static"
+  static_unique_dir="${output_root}/unique_object_nodes_static"
   compare_dir="${output_root}/grounded_node_outcome_static_vs_exact_deact"
-  mkdir -p "${static_dir}" "${compare_dir}"
+  mkdir -p "${static_dir}" "${static_unique_dir}" "${compare_dir}"
   echo "[analyze] greedy -> static grounded collateral"
   (
     cd "${repo_root}"
@@ -143,6 +152,13 @@ if [[ -n "${static_eval_json}" ]]; then
       --base-name "greedy" \
       --target-name "static_hard" \
       --output-dir "${static_dir}"
+
+    "${python_bin}" LLaVA/eval_scripts/soft_routing/analyze_unique_object_node_transitions.py \
+      --base "${greedy_dir}/captions_eval_results.json" \
+      --target "${static_eval_json}" \
+      --base-name "greedy" \
+      --target-name "static_hard" \
+      --output-dir "${static_unique_dir}"
 
     "${python_bin}" LLaVA/eval_scripts/soft_routing/build_grounded_node_outcome_comparison.py \
       --summary "static:${static_dir}/adhh_removal_loss_summary.json" \
@@ -156,3 +172,4 @@ echo "  greedy:   ${greedy_dir}/captions_eval_results.json"
 echo "  deact:    ${deact_dir}/captions_eval_results.json"
 echo "  summary:  ${collateral_dir}/adhh_removal_loss_summary.json"
 echo "  rows:     ${collateral_dir}/adhh_removal_loss_rows.csv"
+echo "  unique:   ${unique_dir}/unique_object_node_transition_summary.json"
