@@ -27,6 +27,7 @@ caption_file_path="${CAPTION_FILE_PATH:-${annotation_dir}/captions_val2014.json}
 
 topk="${TOPK:-100}"
 dynamic_strength="${DYNAMIC_STRENGTH:-1.0}"
+dynamic_context_mode="${DYNAMIC_CONTEXT_MODE:-ratio_exp}"
 dynamic_exp_sharpness="${DYNAMIC_EXP_SHARPNESS:-8.0}"
 dynamic_tau="${DYNAMIC_TAU:-0.90}"
 dynamic_redistribute="${DYNAMIC_REDISTRIBUTE:-renorm}"
@@ -35,11 +36,11 @@ head_score_key="${HEAD_SCORE_KEY:-global__itext_all__C_toi_HminusG}"
 head_score_normalize="${HEAD_SCORE_NORMALIZE:-rank_percentile}"
 head_file="${HEAD_FILE:-${adhh_llava_dir}/results_summary/coco/ranked_heads_global__itext_all__C_toi_HminusG.json}"
 
-tag="${TAG:-exact_deact_l9_l16_k${topk}_s${dynamic_strength}_q${dynamic_exp_sharpness}_tau${dynamic_tau}_n${num_samples}_seed${seed}}"
+tag="${TAG:-exact_deact_l9_l16_k${topk}_${dynamic_context_mode}_s${dynamic_strength}_q${dynamic_exp_sharpness}_tau${dynamic_tau}_n${num_samples}_seed${seed}}"
 output_root="${OUTPUT_ROOT:-${llava_dir}/results/coco/${tag}}"
 sample_id_file="${SAMPLE_ID_FILE:-${output_root}/sample_ids_seed${seed}_n${num_samples}.json}"
 greedy_dir="${output_root}/greedy"
-deact_dir="${output_root}/dynamic_l9_l16_k${topk}_s${dynamic_strength}_q${dynamic_exp_sharpness}_tau${dynamic_tau}"
+deact_dir="${output_root}/dynamic_l9_l16_k${topk}_${dynamic_context_mode}_s${dynamic_strength}_q${dynamic_exp_sharpness}_tau${dynamic_tau}"
 collateral_dir="${output_root}/grounded_collateral_dynamic"
 unique_dir="${output_root}/unique_object_nodes_dynamic"
 
@@ -106,7 +107,7 @@ echo "[run] exact DEACT dynamic -> ${deact_dir}"
     --head-score-normalize "${head_score_normalize}" \
     --topk "${topk}" \
     --dynamic-strength "${dynamic_strength}" \
-    --dynamic-context-mode ratio_exp \
+    --dynamic-context-mode "${dynamic_context_mode}" \
     --dynamic-tau "${dynamic_tau}" \
     --dynamic-exp-sharpness "${dynamic_exp_sharpness}" \
     --dynamic-score-power "${dynamic_score_power}" \
@@ -126,14 +127,14 @@ echo "[analyze] greedy -> exact DEACT grounded collateral"
     --base "${greedy_dir}/captions_eval_results.json" \
     --target "${deact_dir}/captions_eval_results.json" \
     --base-name "greedy" \
-    --target-name "exact_deact_l9_l16_k${topk}_s${dynamic_strength}_q${dynamic_exp_sharpness}" \
+    --target-name "exact_deact_l9_l16_k${topk}_${dynamic_context_mode}_s${dynamic_strength}_q${dynamic_exp_sharpness}" \
     --output-dir "${collateral_dir}"
 
   "${python_bin}" LLaVA/eval_scripts/soft_routing/analyze_unique_object_node_transitions.py \
     --base "${greedy_dir}/captions_eval_results.json" \
     --target "${deact_dir}/captions_eval_results.json" \
     --base-name "greedy" \
-    --target-name "exact_deact_l9_l16_k${topk}_s${dynamic_strength}_q${dynamic_exp_sharpness}" \
+    --target-name "exact_deact_l9_l16_k${topk}_${dynamic_context_mode}_s${dynamic_strength}_q${dynamic_exp_sharpness}" \
     --output-dir "${unique_dir}"
 )
 

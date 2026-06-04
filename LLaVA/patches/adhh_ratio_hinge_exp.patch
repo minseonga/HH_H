@@ -1,0 +1,59 @@
+diff --git a/LLaVA/eval_scripts/eval_amber.py b/LLaVA/eval_scripts/eval_amber.py
+index e24e61a..5c8546a 100644
+--- a/LLaVA/eval_scripts/eval_amber.py
++++ b/LLaVA/eval_scripts/eval_amber.py
+@@ -452,7 +452,7 @@ def build_parser():
+     parser.add_argument("--dynamic-strength", type=float, default=1.0)
+     parser.add_argument("--dynamic-ratio-power", type=float, default=1.0)
+     parser.add_argument("--dynamic-score-power", type=float, default=1.0)
+-    parser.add_argument("--dynamic-context-mode", type=str, default="ratio_exp", choices=["text_exp", "ratio_exp", "ratio_power", "text_power"])
++    parser.add_argument("--dynamic-context-mode", type=str, default="ratio_exp", choices=["text_exp", "ratio_exp", "ratio_hinge_exp", "ratio_power", "text_power"])
+     parser.add_argument("--dynamic-tau", type=float, default=0.9)
+     parser.add_argument("--dynamic-exp-sharpness", type=float, default=6.0)
+     parser.add_argument("--dynamic-redistribute", type=str, default="renorm", choices=["renorm", "system", "system_only", "vision", "vision_only"])
+diff --git a/LLaVA/eval_scripts/eval_caption_dynamic.py b/LLaVA/eval_scripts/eval_caption_dynamic.py
+index 3cd6961..c3aa340 100644
+--- a/LLaVA/eval_scripts/eval_caption_dynamic.py
++++ b/LLaVA/eval_scripts/eval_caption_dynamic.py
+@@ -704,7 +704,7 @@ if __name__ == "__main__":
+     parser.add_argument("--dynamic-score-power", type=float, default=1.0,
+                         help="Power applied to normalized offline head scores.")
+     parser.add_argument("--dynamic-context-mode", type=str, default="ratio_exp",
+-                        choices=["text_exp", "ratio_exp", "ratio_power", "text_power"])
++                        choices=["text_exp", "ratio_exp", "ratio_hinge_exp", "ratio_power", "text_power"])
+     parser.add_argument("--dynamic-tau", type=float, default=0.5,
+                         help="Center point for exponential dynamic context modes.")
+     parser.add_argument("--dynamic-exp-sharpness", type=float, default=6.0,
+diff --git a/LLaVA/eval_scripts/eval_mmvet.py b/LLaVA/eval_scripts/eval_mmvet.py
+index 02236e8..3facf95 100644
+--- a/LLaVA/eval_scripts/eval_mmvet.py
++++ b/LLaVA/eval_scripts/eval_mmvet.py
+@@ -675,7 +675,7 @@ def build_parser():
+     parser.add_argument("--dynamic-strength", type=float, default=1.0)
+     parser.add_argument("--dynamic-ratio-power", type=float, default=1.0)
+     parser.add_argument("--dynamic-score-power", type=float, default=1.0)
+-    parser.add_argument("--dynamic-context-mode", type=str, default="ratio_exp", choices=["text_exp", "ratio_exp", "ratio_power", "text_power"])
++    parser.add_argument("--dynamic-context-mode", type=str, default="ratio_exp", choices=["text_exp", "ratio_exp", "ratio_hinge_exp", "ratio_power", "text_power"])
+     parser.add_argument("--dynamic-tau", type=float, default=0.9)
+     parser.add_argument("--dynamic-exp-sharpness", type=float, default=6.0)
+     parser.add_argument("--dynamic-redistribute", type=str, default="renorm", choices=["renorm", "system", "system_only", "vision", "vision_only"])
+diff --git a/LLaVA/llava/model/language_model/modeling_llama.py b/LLaVA/llava/model/language_model/modeling_llama.py
+index 0fa4173..852d110 100644
+--- a/LLaVA/llava/model/language_model/modeling_llama.py
++++ b/LLaVA/llava/model/language_model/modeling_llama.py
+@@ -731,6 +731,15 @@ def _apply_text_intervention(attn_weights, config, layer_idx):
+             elif dynamic_context_mode == "ratio_exp":
+                 context_source = ratio
+                 context_prior = torch.exp(max(dynamic_exp_sharpness, 0.0) * (ratio - dynamic_tau)) 
++            elif dynamic_context_mode == "ratio_hinge_exp":
++                context_source = ratio
++                sharpness = max(dynamic_exp_sharpness, 0.0)
++                numerator = torch.exp(sharpness * (ratio - dynamic_tau)) - 1.0
++                denominator = math.exp(sharpness * (1.0 - dynamic_tau)) - 1.0
++                if denominator <= eps:
++                    context_prior = (ratio > dynamic_tau).to(attn_weights.dtype)
++                else:
++                    context_prior = (numerator / denominator).clamp(0, 1)
+             elif dynamic_context_mode == "text_exp":
+                 context_source = text_context
+                 context_prior = torch.exp(max(dynamic_exp_sharpness, 0.0) * (text_context - dynamic_tau))
