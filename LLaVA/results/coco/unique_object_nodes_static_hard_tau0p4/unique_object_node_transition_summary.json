@@ -1,0 +1,59 @@
+{
+  "n_common": 500,
+  "base_ground_unique": 1299,
+  "target_ground_unique": 1162,
+  "preserved_ground_unique": 1111,
+  "disappeared_ground_unique": 188,
+  "added_ground_unique": 51,
+  "base_hall_unique": 440,
+  "target_hall_unique": 236,
+  "removed_hall_unique": 294,
+  "retained_hall_unique": 146,
+  "added_hall_unique": 90,
+  "images_with_ground_unique_added": 46,
+  "images_with_ground_unique_disappeared": 133,
+  "images_with_hall_unique_removed": 205,
+  "images_with_hall_unique_added": 79,
+  "mean_base_ground_unique_per_image": 2.598,
+  "mean_target_ground_unique_per_image": 2.324,
+  "mean_added_ground_unique_per_image": 0.102,
+  "mean_disappeared_ground_unique_per_image": 0.376,
+  "net_ground_unique_change": -137,
+  "net_ground_unique_change_per_image": -0.274,
+  "ground_unique_recall": 0.8552732871439569,
+  "ground_unique_disappear_rate": 0.1447267128560431,
+  "target_unique_object_precision": 0.8311874105865522,
+  "base_unique_object_precision": 0.7469810235767682,
+  "hall_unique_removal_rate": 0.6681818181818182,
+  "hall_unique_added_per_image": 0.18,
+  "images_with_ground_unique_added_rate": 0.092,
+  "images_with_ground_unique_disappeared_rate": 0.266,
+  "images_with_hall_unique_removed_rate": 0.41,
+  "images_with_hall_unique_added_rate": 0.158,
+  "base": "LLaVA/../experiments_in_server/soft_routing_smoke_n500_seed42_tau0.4_T0.05/greedy/captions_eval_results.json",
+  "target": "LLaVA/../experiments_in_server/soft_routing_smoke_n500_seed42_tau0.4_T0.05/hard_tau0.4/captions_eval_results.json",
+  "base_name": "greedy",
+  "target_name": "adhh_hard_tau0.4",
+  "base_metrics": {
+    "CHAIRs": 0.534,
+    "CHAIRi": 0.14278269932256382,
+    "Bleu": [
+      0.18094308352441302,
+      0.12138394232732559,
+      0.07488727879863676,
+      0.04611106691548673
+    ],
+    "avg_caption_length": 87.928
+  },
+  "target_metrics": {
+    "CHAIRs": 0.342,
+    "CHAIRi": 0.08859920459566946,
+    "Bleu": [
+      0.17558387354586238,
+      0.12214639335686735,
+      0.07873711677891142,
+      0.05016659933707007
+    ],
+    "avg_caption_length": 89.798
+  }
+}
