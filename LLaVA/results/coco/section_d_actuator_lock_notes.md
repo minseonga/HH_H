@@ -34,11 +34,18 @@ Effect:
 selected / non-selected image drop = 4.071x
 ```
 
+Significance:
+
+```text
+Mann-Whitney U p = 8.95e-08
+P(selected image drop > non-selected image drop) = 0.698
+```
+
 This is the cleanest observational D1 statistic because image mass drop is not one of the two direct rank-fusion axes used to select the pool. The text-mass and contrastive-TOI comparisons may still be used as pool characterization, but not as independent actuator evidence.
 
-## Pending D2: exact top-100 causal fragility
+## Locked D2: exact top-100 causal fragility
 
-The previously discussed D2 numbers:
+Discard the previously discussed D2 numbers:
 
 ```text
 grounded mean Delta logp      ~= 0.081
@@ -46,7 +53,7 @@ hallucinated mean Delta logp  ~= 0.386
 hall / grounded ratio         ~= 4.8x
 ```
 
-must not be used as locked paper numbers until recomputed with the exact current pool.
+Those values were not recomputed on the exact current top-100 L9-L16 pool.
 
 Required D2 specification:
 
@@ -66,7 +73,7 @@ Server command from `~/Hallucination-Attribution/LLaVA`:
 ```bash
 GPU_ID=6 \
 BASE_RESULTS="./results/coco/verify_0288_dynamic_l9_l16_k100_s1_q8_tau0p90_n500_seed42/greedy/captions_eval_results.json" \
-PRIOR_PATH="../ADHH/LLaVA/results_l9_l16/coco/llava-v1.5-7b_base_original_qa_n500_txtattn_l9_l16_allheads/surrogate_score_zoo/ranked_heads_global__itext_all__C_toi_HminusG.json" \
+PRIOR_PATH="./results/coco/layer_band_dynamic_ablation_head_files/ranked_heads_global__itext_all__C_toi_HminusG_l9_l16.json" \
 TOP_K=100 \
 MAX_PER_LABEL=200 \
 OUTPUT_DIR="./results/coco/section_d_exact_top100_l9_l16_fragility_m200" \
@@ -78,6 +85,39 @@ If the base result path differs on the server, set `BASE_RESULTS` to the greedy 
 ```text
 DEACT dynamic_l9_l16_k100_s1.0_q8.0_tau0.90:
 CHAIRs 0.288, CHAIRi 0.07828
+```
+
+Locked values from the exact run:
+
+| label | n | mean Delta logp | median Delta logp | q75 Delta logp | q90 Delta logp | positive drop frac | top-1 changed |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| grounded_object | 200 | -0.003117 | 0.000593 | 0.068176 | 0.197185 | 0.525 | 0.090 |
+| hallucinated_object | 200 | 0.148774 | 0.080857 | 0.263504 | 0.574243 | 0.685 | 0.170 |
+
+Do not report a hall/ground ratio for D2 because the grounded mean is near zero and slightly negative. Report the absolute contrast instead:
+
+```text
+H-G mean Delta logp gap = 0.148774 - (-0.003117) = 0.151891
+top-1 changed gap       = 17.0% - 9.0% = 8.0 percentage points
+```
+
+After the D2 run completes, generate the locked D figures and p-values:
+
+```bash
+python eval_scripts/soft_routing/build_section_d_locked_figures.py \
+  --head-scores-path "./results/coco/layer_band_dynamic_ablation_head_files/ranked_heads_global__itext_all__C_toi_HminusG_l9_l16.json" \
+  --fragility-rows-csv "./results/coco/section_d_exact_top100_l9_l16_fragility_m200/static_object_logprob_drop_rows.csv" \
+  --top-k 100 \
+  --output-dir "./results/coco/section_d_locked_figures"
+```
+
+Expected outputs:
+
+```text
+section_d_image_mass_drop_locked.svg/png/pdf
+section_d_causal_fragility_locked.svg/png/pdf
+section_d_locked_summary.json
+section_d_locked_summary_flat.csv
 ```
 
 ## D2 and E scale relationship
