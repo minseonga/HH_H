@@ -235,15 +235,15 @@ def make_layer_line_svg(
 ):
     if compact:
         width, height = 640, 390
-        left, top = 58, 92
-        plot_w, plot_h = 472, 210
+        left, top = 58, 100
+        plot_w, plot_h = 472, 200
         title_size = 17
         subtitle_size = 9
-        tick_size = 8
-        layer_size = 7
-        axis_size = 10
-        legend_size = 9
-        point_r = 2.2
+        tick_size = 10
+        layer_size = 9
+        axis_size = 14
+        legend_size = 14
+        point_r = 2.4
         line_w = 2.2
     else:
         width, height = 1180, 620
@@ -305,17 +305,17 @@ def make_layer_line_svg(
         "middle",
     ))
     if compact:
-        total_legend_w = 348
+        total_legend_w = 456
         lx = left + (plot_w - total_legend_w) / 2
-        ly = 68
+        ly = 76
         cursor = lx
         for metric in metrics:
             label = labels.get(metric, metric)
             color = colors.get(metric, DARK)
-            body.append(line(cursor, ly, cursor + 24, ly, color, 2.4))
-            body.append(circle(cursor + 12, ly, 2.6, color))
-            body.append(text(cursor + 31, ly + 3, label, legend_size, DARK))
-            cursor += 116
+            body.append(line(cursor, ly, cursor + 30, ly, color, 2.8))
+            body.append(circle(cursor + 15, ly, 3.0, color))
+            body.append(text(cursor + 38, ly + 5, label, legend_size, DARK))
+            cursor += 152
     body.append(rect(left, top, plot_w, plot_h, "#f8fafc", "#cbd5e1"))
     for tick in [0.0, 0.25, 0.5, 0.75, 1.0]:
         y = sy(tick)

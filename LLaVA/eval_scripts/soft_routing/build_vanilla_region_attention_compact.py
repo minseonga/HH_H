@@ -48,8 +48,8 @@ def load_rows(path):
 
 def make_svg(rows, output_path):
     width, height = 640, 390
-    left, top = 58, 92
-    plot_w, plot_h = 472, 210
+    left, top = 58, 100
+    plot_w, plot_h = 472, 200
     metrics = [
         ("system_share", "system prefix", GRAY),
         ("visual_share", "visual", BLUE),
@@ -67,19 +67,19 @@ def make_svg(rows, output_path):
     body = []
     body.append(text(width / 2, 28, "Vanilla attention by source region", 17, DARK, "middle", "700"))
     body.append(text(width / 2, 48, "Generated-step attention averaged by layer; dashed lines mark L9-L16.", 9, MUTED, "middle"))
-    total_legend_w = 348
+    total_legend_w = 456
     cursor = left + (plot_w - total_legend_w) / 2
     for _, label, color in metrics:
-        body.append(line(cursor, 68, cursor + 24, 68, color, 2.4))
-        body.append(circle(cursor + 12, 68, 2.6, color))
-        body.append(text(cursor + 31, 71, label, 9, DARK))
-        cursor += 116
+        body.append(line(cursor, 76, cursor + 30, 76, color, 2.8))
+        body.append(circle(cursor + 15, 76, 3.0, color))
+        body.append(text(cursor + 38, 81, label, 14, DARK))
+        cursor += 152
     body.append(rect(left, top, plot_w, plot_h, "#f8fafc", "#cbd5e1"))
 
     for tick in [0.0, 0.25, 0.5, 0.75, 1.0]:
         y = sy(tick)
         body.append(line(left, y, left + plot_w, y, GRID))
-        body.append(text(left - 10, y + 3, f"{tick:.2f}", 8, MUTED, "end"))
+        body.append(text(left - 10, y + 3, f"{tick:.2f}", 10, MUTED, "end"))
 
     for layer in range(n_layers):
         x = sx(layer)
@@ -88,7 +88,7 @@ def make_svg(rows, output_path):
         elif layer % 4 == 0:
             body.append(line(x, top, x, top + plot_h, "#edf2f7", 0.8))
         if layer % 4 == 0 or layer in [9, 16]:
-            body.append(text(x, top + plot_h + 18, f"L{layer}", 7, DARK, "middle", rotate=35))
+            body.append(text(x, top + plot_h + 18, f"L{layer}", 9, DARK, "middle", rotate=35))
 
     for metric, _, color in metrics:
         pts = [
@@ -101,8 +101,8 @@ def make_svg(rows, output_path):
             if value > 0.01:
                 body.append(circle(x, y, 2.2, color))
 
-    body.append(text(left + plot_w / 2, height - 22, "layer", 10, DARK, "middle"))
-    body.append(text(20, top + plot_h / 2, "attention share", 10, DARK, "middle", rotate=-90))
+    body.append(text(left + plot_w / 2, height - 22, "layer", 14, DARK, "middle"))
+    body.append(text(20, top + plot_h / 2, "attention share", 14, DARK, "middle", rotate=-90))
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as f:
