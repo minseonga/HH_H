@@ -222,10 +222,42 @@ def finalize_rows(acc, key_names):
     return rows
 
 
-def make_layer_line_svg(path, rows, title, metrics=None, labels=None, colors=None, subtitle=None):
-    width, height = 1180, 620
-    left, top = 82, 82
-    plot_w, plot_h = 930, 390
+def make_layer_line_svg(
+    path,
+    rows,
+    title,
+    metrics=None,
+    labels=None,
+    colors=None,
+    subtitle=None,
+    compact=False,
+    mark_layers=None,
+):
+    if compact:
+        width, height = 640, 390
+        left, top = 58, 76
+        plot_w, plot_h = 472, 226
+        title_size = 17
+        subtitle_size = 9
+        tick_size = 8
+        layer_size = 7
+        axis_size = 10
+        legend_size = 9
+        point_r = 2.2
+        line_w = 2.2
+    else:
+        width, height = 1180, 620
+        left, top = 82, 82
+        plot_w, plot_h = 930, 390
+        title_size = 21
+        subtitle_size = 12
+        tick_size = 10
+        layer_size = 8
+        axis_size = 13
+        legend_size = 11
+        point_r = 3.0
+        line_w = 2.8
+    mark_layers = [9, 16] if mark_layers is None and compact else (mark_layers or [11, 21, 27])
     metrics = metrics or ["system_share", "visual_share", "text_share"]
     colors = colors or {
         "system_share": GRAY,
@@ -263,12 +295,12 @@ def make_layer_line_svg(path, rows, title, metrics=None, labels=None, colors=Non
         return top + plot_h - value * plot_h
 
     body = []
-    body.append(text(width / 2, 32, title, 21, DARK, "middle", "700"))
+    body.append(text(width / 2, 28 if compact else 32, title, title_size, DARK, "middle", "700"))
     body.append(text(
         width / 2,
-        55,
+        48 if compact else 55,
         subtitle or "Each layer averages head attention over generated steps.",
-        12,
+        subtitle_size,
         MUTED,
         "middle",
     ))
@@ -276,29 +308,33 @@ def make_layer_line_svg(path, rows, title, metrics=None, labels=None, colors=Non
     for tick in [0.0, 0.25, 0.5, 0.75, 1.0]:
         y = sy(tick)
         body.append(line(left, y, left + plot_w, y, GRID))
-        body.append(text(left - 12, y + 4, f"{tick:.2f}", 10, MUTED, "end"))
+        body.append(text(left - 10, y + 3, f"{tick:.2f}", tick_size, MUTED, "end"))
     for layer in range(n_layers):
         x = sx(layer)
-        if layer in [11, 21, 27]:
+        if layer in mark_layers:
             body.append(line(x, top, x, top + plot_h, "#334155", 1.15, "5 5"))
-        elif layer % 2 == 0:
+        elif (not compact and layer % 2 == 0) or (compact and layer % 4 == 0):
             body.append(line(x, top, x, top + plot_h, "#edf2f7", 0.8))
-        body.append(text(x, top + plot_h + 22, f"L{layer}", 8, DARK, "middle", rotate=35))
+        if (not compact) or layer % 4 == 0 or layer in mark_layers:
+            body.append(text(x, top + plot_h + (18 if compact else 22), f"L{layer}", layer_size, DARK, "middle", rotate=35))
     for metric in metrics:
         pts = [(sx(layer), sy(float(by_layer.get(layer, {}).get(metric, 0.0)))) for layer in range(n_layers)]
-        body.append(polyline(pts, colors.get(metric, DARK)))
+        body.append(polyline(pts, colors.get(metric, DARK), line_w))
         for layer, (x, y) in enumerate(pts):
             value = float(by_layer.get(layer, {}).get(metric, 0.0))
             if value > 0.01:
-                body.append(circle(x, y, 3.0, colors.get(metric, DARK)))
-    lx, ly = left + plot_w + 34, top + 24
+                body.append(circle(x, y, point_r, colors.get(metric, DARK)))
+    if compact:
+        lx, ly = left + plot_w - 126, top + 18
+    else:
+        lx, ly = left + plot_w + 34, top + 24
     for idx, metric in enumerate(metrics):
-        y = ly + idx * 30
-        body.append(line(lx, y, lx + 32, y, colors.get(metric, DARK), 3))
-        body.append(circle(lx + 16, y, 3.2, colors.get(metric, DARK)))
-        body.append(text(lx + 42, y + 4, labels.get(metric, metric), 11, DARK))
-    body.append(text(left + plot_w / 2, height - 36, "layer", 13, DARK, "middle"))
-    body.append(text(28, top + plot_h / 2, "attention share", 13, DARK, "middle", rotate=-90))
+        y = ly + idx * (20 if compact else 30)
+        body.append(line(lx, y, lx + (24 if compact else 32), y, colors.get(metric, DARK), 2.4 if compact else 3))
+        body.append(circle(lx + (12 if compact else 16), y, 2.6 if compact else 3.2, colors.get(metric, DARK)))
+        body.append(text(lx + (31 if compact else 42), y + 3, labels.get(metric, metric), legend_size, DARK))
+    body.append(text(left + plot_w / 2, height - (22 if compact else 36), "layer", axis_size, DARK, "middle"))
+    body.append(text(20 if compact else 28, top + plot_h / 2, "attention share", axis_size, DARK, "middle", rotate=-90))
     svg(path, width, height, "".join(body))
 
 
@@ -458,6 +494,7 @@ def main():
     write_csv(sample_csv, sample_rows)
 
     line_svg = os.path.join(args.output_dir, "vanilla_region_attention_layer_lines.svg")
+    compact_line_svg = os.path.join(args.output_dir, "vanilla_region_attention_layer_lines_compact.svg")
     stacked_svg = os.path.join(args.output_dir, "vanilla_region_attention_layer_stacked.svg")
     raw_line_svg = os.path.join(args.output_dir, "vanilla_region_attention_layer_raw_lines.svg")
     raw_stacked_svg = os.path.join(args.output_dir, "vanilla_region_attention_layer_raw_stacked.svg")
@@ -466,6 +503,14 @@ def main():
         layer_rows,
         "Vanilla attention by source region",
         subtitle="Each layer averages head attention over generated steps; text-side is question/instruction plus generated prefix.",
+    )
+    make_layer_line_svg(
+        compact_line_svg,
+        layer_rows,
+        "Vanilla attention by source region",
+        subtitle="Generated-step attention averaged by layer; dashed lines mark L9-L16.",
+        compact=True,
+        mark_layers=[9, 16],
     )
     make_layer_stacked_svg(
         stacked_svg,
