@@ -235,8 +235,8 @@ def make_layer_line_svg(
 ):
     if compact:
         width, height = 640, 390
-        left, top = 58, 76
-        plot_w, plot_h = 472, 226
+        left, top = 58, 92
+        plot_w, plot_h = 472, 210
         title_size = 17
         subtitle_size = 9
         tick_size = 8
@@ -304,6 +304,18 @@ def make_layer_line_svg(
         MUTED,
         "middle",
     ))
+    if compact:
+        total_legend_w = 348
+        lx = left + (plot_w - total_legend_w) / 2
+        ly = 68
+        cursor = lx
+        for metric in metrics:
+            label = labels.get(metric, metric)
+            color = colors.get(metric, DARK)
+            body.append(line(cursor, ly, cursor + 24, ly, color, 2.4))
+            body.append(circle(cursor + 12, ly, 2.6, color))
+            body.append(text(cursor + 31, ly + 3, label, legend_size, DARK))
+            cursor += 116
     body.append(rect(left, top, plot_w, plot_h, "#f8fafc", "#cbd5e1"))
     for tick in [0.0, 0.25, 0.5, 0.75, 1.0]:
         y = sy(tick)
@@ -324,15 +336,13 @@ def make_layer_line_svg(
             value = float(by_layer.get(layer, {}).get(metric, 0.0))
             if value > 0.01:
                 body.append(circle(x, y, point_r, colors.get(metric, DARK)))
-    if compact:
-        lx, ly = left + plot_w - 126, top + 18
-    else:
+    if not compact:
         lx, ly = left + plot_w + 34, top + 24
-    for idx, metric in enumerate(metrics):
-        y = ly + idx * (20 if compact else 30)
-        body.append(line(lx, y, lx + (24 if compact else 32), y, colors.get(metric, DARK), 2.4 if compact else 3))
-        body.append(circle(lx + (12 if compact else 16), y, 2.6 if compact else 3.2, colors.get(metric, DARK)))
-        body.append(text(lx + (31 if compact else 42), y + 3, labels.get(metric, metric), legend_size, DARK))
+        for idx, metric in enumerate(metrics):
+            y = ly + idx * 30
+            body.append(line(lx, y, lx + 32, y, colors.get(metric, DARK), 3))
+            body.append(circle(lx + 16, y, 3.2, colors.get(metric, DARK)))
+            body.append(text(lx + 42, y + 3, labels.get(metric, metric), legend_size, DARK))
     body.append(text(left + plot_w / 2, height - (22 if compact else 36), "layer", axis_size, DARK, "middle"))
     body.append(text(20 if compact else 28, top + plot_h / 2, "attention share", axis_size, DARK, "middle", rotate=-90))
     svg(path, width, height, "".join(body))

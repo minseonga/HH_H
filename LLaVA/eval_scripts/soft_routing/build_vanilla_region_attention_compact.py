@@ -48,8 +48,8 @@ def load_rows(path):
 
 def make_svg(rows, output_path):
     width, height = 640, 390
-    left, top = 58, 76
-    plot_w, plot_h = 472, 226
+    left, top = 58, 92
+    plot_w, plot_h = 472, 210
     metrics = [
         ("system_share", "system prefix", GRAY),
         ("visual_share", "visual", BLUE),
@@ -67,6 +67,13 @@ def make_svg(rows, output_path):
     body = []
     body.append(text(width / 2, 28, "Vanilla attention by source region", 17, DARK, "middle", "700"))
     body.append(text(width / 2, 48, "Generated-step attention averaged by layer; dashed lines mark L9-L16.", 9, MUTED, "middle"))
+    total_legend_w = 348
+    cursor = left + (plot_w - total_legend_w) / 2
+    for _, label, color in metrics:
+        body.append(line(cursor, 68, cursor + 24, 68, color, 2.4))
+        body.append(circle(cursor + 12, 68, 2.6, color))
+        body.append(text(cursor + 31, 71, label, 9, DARK))
+        cursor += 116
     body.append(rect(left, top, plot_w, plot_h, "#f8fafc", "#cbd5e1"))
 
     for tick in [0.0, 0.25, 0.5, 0.75, 1.0]:
@@ -93,13 +100,6 @@ def make_svg(rows, output_path):
             value = float(by_layer.get(layer, {}).get(metric, 0.0))
             if value > 0.01:
                 body.append(circle(x, y, 2.2, color))
-
-    lx, ly = left + plot_w - 126, top + 18
-    for idx, (metric, label, color) in enumerate(metrics):
-        y = ly + idx * 20
-        body.append(line(lx, y, lx + 24, y, color, 2.4))
-        body.append(circle(lx + 12, y, 2.6, color))
-        body.append(text(lx + 31, y + 3, label, 9, DARK))
 
     body.append(text(left + plot_w / 2, height - 22, "layer", 10, DARK, "middle"))
     body.append(text(20, top + plot_h / 2, "attention share", 10, DARK, "middle", rotate=-90))
