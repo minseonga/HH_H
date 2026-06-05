@@ -88,7 +88,7 @@ def make_svg(rows, output_path):
         elif layer % 4 == 0:
             body.append(line(x, top, x, top + plot_h, "#edf2f7", 0.8))
         if layer % 4 == 0 or layer in [9, 16]:
-            body.append(text(x, top + plot_h + 18, f"L{layer}", 9, DARK, "middle", rotate=35))
+            body.append(text(x, top + plot_h + 18, f"L{layer}", 11, DARK, "middle", "700", rotate=35))
 
     for metric, _, color in metrics:
         pts = [

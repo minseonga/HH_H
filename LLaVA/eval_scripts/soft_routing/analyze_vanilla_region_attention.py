@@ -240,7 +240,7 @@ def make_layer_line_svg(
         title_size = 17
         subtitle_size = 9
         tick_size = 10
-        layer_size = 9
+        layer_size = 11
         axis_size = 14
         legend_size = 14
         point_r = 2.4
@@ -328,7 +328,16 @@ def make_layer_line_svg(
         elif (not compact and layer % 2 == 0) or (compact and layer % 4 == 0):
             body.append(line(x, top, x, top + plot_h, "#edf2f7", 0.8))
         if (not compact) or layer % 4 == 0 or layer in mark_layers:
-            body.append(text(x, top + plot_h + (18 if compact else 22), f"L{layer}", layer_size, DARK, "middle", rotate=35))
+            body.append(text(
+                x,
+                top + plot_h + (18 if compact else 22),
+                f"L{layer}",
+                layer_size,
+                DARK,
+                "middle",
+                "700" if compact else "400",
+                rotate=35,
+            ))
     for metric in metrics:
         pts = [(sx(layer), sy(float(by_layer.get(layer, {}).get(metric, 0.0)))) for layer in range(n_layers)]
         body.append(polyline(pts, colors.get(metric, DARK), line_w))
