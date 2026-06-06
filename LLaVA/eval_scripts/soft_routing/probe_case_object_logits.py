@@ -209,7 +209,7 @@ def main() -> None:
     parser.add_argument("--base-results", required=True)
     parser.add_argument("--image-folder", required=True)
     parser.add_argument("--image-id", default="140231")
-    parser.add_argument("--target", action="append", default=["hallucinated:person", "grounded:keyboard"])
+    parser.add_argument("--target", action="append", default=None)
     parser.add_argument("--prior-path", required=True)
     parser.add_argument("--top-k", type=int, default=100)
     parser.add_argument("--model-path", default="liuhaotian/llava-v1.5-7b")
@@ -226,6 +226,8 @@ def main() -> None:
     parser.add_argument("--top-k-tokens", type=int, default=5)
     parser.add_argument("--output-dir", default="LLaVA/results/coco/qualitative_case_studies/logit_probe_140231")
     args = parser.parse_args()
+    if args.target is None:
+        args.target = ["hallucinated:person", "grounded:keyboard"]
 
     disable_torch_init()
     model_name = get_model_name_from_path(os.path.expanduser(args.model_path))
