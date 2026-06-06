@@ -98,12 +98,12 @@ def draw_candidate_axis(ax: plt.Axes, items: list[dict[str, object]], color: str
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_color("#cbd5e1")
     ax.spines["bottom"].set_color("#cbd5e1")
-    ax.tick_params(axis="x", labelsize=7.8, colors=MUTED)
-    ax.tick_params(axis="y", length=0, labelsize=8.4, colors=DARK)
+    ax.tick_params(axis="x", labelsize=7.2, colors=MUTED)
+    ax.tick_params(axis="y", length=0, labelsize=9.5, colors=DARK)
     ax.grid(axis="x", color=GRID, linewidth=0.8)
     ax.set_xlim(0.0, xlim)
 
-    labels = [f"#{item['rank']} {item['token']}" for item in items]
+    labels = [f"#{item['rank']}" for item in items]
     values = [float(item["score"]) for item in items]
     ypos = list(range(len(items)))[::-1]
     colors = [color if item["is_target"] else BAR_BG for item in items]
@@ -119,7 +119,7 @@ def draw_candidate_axis(ax: plt.Axes, items: list[dict[str, object]], color: str
             format_score(value, score_mode),
             ha="left",
             va="center",
-            fontsize=7.7,
+            fontsize=8.2,
             color=HALL if item["is_target"] else MUTED,
             weight="bold" if item["is_target"] else "semibold",
         )
@@ -137,45 +137,35 @@ def main() -> None:
     rows = read_rows(Path(args.probe_csv))
     rows.sort(key=lambda row: (0 if row.get("label") == "hallucinated" else 1, row.get("object_word", "")))
     image_id = rows[0].get("image_id", "case")
-    image = rows[0].get("image", "")
 
-    fig = plt.figure(figsize=(9.2, 2.25 + 2.15 * len(rows)), dpi=240)
+    fig = plt.figure(figsize=(7.25, 1.15 + 1.55 * len(rows)), dpi=260)
     fig.patch.set_facecolor(PAPER)
     gs = fig.add_gridspec(
         nrows=len(rows) + 1,
         ncols=5,
-        height_ratios=[0.48] + [1.0] * len(rows),
-        width_ratios=[1.35, 2.6, 0.72, 2.6, 0.06],
-        hspace=0.42,
-        wspace=0.24,
-        left=0.04,
-        right=0.98,
-        top=0.95,
-        bottom=0.06,
+        height_ratios=[0.28] + [1.0] * len(rows),
+        width_ratios=[1.08, 2.0, 0.58, 2.0, 0.03],
+        hspace=0.34,
+        wspace=0.18,
+        left=0.055,
+        right=0.985,
+        top=0.93,
+        bottom=0.075,
     )
 
     ax_title = fig.add_subplot(gs[0, :])
     ax_title.axis("off")
     ax_title.text(
         0.0,
-        0.78,
-        "Next-token candidate shift under DEACT",
+        0.55,
+        "Top-5 next-token shift under DEACT",
         ha="left",
         va="center",
-        fontsize=17.0,
+        fontsize=14.3,
         weight="bold",
         color=DARK,
     )
-    ax_title.text(
-        0.0,
-        0.26,
-        f"Image {image_id} ({image}); local greedy-prefix probe, values are {score_label(args.score_mode)}.",
-        ha="left",
-        va="center",
-        fontsize=9.2,
-        weight="semibold",
-        color=MUTED,
-    )
+    ax_title.text(0.99, 0.55, f"image {image_id}", ha="right", va="center", fontsize=8.6, weight="bold", color=MUTED)
 
     for row_idx, row in enumerate(rows, start=1):
         label = row.get("label", "")
@@ -190,29 +180,22 @@ def main() -> None:
 
         ax_label = fig.add_subplot(gs[row_idx, 0])
         ax_label.axis("off")
-        ax_label.text(0.0, 0.78, f"{label} object", ha="left", va="center", fontsize=9.8, weight="bold", color=color)
-        ax_label.text(0.0, 0.53, object_word, ha="left", va="center", fontsize=15.8, weight="bold", color=DARK)
-        if object_node != object_word:
-            ax_label.text(0.0, 0.34, f"node: {object_node}", ha="left", va="center", fontsize=8.4, color=MUTED)
-        ax_label.text(0.0, 0.17, f"target token: {target_token}", ha="left", va="center", fontsize=8.4, color=MUTED)
+        ax_label.text(0.0, 0.66, "H" if label == "hallucinated" else "G", ha="left", va="center", fontsize=10.5, weight="bold", color=color)
+        ax_label.text(0.16, 0.66, object_word, ha="left", va="center", fontsize=13.2, weight="bold", color=DARK)
+        ax_label.text(0.16, 0.39, target_token, ha="left", va="center", fontsize=7.7, color=MUTED, weight="semibold")
 
         ax_base = fig.add_subplot(gs[row_idx, 1])
         ax_deact = fig.add_subplot(gs[row_idx, 3])
         draw_candidate_axis(ax_base, base_items, color, args.score_mode, xlim)
         draw_candidate_axis(ax_deact, deact_items, color, args.score_mode, xlim)
-        ax_base.set_title("Base", fontsize=10.4, weight="bold", color=BASE, pad=6)
-        ax_deact.set_title("DEACT", fontsize=10.4, weight="bold", color=DEACT, pad=6)
-        if row_idx == len(rows):
-            ax_base.set_xlabel(score_label(args.score_mode), fontsize=8.2, color=MUTED)
-            ax_deact.set_xlabel(score_label(args.score_mode), fontsize=8.2, color=MUTED)
+        ax_base.set_title("Base", fontsize=9.4, weight="bold", color=BASE, pad=4)
+        ax_deact.set_title("DEACT", fontsize=9.4, weight="bold", color=DEACT, pad=4)
 
         ax_mid = fig.add_subplot(gs[row_idx, 2])
         ax_mid.axis("off")
         drop = safe_float(row.get("target_logprob_drop"))
         base_rank = row.get("base_target_rank", "")
         deact_rank = row.get("deact_target_rank", "")
-        base_top1 = clean_token(row.get("base_top1_token"))
-        deact_top1 = clean_token(row.get("deact_top1_token"))
         ax_mid.add_patch(
             FancyArrowPatch(
                 (0.08, 0.52),
@@ -225,13 +208,12 @@ def main() -> None:
                 alpha=0.88,
             )
         )
-        ax_mid.text(0.5, 0.79, rf"$\Delta\log p$={drop:.3f}", ha="center", va="center", fontsize=8.8, weight="bold", color=color)
-        ax_mid.text(0.5, 0.30, f"rank {base_rank}->{deact_rank}", ha="center", va="center", fontsize=8.1, weight="bold", color=DARK)
-        ax_mid.text(0.5, 0.10, f"{base_top1} -> {deact_top1}", ha="center", va="center", fontsize=7.2, color=MUTED)
+        ax_mid.text(0.5, 0.75, f"{drop:.3f}", ha="center", va="center", fontsize=9.0, weight="bold", color=color)
+        ax_mid.text(0.5, 0.25, f"{base_rank}->{deact_rank}", ha="center", va="center", fontsize=8.3, weight="bold", color=DARK)
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = out_dir / f"case_{image_id}_top5_candidate_shift"
+    stem = out_dir / f"case_{image_id}_top5_candidate_shift_numeric"
     for ext in [item.strip() for item in args.formats.split(",") if item.strip()]:
         out = stem.with_suffix(f".{ext}")
         fig.savefig(out, bbox_inches="tight", facecolor=fig.get_facecolor())
