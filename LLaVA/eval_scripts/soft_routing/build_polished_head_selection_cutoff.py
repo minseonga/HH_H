@@ -15,18 +15,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import FancyBboxPatch, Rectangle
+from matplotlib.patches import FancyBboxPatch
 from matplotlib import colors as mcolors
 
 
 DARK = "#0f172a"
 MUTED = "#64748b"
-GRID = "#e2e8f0"
-TEXT = "#38bdf8"
-CONTRAST = "#f59e0b"
-LINE = "#0f766e"
 CUT = "#ef4444"
-SELECT_BG = "#ecfeff"
 
 
 def load_rows(path: Path) -> list[dict[str, str]]:
@@ -75,9 +70,7 @@ def main() -> None:
     fused = contrast + text
 
     n_bins = min(max(args.bins, 3), len(ranked))
-    text_b = bin_values(text, n_bins)
-    contrast_b = bin_values(contrast, n_bins)
-    fused_b = text_b + contrast_b
+    fused_b = bin_values(fused, n_bins)
     ranks = np.linspace(1, len(ranked), n_bins)
     cutoff_bin = int(np.searchsorted(ranks, args.top_k, side="left"))
 
@@ -127,30 +120,12 @@ def main() -> None:
             )
         )
 
-    # Two discrete component strips under the fused rank blocks.
-    strip_y = [0.46, 0.14]
-    strips = [(contrast_b, CONTRAST), (text_b, TEXT)]
-    for y, (vals, cmap_color) in zip(strip_y, strips):
-        for idx, value in enumerate(vals):
-            alpha = 0.24 + 0.72 * float(value)
-            ax.add_patch(
-                Rectangle(
-                    (idx - 0.39, y),
-                    0.78,
-                    0.22,
-                    facecolor=cmap_color,
-                    edgecolor="#ffffff",
-                    linewidth=0.45,
-                    alpha=alpha,
-                )
-            )
-
     # Selected region and cutoff marker.
     ax.add_patch(
         FancyBboxPatch(
             (-0.58, 0.04),
             cutoff_bin + 1.08,
-            1.98,
+            1.82,
             boxstyle="round,pad=0.018,rounding_size=0.10",
             facecolor="#ecfeff",
             edgecolor="#67e8f9",
@@ -165,8 +140,6 @@ def main() -> None:
 
     ax.text(-0.28, 2.48, "Fused head ranking", fontsize=10.8, weight="bold", color=DARK, ha="left", va="center")
     ax.text(-0.46, 0.91, "fused", fontsize=7.4, weight="bold", color="#6d28d9", ha="left", va="center")
-    ax.text(-0.46, 0.57, "TOI", fontsize=7.0, weight="bold", color="#92400e", ha="left", va="center")
-    ax.text(-0.46, 0.25, "text", fontsize=7.0, weight="bold", color="#0369a1", ha="left", va="center")
     ax.text(0.0, -0.18, "high", fontsize=6.8, color=MUTED, weight="bold", ha="left")
     ax.text(n_bins, -0.18, "low", fontsize=6.8, color=MUTED, weight="bold", ha="right")
 
