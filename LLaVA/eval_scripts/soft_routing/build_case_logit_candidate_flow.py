@@ -116,7 +116,7 @@ def candidate_box(
             alpha=0.98,
         )
     )
-    ax.text(x + w / 2, y + h - 0.055, title, ha="center", va="center", fontsize=10.0, weight="bold", color=color)
+    ax.text(x + w / 2, y + h - 0.048, title, ha="center", va="center", fontsize=10.8, weight="bold", color=color)
     n = max(len(candidates), 1)
     row_h = (h - 0.1) / n
     for idx, item in enumerate(candidates):
@@ -135,8 +135,8 @@ def candidate_box(
         prefix = f"#{rank} " if rank else ""
         if item.get("is_extra_target"):
             prefix = f"target r{rank} "
-        ax.text(x + 0.025, yy + row_h / 2, f"{prefix}{token}", ha="left", va="center", fontsize=8.6, weight=weight, color=label_color)
-        ax.text(x + w - 0.025, yy + row_h / 2, score, ha="right", va="center", fontsize=8.4, weight=weight, color=label_color)
+        ax.text(x + 0.025, yy + row_h / 2, f"{prefix}{token}", ha="left", va="center", fontsize=8.2, weight=weight, color=label_color)
+        ax.text(x + w - 0.025, yy + row_h / 2, score, ha="right", va="center", fontsize=8.1, weight=weight, color=label_color)
 
 
 def draw_case_row(ax: plt.Axes, row: dict[str, str], y: float, h: float, top_k: int, score_mode: str) -> None:
@@ -144,8 +144,8 @@ def draw_case_row(ax: plt.Axes, row: dict[str, str], y: float, h: float, top_k: 
     obj = row.get("object_word", "")
     is_hall = label == "hallucinated"
     color = RED if is_hall else GREEN
-    outcome = "caption outcome: erased" if is_hall else "caption outcome: preserved"
-    transition = f"{obj} -> {'none' if is_hall else obj}"
+    outcome = "final caption: absent" if is_hall else "final caption: present"
+    transition = f"{obj}"
 
     ax.add_patch(
         FancyBboxPatch(
@@ -159,21 +159,21 @@ def draw_case_row(ax: plt.Axes, row: dict[str, str], y: float, h: float, top_k: 
             alpha=0.88,
         )
     )
-    ax.text(0.05, y + h - 0.055, f"{label} object", fontsize=10.4, weight="bold", color=color, ha="left", va="center")
-    ax.text(0.05, y + h - 0.105, transition, fontsize=14.0, weight="bold", color=DARK, ha="left", va="center")
-    ax.text(0.05, y + 0.045, outcome, fontsize=9.2, weight="bold", color=color, ha="left", va="center")
+    ax.text(0.045, y + h - 0.055, f"{label} object", fontsize=9.8, weight="bold", color=color, ha="left", va="center")
+    ax.text(0.045, y + h - 0.118, transition, fontsize=16.0, weight="bold", color=DARK, ha="left", va="center")
+    ax.text(0.045, y + 0.045, outcome, fontsize=8.8, weight="bold", color=color, ha="left", va="center")
 
     base = mode_candidates(row, "base", top_k, score_mode)
     deact = mode_candidates(row, "deact", top_k, score_mode)
 
     box_y = y + 0.045
     box_h = h - 0.09
-    candidate_box(ax, 0.28, box_y, 0.25, box_h, "Base next-token candidates", base, ORANGE, score_mode)
-    candidate_box(ax, 0.68, box_y, 0.25, box_h, "DEACT next-token candidates", deact, BLUE, score_mode)
+    candidate_box(ax, 0.255, box_y, 0.265, box_h, "Base", base, ORANGE, score_mode)
+    candidate_box(ax, 0.705, box_y, 0.265, box_h, "DEACT", deact, BLUE, score_mode)
     ax.add_patch(
         FancyArrowPatch(
-            (0.55, y + h / 2),
-            (0.66, y + h / 2),
+            (0.545, y + h / 2),
+            (0.68, y + h / 2),
             arrowstyle="-|>",
             mutation_scale=16,
             linewidth=2.2,
@@ -187,20 +187,20 @@ def draw_case_row(ax: plt.Axes, row: dict[str, str], y: float, h: float, top_k: 
     top1_base = clean_token(row.get("base_top1_token", ""))
     top1_deact = clean_token(row.get("deact_top1_token", ""))
     ax.text(
-        0.555,
-        y + h / 2 + 0.055,
+        0.612,
+        y + h / 2 + 0.067,
         rf"$\Delta\log p$={drop:.3f}" if not math.isnan(drop) else "",
-        fontsize=9.2,
+        fontsize=8.8,
         weight="bold",
         color=color,
         ha="center",
         va="center",
     )
     ax.text(
-        0.555,
-        y + h / 2 - 0.04,
-        f"target rank {rank_base}->{rank_deact}\ntop1 {top1_base}->{top1_deact}",
-        fontsize=7.7,
+        0.612,
+        y + h / 2 - 0.06,
+        f"target rank {rank_base}->{rank_deact}\ntop1: {top1_base} -> {top1_deact}",
+        fontsize=7.1,
         color=MUTED,
         ha="center",
         va="center",
@@ -223,26 +223,26 @@ def main() -> None:
     rows.sort(key=lambda row: 0 if row.get("label") == "hallucinated" else 1)
 
     fig_h = 2.3 + 2.15 * len(rows)
-    fig = plt.figure(figsize=(8.0, fig_h), dpi=260)
+    fig = plt.figure(figsize=(8.3, fig_h), dpi=260)
     fig.patch.set_facecolor(PAPER)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_axis_off()
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
 
-    ax.text(0.04, 0.955, "Next-token candidates under DEACT", fontsize=18.0, weight="bold", color=DARK, ha="left", va="top")
+    ax.text(0.04, 0.96, "Greedy-prefix next-token candidates under DEACT", fontsize=16.4, weight="bold", color=DARK, ha="left", va="top")
     ax.text(
         0.04,
-        0.915,
-        "At the touched object-token step, compare the base next-token distribution with the DEACT distribution.",
-        fontsize=10.0,
+        0.918,
+        "This is a local one-step probe at the greedy object-token prefix; final caption outcome is shown separately.",
+        fontsize=9.3,
         weight="semibold",
         color=MUTED,
         ha="left",
         va="top",
     )
     score_label = {"prob": "softmax probability", "logprob": "log probability", "logit": "logit"}[args.score_mode]
-    ax.text(0.96, 0.918, f"values: {score_label}", fontsize=8.8, color=MUTED, ha="right", va="top")
+    ax.text(0.96, 0.918, f"values: {score_label}", fontsize=8.2, color=MUTED, ha="right", va="top")
 
     top_margin = 0.12
     bottom_margin = 0.04
