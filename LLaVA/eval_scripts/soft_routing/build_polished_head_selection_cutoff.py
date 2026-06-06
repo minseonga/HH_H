@@ -60,7 +60,7 @@ def main() -> None:
         default="experiments_in_server/method_figure_source_trace_n100_k150_l9_16/head_scores_all.csv",
     )
     parser.add_argument("--top-k", type=int, default=100)
-    parser.add_argument("--bins", type=int, default=40)
+    parser.add_argument("--bins", type=int, default=24)
     parser.add_argument("--output-dir", default="LLaVA/results/coco/teaser_figure/head_selection")
     args = parser.parse_args()
 
