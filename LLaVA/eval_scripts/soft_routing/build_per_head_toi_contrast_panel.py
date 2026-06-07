@@ -68,6 +68,7 @@ def main() -> None:
     )
     parser.add_argument("--top-n", type=int, default=20)
     parser.add_argument("--selection-only", action="store_true")
+    parser.add_argument("--style", choices=["points", "overlap_bar"], default="points")
     parser.add_argument("--output-dir", default="LLaVA/results/coco/teaser_figure/contrastive_toi")
     parser.add_argument("--formats", default="png,svg,pdf")
     args = parser.parse_args()
@@ -95,14 +96,38 @@ def main() -> None:
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
 
-    for idx in range(len(selected)):
-        ax.plot([idx, idx], [y_ground[idx], y_hall[idx]], color=COLORS["connector"], lw=1.2, alpha=0.65, zorder=1)
+    if args.style == "overlap_bar":
+        ax.bar(
+            x,
+            y_hall,
+            width=0.72,
+            color=COLORS["hallucinated"],
+            alpha=0.78,
+            edgecolor="white",
+            linewidth=0.7,
+            label="hallucinated object",
+            zorder=2,
+        )
+        ax.bar(
+            x,
+            y_ground,
+            width=0.44,
+            color=COLORS["grounded"],
+            alpha=0.86,
+            edgecolor="white",
+            linewidth=0.7,
+            label="grounded object",
+            zorder=3,
+        )
+    else:
+        for idx in range(len(selected)):
+            ax.plot([idx, idx], [y_ground[idx], y_hall[idx]], color=COLORS["connector"], lw=1.2, alpha=0.65, zorder=1)
 
-    ax.scatter(x, y_ground, s=34, color=COLORS["grounded"], edgecolor="white", linewidth=0.8, label="grounded object", zorder=3)
-    ax.scatter(x, y_hall, s=38, color=COLORS["hallucinated"], edgecolor="white", linewidth=0.8, label="hallucinated object", zorder=4)
+        ax.scatter(x, y_ground, s=34, color=COLORS["grounded"], edgecolor="white", linewidth=0.8, label="grounded object", zorder=3)
+        ax.scatter(x, y_hall, s=38, color=COLORS["hallucinated"], edgecolor="white", linewidth=0.8, label="hallucinated object", zorder=4)
 
-    # Subtle gap fill makes the hall-minus-ground shift visible without adding text.
-    ax.fill_between(x, y_ground, y_hall, where=y_hall >= y_ground, color="#FEE2E2", alpha=0.28, step=None, zorder=0)
+        # Subtle gap fill makes the hall-minus-ground shift visible without adding text.
+        ax.fill_between(x, y_ground, y_hall, where=y_hall >= y_ground, color="#FEE2E2", alpha=0.28, step=None, zorder=0)
 
     ax.set_title("Per-head text-over-image contrast", fontsize=12.6, weight="bold", color=COLORS["dark"], pad=8)
     ax.set_ylabel(r"$\log(1 + T/I)$", fontsize=10.4, color=COLORS["dark"])
@@ -129,7 +154,8 @@ def main() -> None:
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = out_dir / f"per_head_toi_hall_ground_top{args.top_n}"
+    suffix = "bars" if args.style == "overlap_bar" else "points"
+    stem = out_dir / f"per_head_toi_hall_ground_{suffix}_top{args.top_n}"
     outputs: dict[str, str] = {}
     for fmt in [s.strip() for s in args.formats.split(",") if s.strip()]:
         path = stem.with_suffix(f".{fmt}")
@@ -142,6 +168,7 @@ def main() -> None:
         "score_csv": args.score_csv,
         "top_n": args.top_n,
         "selection_only": args.selection_only,
+        "style": args.style,
         "mean_log_gap": float(np.mean(gaps)),
         "heads": [
             {
@@ -156,7 +183,7 @@ def main() -> None:
         ],
         "outputs": outputs,
     }
-    with (out_dir / f"per_head_toi_hall_ground_top{args.top_n}_summary.json").open("w", encoding="utf-8") as out_file:
+    with (out_dir / f"per_head_toi_hall_ground_{suffix}_top{args.top_n}_summary.json").open("w", encoding="utf-8") as out_file:
         json.dump(summary, out_file, indent=2)
 
 
