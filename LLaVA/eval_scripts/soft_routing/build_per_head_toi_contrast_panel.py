@@ -68,7 +68,7 @@ def main() -> None:
     )
     parser.add_argument("--top-n", type=int, default=20)
     parser.add_argument("--selection-only", action="store_true")
-    parser.add_argument("--style", choices=["points", "paired_gap", "overlap_bar", "histogram"], default="points")
+    parser.add_argument("--style", choices=["points", "paired_gap", "gap_bar", "overlap_bar", "histogram"], default="points")
     parser.add_argument("--bins", type=int, default=16)
     parser.add_argument("--transparent", action="store_true")
     parser.add_argument("--output-dir", default="LLaVA/results/coco/teaser_figure/contrastive_toi")
@@ -80,7 +80,14 @@ def main() -> None:
     if args.selection_only:
         rows = [r for r in rows if as_bool(r.get("selected"))]
 
-    ranked = sorted(rows, key=lambda r: get_float(r, "raw_toi_gap_hall_minus_grounded"), reverse=True)
+    if args.style == "gap_bar":
+        ranked = sorted(
+            rows,
+            key=lambda r: np.log1p(get_float(r, "raw_toi_hallucinated")) - np.log1p(get_float(r, "raw_toi_grounded")),
+            reverse=True,
+        )
+    else:
+        ranked = sorted(rows, key=lambda r: get_float(r, "raw_toi_gap_hall_minus_grounded"), reverse=True)
     selected = ranked[: args.top_n]
     if not selected:
         raise SystemExit("no rows selected")
@@ -156,6 +163,18 @@ def main() -> None:
 
         ax.scatter(x, y_ground, s=42, color=COLORS["grounded"], edgecolor="white", linewidth=0.9, label="grounded", zorder=4)
         ax.scatter(x, y_hall, s=46, color=COLORS["hallucinated"], edgecolor="white", linewidth=0.9, label="hallucinated", zorder=5)
+    elif args.style == "gap_bar":
+        ax.axhline(0, color="#94A3B8", lw=1.0, alpha=0.85, zorder=1)
+        ax.bar(
+            x,
+            gaps,
+            width=0.62,
+            color="#7C3AED",
+            alpha=0.9,
+            edgecolor="#4C1D95",
+            linewidth=0.7,
+            zorder=3,
+        )
     else:
         for idx in range(len(selected)):
             ax.plot([idx, idx], [y_ground[idx], y_hall[idx]], color=COLORS["connector"], lw=1.2, alpha=0.65, zorder=1)
@@ -168,7 +187,8 @@ def main() -> None:
 
     title = "Contrastive Text-over-Image Bias" if args.style == "histogram" else "Head-wise hall-ground TOI gap"
     ax.set_title(title, fontsize=12.6, weight="bold", color=COLORS["dark"], pad=8)
-    ax.set_ylabel(r"$\log(1 + T/I)$", fontsize=10.4, color=COLORS["dark"])
+    ylabel = r"$\Delta \log(1 + T/I)$" if args.style == "gap_bar" else r"$\log(1 + T/I)$"
+    ax.set_ylabel(ylabel, fontsize=10.4, color=COLORS["dark"])
     if args.style == "histogram":
         ax.set_xlabel(r"per-head TOI  $\log(1+T/I)$", fontsize=10.4, color=COLORS["dark"])
         ax.set_ylabel("density", fontsize=10.4, color=COLORS["dark"])
@@ -178,7 +198,8 @@ def main() -> None:
         ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=7.7, color=COLORS["dark"])
     ax.tick_params(axis="y", labelsize=8.8, colors=COLORS["dark"])
     ax.grid(axis="y")
-    ax.legend(frameon=False, loc="upper left", ncols=2, fontsize=8.6, handletextpad=0.4, columnspacing=1.0)
+    if args.style != "gap_bar":
+        ax.legend(frameon=False, loc="upper left", ncols=2, fontsize=8.6, handletextpad=0.4, columnspacing=1.0)
 
     gap_text = f"mean gap = {float(np.mean(gaps)):.2f}"
     ax.text(
@@ -196,7 +217,7 @@ def main() -> None:
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    suffix = {"overlap_bar": "bars", "histogram": "hist", "paired_gap": "paired_gap", "points": "points"}[args.style]
+    suffix = {"overlap_bar": "bars", "histogram": "hist", "paired_gap": "paired_gap", "gap_bar": "gap_bar", "points": "points"}[args.style]
     stem = out_dir / f"per_head_toi_hall_ground_{suffix}_top{args.top_n}"
     outputs: dict[str, str] = {}
     for fmt in [s.strip() for s in args.formats.split(",") if s.strip()]:
