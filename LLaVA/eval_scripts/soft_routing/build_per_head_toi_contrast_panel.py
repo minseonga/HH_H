@@ -68,8 +68,9 @@ def main() -> None:
     )
     parser.add_argument("--top-n", type=int, default=20)
     parser.add_argument("--selection-only", action="store_true")
-    parser.add_argument("--style", choices=["points", "overlap_bar", "histogram"], default="points")
+    parser.add_argument("--style", choices=["points", "paired_gap", "overlap_bar", "histogram"], default="points")
     parser.add_argument("--bins", type=int, default=16)
+    parser.add_argument("--transparent", action="store_true")
     parser.add_argument("--output-dir", default="LLaVA/results/coco/teaser_figure/contrastive_toi")
     parser.add_argument("--formats", default="png,svg,pdf")
     args = parser.parse_args()
@@ -93,10 +94,11 @@ def main() -> None:
     x = np.arange(len(selected))
 
     setup_style()
-    figsize = (4.25, 3.2) if args.style == "histogram" else (7.2, 3.05)
+    figsize = (4.25, 3.2) if args.style == "histogram" else (6.2, 3.15)
     fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
-    fig.patch.set_facecolor("white")
-    ax.set_facecolor("white")
+    bg = "none" if args.transparent else "white"
+    fig.patch.set_facecolor(bg)
+    ax.set_facecolor(bg)
 
     if args.style == "histogram":
         lo = float(min(y_ground.min(), y_hall.min()))
@@ -147,6 +149,13 @@ def main() -> None:
             label="grounded object",
             zorder=3,
         )
+    elif args.style == "paired_gap":
+        for idx in range(len(selected)):
+            ax.plot([idx, idx], [y_ground[idx], y_hall[idx]], color="#CBD5E1", lw=3.0, alpha=0.85, zorder=1)
+            ax.plot([idx, idx], [y_ground[idx], y_hall[idx]], color="#EF4444", lw=1.45, alpha=0.58, zorder=2)
+
+        ax.scatter(x, y_ground, s=42, color=COLORS["grounded"], edgecolor="white", linewidth=0.9, label="grounded", zorder=4)
+        ax.scatter(x, y_hall, s=46, color=COLORS["hallucinated"], edgecolor="white", linewidth=0.9, label="hallucinated", zorder=5)
     else:
         for idx in range(len(selected)):
             ax.plot([idx, idx], [y_ground[idx], y_hall[idx]], color=COLORS["connector"], lw=1.2, alpha=0.65, zorder=1)
@@ -157,7 +166,7 @@ def main() -> None:
         # Subtle gap fill makes the hall-minus-ground shift visible without adding text.
         ax.fill_between(x, y_ground, y_hall, where=y_hall >= y_ground, color="#FEE2E2", alpha=0.28, step=None, zorder=0)
 
-    title = "Contrastive Text-over-Image Bias" if args.style == "histogram" else "Per-head text-over-image contrast"
+    title = "Contrastive Text-over-Image Bias" if args.style == "histogram" else "Head-wise hall-ground TOI gap"
     ax.set_title(title, fontsize=12.6, weight="bold", color=COLORS["dark"], pad=8)
     ax.set_ylabel(r"$\log(1 + T/I)$", fontsize=10.4, color=COLORS["dark"])
     if args.style == "histogram":
@@ -187,12 +196,12 @@ def main() -> None:
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    suffix = {"overlap_bar": "bars", "histogram": "hist", "points": "points"}[args.style]
+    suffix = {"overlap_bar": "bars", "histogram": "hist", "paired_gap": "paired_gap", "points": "points"}[args.style]
     stem = out_dir / f"per_head_toi_hall_ground_{suffix}_top{args.top_n}"
     outputs: dict[str, str] = {}
     for fmt in [s.strip() for s in args.formats.split(",") if s.strip()]:
         path = stem.with_suffix(f".{fmt}")
-        fig.savefig(path, bbox_inches="tight", facecolor="white")
+        fig.savefig(path, bbox_inches="tight", facecolor=bg, transparent=args.transparent)
         outputs[fmt] = str(path)
         print(path)
     plt.close(fig)
@@ -203,6 +212,7 @@ def main() -> None:
         "selection_only": args.selection_only,
         "style": args.style,
         "bins": args.bins,
+        "transparent": args.transparent,
         "mean_log_gap": float(np.mean(gaps)),
         "heads": [
             {
