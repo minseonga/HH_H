@@ -71,6 +71,7 @@ def main() -> None:
     parser.add_argument("--style", choices=["points", "paired_gap", "gap_bar", "overlap_bar", "histogram"], default="points")
     parser.add_argument("--bins", type=int, default=16)
     parser.add_argument("--transparent", action="store_true")
+    parser.add_argument("--hide-legend", action="store_true")
     parser.add_argument("--output-dir", default="LLaVA/results/coco/teaser_figure/contrastive_toi")
     parser.add_argument("--formats", default="png,svg,pdf")
     args = parser.parse_args()
@@ -206,7 +207,7 @@ def main() -> None:
         ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=7.7, color=COLORS["dark"])
     ax.tick_params(axis="y", labelsize=8.8, colors=COLORS["dark"])
     ax.grid(axis="y")
-    if args.style != "gap_bar":
+    if args.style != "gap_bar" and not args.hide_legend:
         ax.legend(frameon=False, loc="upper left", ncols=2, fontsize=8.6, handletextpad=0.4, columnspacing=1.0)
 
     if args.style != "overlap_bar":
@@ -243,6 +244,7 @@ def main() -> None:
         "style": args.style,
         "bins": args.bins,
         "transparent": args.transparent,
+        "hide_legend": args.hide_legend,
         "mean_log_gap": float(np.mean(gaps)),
         "heads": [
             {
