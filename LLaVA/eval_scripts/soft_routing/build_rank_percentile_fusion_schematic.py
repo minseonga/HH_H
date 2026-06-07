@@ -36,7 +36,14 @@ def f(row: dict[str, str], key: str) -> float:
     return float(row[key])
 
 
-def draw_rank_panel(ax: plt.Axes, rows: list[dict[str, str]], value_key: str, title: str, color_map: dict[str, str]) -> None:
+def draw_rank_panel(
+    ax: plt.Axes,
+    rows: list[dict[str, str]],
+    value_key: str,
+    title: str,
+    color_map: dict[str, str],
+    show_rank_labels: bool,
+) -> None:
     vals = np.array([f(r, value_key) for r in rows], dtype=float)
     vals = vals / max(float(vals.max()), 1e-8)
     x = np.arange(len(rows))
@@ -46,7 +53,11 @@ def draw_rank_panel(ax: plt.Axes, rows: list[dict[str, str]], value_key: str, ti
     ax.set_ylim(0, 1.08)
     ax.set_xlim(-0.55, len(rows) - 0.45)
     ax.set_title(title, fontsize=11.4, weight="bold", color=DARK, pad=5)
-    ax.set_xticks([])
+    ax.set_xticks(x)
+    if show_rank_labels:
+        ax.set_xticklabels([r["head_key"] for r in rows], rotation=52, ha="right", fontsize=5.8, color=DARK)
+    else:
+        ax.set_xticklabels([])
     ax.set_yticks([])
     ax.set_facecolor("none")
     for spine in ax.spines.values():
@@ -65,14 +76,21 @@ def main() -> None:
         default="experiments_in_server/method_figure_source_trace_n100_k150_l9_16/head_scores_all.csv",
     )
     parser.add_argument("--top-n", type=int, default=6)
+    parser.add_argument("--mode", choices=["separate", "union"], default="union")
+    parser.add_argument("--show-head-labels", action="store_true")
     parser.add_argument("--transparent", action="store_true")
     parser.add_argument("--output-dir", default="LLaVA/results/coco/teaser_figure/head_selection")
     parser.add_argument("--formats", default="png,svg,pdf")
     args = parser.parse_args()
 
     rows = [r for r in load_rows(Path(args.score_csv)) if as_bool(r.get("selection_allowed"))]
-    text_rows = sorted(rows, key=lambda r: f(r, "text_percentile"), reverse=True)[: args.top_n]
-    contrast_rows = sorted(rows, key=lambda r: f(r, "contrast_percentile"), reverse=True)[: args.top_n]
+    if args.mode == "separate":
+        text_rows = sorted(rows, key=lambda r: f(r, "text_percentile"), reverse=True)[: args.top_n]
+        contrast_rows = sorted(rows, key=lambda r: f(r, "contrast_percentile"), reverse=True)[: args.top_n]
+    else:
+        fused_rows = sorted(rows, key=lambda r: f(r, "text_percentile") + f(r, "contrast_percentile"), reverse=True)[: args.top_n]
+        text_rows = sorted(fused_rows, key=lambda r: f(r, "text_percentile"), reverse=True)
+        contrast_rows = sorted(fused_rows, key=lambda r: f(r, "contrast_percentile"), reverse=True)
 
     # Use consistent colors for heads appearing in both lists; assign remaining colors by first appearance.
     ordered_keys: list[str] = []
@@ -89,20 +107,31 @@ def main() -> None:
     ax_plus = fig.add_subplot(gs[0, 1])
     ax_contrast = fig.add_subplot(gs[0, 2])
 
-    draw_rank_panel(ax_text, text_rows, "text_percentile", r"$I_{\mathrm{text}}$", color_map)
-    draw_rank_panel(ax_contrast, contrast_rows, "contrast_percentile", r"$C_{\mathrm{toi}}$", color_map)
+    draw_rank_panel(ax_text, text_rows, "text_percentile", r"$I_{\mathrm{text}}$", color_map, args.show_head_labels)
+    draw_rank_panel(ax_contrast, contrast_rows, "contrast_percentile", r"$C_{\mathrm{toi}}$", color_map, args.show_head_labels)
 
     ax_plus.axis("off")
     ax_plus.text(0.5, 0.54, "+", ha="center", va="center", fontsize=30, color=DARK, weight="bold")
 
     fig.suptitle("Rank-Percentile Fusion", fontsize=14.2, weight="bold", color=DARK, y=1.08)
     fig.text(0.075, 0.50, "heads", rotation=90, ha="center", va="center", fontsize=11.0, weight="bold", color=DARK)
-    fig.text(0.29, -0.02, r"$I_{\mathrm{text}}$ rank", ha="center", va="center", fontsize=9.5, color=DARK, weight="bold")
-    fig.text(0.74, -0.02, r"$C_{\mathrm{toi}}$ rank", ha="center", va="center", fontsize=9.5, color=DARK, weight="bold")
+    fig.text(0.29, -0.02, r"$I_{\mathrm{text}}$ percentile", ha="center", va="center", fontsize=9.5, color=DARK, weight="bold")
+    fig.text(0.74, -0.02, r"$C_{\mathrm{toi}}$ percentile", ha="center", va="center", fontsize=9.5, color=DARK, weight="bold")
+    fig.text(
+        0.5,
+        -0.18,
+        r"$S(l,h)=P(I_{\mathrm{text}})+P(C_{\mathrm{toi}})$",
+        ha="center",
+        va="center",
+        fontsize=10.6,
+        color=DARK,
+        weight="bold",
+    )
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = out_dir / f"rank_percentile_fusion_schematic_top{args.top_n}"
+    label_suffix = "_labels" if args.show_head_labels else ""
+    stem = out_dir / f"rank_percentile_fusion_schematic_{args.mode}_top{args.top_n}{label_suffix}"
     for fmt in [s.strip() for s in args.formats.split(",") if s.strip()]:
         path = stem.with_suffix(f".{fmt}")
         fig.savefig(path, bbox_inches="tight", facecolor=bg, transparent=args.transparent)
