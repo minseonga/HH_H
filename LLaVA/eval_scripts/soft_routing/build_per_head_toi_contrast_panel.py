@@ -185,7 +185,14 @@ def main() -> None:
         # Subtle gap fill makes the hall-minus-ground shift visible without adding text.
         ax.fill_between(x, y_ground, y_hall, where=y_hall >= y_ground, color="#FEE2E2", alpha=0.28, step=None, zorder=0)
 
-    title = "Contrastive Text-over-Image Bias" if args.style == "histogram" else "Head-wise hall-ground TOI gap"
+    if args.style == "histogram":
+        title = "Contrastive Text-over-Image Bias"
+    elif args.style == "overlap_bar":
+        title = "Hall vs. Ground TOI per Head"
+    elif args.style == "gap_bar":
+        title = "Head-wise Hall-Ground TOI Gap"
+    else:
+        title = "Head-wise Hall-Ground TOI Gap"
     ax.set_title(title, fontsize=12.6, weight="bold", color=COLORS["dark"], pad=8)
     ylabel = r"$\Delta \log(1 + T/I)$" if args.style == "gap_bar" else r"$\log(1 + T/I)$"
     ax.set_ylabel(ylabel, fontsize=10.4, color=COLORS["dark"])
@@ -193,7 +200,8 @@ def main() -> None:
         ax.set_xlabel(r"per-head TOI  $\log(1+T/I)$", fontsize=10.4, color=COLORS["dark"])
         ax.set_ylabel("density", fontsize=10.4, color=COLORS["dark"])
     else:
-        ax.set_xlabel("heads sorted by hall-ground TOI gap", fontsize=10.4, color=COLORS["dark"])
+        xlabel = "heads sorted by contrastive TOI score" if args.style == "overlap_bar" else "heads sorted by hall-ground TOI gap"
+        ax.set_xlabel(xlabel, fontsize=10.4, color=COLORS["dark"])
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=7.7, color=COLORS["dark"])
     ax.tick_params(axis="y", labelsize=8.8, colors=COLORS["dark"])
@@ -201,19 +209,20 @@ def main() -> None:
     if args.style != "gap_bar":
         ax.legend(frameon=False, loc="upper left", ncols=2, fontsize=8.6, handletextpad=0.4, columnspacing=1.0)
 
-    gap_text = f"mean gap = {float(np.mean(gaps)):.2f}"
-    ax.text(
-        0.99,
-        0.92,
-        gap_text,
-        transform=ax.transAxes,
-        ha="right",
-        va="center",
-        fontsize=8.7,
-        weight="bold",
-        color=COLORS["dark"],
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="#F8FAFC", edgecolor="#D8DEE9", linewidth=0.8),
-    )
+    if args.style != "overlap_bar":
+        gap_text = f"mean gap = {float(np.mean(gaps)):.2f}"
+        ax.text(
+            0.99,
+            0.92,
+            gap_text,
+            transform=ax.transAxes,
+            ha="right",
+            va="center",
+            fontsize=8.7,
+            weight="bold",
+            color=COLORS["dark"],
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="#F8FAFC", edgecolor="#D8DEE9", linewidth=0.8),
+        )
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
