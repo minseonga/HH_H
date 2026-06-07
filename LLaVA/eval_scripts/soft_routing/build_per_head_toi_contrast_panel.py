@@ -68,7 +68,8 @@ def main() -> None:
     )
     parser.add_argument("--top-n", type=int, default=20)
     parser.add_argument("--selection-only", action="store_true")
-    parser.add_argument("--style", choices=["points", "overlap_bar"], default="points")
+    parser.add_argument("--style", choices=["points", "overlap_bar", "histogram"], default="points")
+    parser.add_argument("--bins", type=int, default=16)
     parser.add_argument("--output-dir", default="LLaVA/results/coco/teaser_figure/contrastive_toi")
     parser.add_argument("--formats", default="png,svg,pdf")
     args = parser.parse_args()
@@ -92,11 +93,38 @@ def main() -> None:
     x = np.arange(len(selected))
 
     setup_style()
-    fig, ax = plt.subplots(figsize=(7.2, 3.05), constrained_layout=True)
+    figsize = (4.25, 3.2) if args.style == "histogram" else (7.2, 3.05)
+    fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
 
-    if args.style == "overlap_bar":
+    if args.style == "histogram":
+        lo = float(min(y_ground.min(), y_hall.min()))
+        hi = float(max(y_ground.max(), y_hall.max()))
+        bins = np.linspace(lo - 0.08, hi + 0.08, args.bins)
+        ax.hist(
+            y_hall,
+            bins=bins,
+            density=True,
+            color=COLORS["hallucinated"],
+            alpha=0.54,
+            edgecolor="#991B1B",
+            linewidth=0.8,
+            label="hallucinated",
+            zorder=3,
+        )
+        ax.hist(
+            y_ground,
+            bins=bins,
+            density=True,
+            color=COLORS["grounded"],
+            alpha=0.46,
+            edgecolor="#065F46",
+            linewidth=0.8,
+            label="grounded",
+            zorder=2,
+        )
+    elif args.style == "overlap_bar":
         ax.bar(
             x,
             y_hall,
@@ -129,16 +157,21 @@ def main() -> None:
         # Subtle gap fill makes the hall-minus-ground shift visible without adding text.
         ax.fill_between(x, y_ground, y_hall, where=y_hall >= y_ground, color="#FEE2E2", alpha=0.28, step=None, zorder=0)
 
-    ax.set_title("Per-head text-over-image contrast", fontsize=12.6, weight="bold", color=COLORS["dark"], pad=8)
+    title = "Contrastive Text-over-Image Bias" if args.style == "histogram" else "Per-head text-over-image contrast"
+    ax.set_title(title, fontsize=12.6, weight="bold", color=COLORS["dark"], pad=8)
     ax.set_ylabel(r"$\log(1 + T/I)$", fontsize=10.4, color=COLORS["dark"])
-    ax.set_xlabel("heads sorted by hall-ground TOI gap", fontsize=10.4, color=COLORS["dark"])
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=7.7, color=COLORS["dark"])
+    if args.style == "histogram":
+        ax.set_xlabel(r"per-head TOI  $\log(1+T/I)$", fontsize=10.4, color=COLORS["dark"])
+        ax.set_ylabel("density", fontsize=10.4, color=COLORS["dark"])
+    else:
+        ax.set_xlabel("heads sorted by hall-ground TOI gap", fontsize=10.4, color=COLORS["dark"])
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=7.7, color=COLORS["dark"])
     ax.tick_params(axis="y", labelsize=8.8, colors=COLORS["dark"])
     ax.grid(axis="y")
     ax.legend(frameon=False, loc="upper left", ncols=2, fontsize=8.6, handletextpad=0.4, columnspacing=1.0)
 
-    gap_text = f"mean log-gap = {float(np.mean(gaps)):.2f}"
+    gap_text = f"mean gap = {float(np.mean(gaps)):.2f}"
     ax.text(
         0.99,
         0.92,
@@ -154,7 +187,7 @@ def main() -> None:
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    suffix = "bars" if args.style == "overlap_bar" else "points"
+    suffix = {"overlap_bar": "bars", "histogram": "hist", "points": "points"}[args.style]
     stem = out_dir / f"per_head_toi_hall_ground_{suffix}_top{args.top_n}"
     outputs: dict[str, str] = {}
     for fmt in [s.strip() for s in args.formats.split(",") if s.strip()]:
@@ -169,6 +202,7 @@ def main() -> None:
         "top_n": args.top_n,
         "selection_only": args.selection_only,
         "style": args.style,
+        "bins": args.bins,
         "mean_log_gap": float(np.mean(gaps)),
         "heads": [
             {
