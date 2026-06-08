@@ -114,18 +114,48 @@ def main() -> None:
     ax.axhline(0, color="#94A3B8", lw=1.1, zorder=1)
     ax.grid(axis="y", color="#E5E7EB", lw=0.85, zorder=0)
 
-    line_specs = [
-        ("grounded drop", grounded, "#16A34A", "#DCFCE7"),
-        ("hallucinated drop", hall, "#F97316", "#FFEDD5"),
-        ("H-G gap", gap, "#7C3AED", "#F3E8FF"),
-    ]
-    for label, values, color, fill in line_specs:
-        ax.plot(x, values, color=color, lw=2.6, marker="o", ms=7.8, mfc=fill, mec=color, mew=2.0, label=label, zorder=4)
+    hall_bars = ax.bar(
+        x,
+        hall,
+        width=0.62,
+        color="#FFEDD5",
+        edgecolor="#F97316",
+        linewidth=1.8,
+        label="hallucinated",
+        zorder=2,
+    )
+    grounded_bars = ax.bar(
+        x,
+        grounded,
+        width=0.36,
+        color="#DCFCE7",
+        edgecolor="#16A34A",
+        linewidth=1.8,
+        label="grounded",
+        zorder=3,
+    )
+    (gap_line,) = ax.plot(
+        x,
+        gap,
+        color="#7C3AED",
+        lw=2.8,
+        marker="o",
+        ms=7.8,
+        mfc="#F3E8FF",
+        mec="#7C3AED",
+        mew=2.0,
+        label="H-G gap",
+        zorder=5,
+    )
 
-    # Small value labels make the line chart self-contained without a separate table.
+    # Small value labels make the mixed bar/line chart self-contained without a separate table.
     for xi, g_val, h_val, gap_val in zip(x, grounded, hall, gap):
-        ax.text(xi, h_val + 0.0014, f"{h_val:.3f}", ha="center", va="bottom", fontsize=7.5, color="#9A3412", weight="bold")
-        ax.text(xi, g_val - 0.0014, f"{g_val:.3f}", ha="center", va="top", fontsize=7.5, color="#166534", weight="bold")
+        h_va = "bottom" if h_val >= 0 else "top"
+        h_offset = 0.0011 if h_val >= 0 else -0.0011
+        g_va = "top" if g_val >= 0 else "bottom"
+        g_offset = -0.0011 if g_val >= 0 else 0.0011
+        ax.text(xi + 0.18, h_val + h_offset, f"{h_val:.3f}", ha="left", va=h_va, fontsize=7.5, color="#9A3412", weight="bold")
+        ax.text(xi - 0.18, g_val + g_offset, f"{g_val:.3f}", ha="right", va=g_va, fontsize=7.5, color="#166534", weight="bold")
         ax.text(xi + 0.05, gap_val + 0.0007, f"{gap_val:.3f}", ha="left", va="bottom", fontsize=7.3, color="#5B21B6", weight="bold")
 
     ax.set_title("Layer-wise text-side actuation", fontsize=15.5, weight="bold", color="#111827", pad=8)
@@ -136,6 +166,8 @@ def main() -> None:
     ax.set_ylim(-0.006, 0.0335)
     ax.set_xlim(-0.25, len(rows) - 0.75)
     ax.legend(
+        handles=[grounded_bars, hall_bars, gap_line],
+        labels=["grounded", "hallucinated", "H-G gap"],
         frameon=False,
         loc="upper center",
         bbox_to_anchor=(0.5, 1.02),
@@ -148,16 +180,46 @@ def main() -> None:
         fig.savefig(out_dir / f"layerwise_fragility_line_plot.{fmt}", bbox_inches="tight")
     plt.close(fig)
 
-    # Cleaner manuscript variant: emphasize curve shape instead of point labels.
+    # Cleaner manuscript variant: show absolute drops as overlapped bars and selectivity as one line.
     fig, ax = plt.subplots(figsize=(4.45, 3.12), constrained_layout=True)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#FBFCFF")
     ax.axhline(0, color="#94A3B8", lw=1.0, zorder=1)
     ax.grid(axis="y", color="#E5E7EB", lw=0.75, zorder=0)
 
-    ax.plot(x, grounded, color="#16A34A", lw=2.25, marker="o", ms=6.7, mfc="#DCFCE7", mec="#16A34A", mew=1.7, label="grounded", zorder=4)
-    ax.plot(x, hall, color="#F97316", lw=2.25, marker="o", ms=6.7, mfc="#FFEDD5", mec="#F97316", mew=1.7, label="hallucinated", zorder=4)
-    ax.plot(x, gap, color="#7C3AED", lw=2.45, marker="o", ms=6.7, mfc="#F3E8FF", mec="#7C3AED", mew=1.7, label="H-G gap", zorder=5)
+    hall_bars = ax.bar(
+        x,
+        hall,
+        width=0.62,
+        color="#FFEDD5",
+        edgecolor="#F97316",
+        linewidth=1.45,
+        label="hallucinated",
+        zorder=2,
+    )
+    grounded_bars = ax.bar(
+        x,
+        grounded,
+        width=0.34,
+        color="#DCFCE7",
+        edgecolor="#16A34A",
+        linewidth=1.45,
+        label="grounded",
+        zorder=3,
+    )
+    (gap_line,) = ax.plot(
+        x,
+        gap,
+        color="#7C3AED",
+        lw=2.45,
+        marker="o",
+        ms=6.7,
+        mfc="#F3E8FF",
+        mec="#7C3AED",
+        mew=1.7,
+        label="H-G gap",
+        zorder=5,
+    )
 
     ax.set_title("Layer-wise Text-Side Actuation", fontsize=11.4, weight="bold", color="#111827", pad=7)
     ax.set_ylabel(r"$\Delta \log p$ at object token", fontsize=8.7, color="#111827")
@@ -167,6 +229,8 @@ def main() -> None:
     ax.set_ylim(-0.006, 0.0325)
     ax.set_xlim(-0.2, len(rows) - 0.8)
     ax.legend(
+        handles=[grounded_bars, hall_bars, gap_line],
+        labels=["grounded", "hallucinated", "H-G gap"],
         frameon=False,
         loc="upper center",
         bbox_to_anchor=(0.5, 1.01),
