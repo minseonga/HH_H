@@ -108,7 +108,7 @@ def main() -> None:
             "ps.fonttype": 42,
         }
     )
-    fig, ax = plt.subplots(figsize=(5.35, 3.75), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(4.85, 3.75), constrained_layout=True)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#FBFCFF")
     ax.axhline(0, color="#94A3B8", lw=1.1, zorder=1)
@@ -117,9 +117,10 @@ def main() -> None:
     hall_bars = ax.bar(
         x,
         hall,
-        width=0.62,
+        width=0.58,
         color="#FFEDD5",
         edgecolor="#F97316",
+        alpha=0.72,
         linewidth=1.8,
         label="hallucinated",
         zorder=2,
@@ -127,9 +128,10 @@ def main() -> None:
     grounded_bars = ax.bar(
         x,
         grounded,
-        width=0.36,
+        width=0.58,
         color="#DCFCE7",
         edgecolor="#16A34A",
+        alpha=0.72,
         linewidth=1.8,
         label="grounded",
         zorder=3,
@@ -164,7 +166,7 @@ def main() -> None:
     ax.set_xticklabels(bands, fontsize=9.4, fontweight="bold", color="#111827")
     ax.tick_params(axis="y", labelsize=8.5, colors="#475569")
     ax.set_ylim(-0.006, 0.0335)
-    ax.set_xlim(-0.25, len(rows) - 0.75)
+    ax.set_xlim(-0.38, len(rows) - 0.62)
     ax.legend(
         handles=[grounded_bars, hall_bars, gap_line],
         labels=["grounded", "hallucinated", "H-G gap"],
@@ -181,7 +183,7 @@ def main() -> None:
     plt.close(fig)
 
     # Cleaner manuscript variant: show absolute drops as overlapped bars and selectivity as one line.
-    fig, ax = plt.subplots(figsize=(4.45, 3.12), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(4.05, 3.12), constrained_layout=True)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#FBFCFF")
     ax.axhline(0, color="#94A3B8", lw=1.0, zorder=1)
@@ -190,9 +192,10 @@ def main() -> None:
     hall_bars = ax.bar(
         x,
         hall,
-        width=0.62,
+        width=0.58,
         color="#FFEDD5",
         edgecolor="#F97316",
+        alpha=0.72,
         linewidth=1.45,
         label="hallucinated",
         zorder=2,
@@ -200,9 +203,10 @@ def main() -> None:
     grounded_bars = ax.bar(
         x,
         grounded,
-        width=0.34,
+        width=0.58,
         color="#DCFCE7",
         edgecolor="#16A34A",
+        alpha=0.72,
         linewidth=1.45,
         label="grounded",
         zorder=3,
@@ -227,7 +231,7 @@ def main() -> None:
     ax.set_xticklabels(bands, fontsize=8.4, fontweight="bold", color="#111827")
     ax.tick_params(axis="y", labelsize=7.7, colors="#475569")
     ax.set_ylim(-0.006, 0.0325)
-    ax.set_xlim(-0.2, len(rows) - 0.8)
+    ax.set_xlim(-0.35, len(rows) - 0.65)
     ax.legend(
         handles=[grounded_bars, hall_bars, gap_line],
         labels=["grounded", "hallucinated", "H-G gap"],
