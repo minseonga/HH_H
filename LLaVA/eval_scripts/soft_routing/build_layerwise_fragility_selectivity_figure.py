@@ -53,9 +53,156 @@ DEFAULT_ROWS = [
 ]
 
 
+def read_layerwise_gap_csv(path: str | Path) -> list[dict[str, float | str]]:
+    rows = []
+    with Path(path).open(newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            layer = int(row["layer"])
+            rows.append(
+                {
+                    "band": f"L{layer}",
+                    "layer": layer,
+                    "grounded_delta": float(row["grounded_mean_delta_logprob"]),
+                    "hall_delta": float(row["hallucinated_mean_delta_logprob"]),
+                    "gap": float(row["fragility_gap_delta_logprob_H_minus_G"]),
+                    "grounded_flip": float(row.get("grounded_next_token_flip_rate") or 0.0),
+                    "hall_flip": float(row.get("hallucinated_next_token_flip_rate") or 0.0),
+                }
+            )
+    return sorted(rows, key=lambda item: int(item["layer"]))
+
+
+def save_overlap_bar_gap_figure(
+    rows: list[dict[str, float | str]],
+    out_dir: Path,
+    stem: str,
+    *,
+    title: str,
+    figsize: tuple[float, float],
+    clean: bool,
+) -> None:
+    labels = [str(row["band"]) for row in rows]
+    x = np.arange(len(rows))
+    grounded = np.array([float(row["grounded_delta"]) for row in rows], dtype=float)
+    hall = np.array([float(row["hall_delta"]) for row in rows], dtype=float)
+    gap = np.array([float(row["gap"]) for row in rows], dtype=float)
+
+    fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#FBFCFF")
+    ax.axhline(0, color="#94A3B8", lw=1.0, zorder=1)
+    ax.grid(axis="y", color="#E5E7EB", lw=0.72, zorder=0)
+
+    bar_width = 0.78 if len(rows) > 8 else 0.58
+    hall_bars = ax.bar(
+        x,
+        hall,
+        width=bar_width,
+        color="#FFEDD5",
+        edgecolor="#F97316",
+        alpha=0.72,
+        linewidth=1.2 if len(rows) > 8 else 1.45,
+        label="hallucinated",
+        zorder=2,
+    )
+    grounded_bars = ax.bar(
+        x,
+        grounded,
+        width=bar_width,
+        color="#DCFCE7",
+        edgecolor="#16A34A",
+        alpha=0.72,
+        linewidth=1.2 if len(rows) > 8 else 1.45,
+        label="grounded",
+        zorder=3,
+    )
+    (gap_line,) = ax.plot(
+        x,
+        gap,
+        color="#7C3AED",
+        lw=2.2 if len(rows) > 8 else 2.45,
+        marker="o",
+        ms=4.0 if len(rows) > 8 else 6.7,
+        mfc="#F3E8FF",
+        mec="#7C3AED",
+        mew=1.2 if len(rows) > 8 else 1.7,
+        label="H-G gap",
+        zorder=5,
+    )
+
+    if not clean:
+        for xi, g_val, h_val, gap_val in zip(x, grounded, hall, gap):
+            h_va = "bottom" if h_val >= 0 else "top"
+            h_offset = 0.0011 if h_val >= 0 else -0.0011
+            g_va = "top" if g_val >= 0 else "bottom"
+            g_offset = -0.0011 if g_val >= 0 else 0.0011
+            ax.text(
+                xi + 0.18,
+                h_val + h_offset,
+                f"{h_val:.3f}",
+                ha="left",
+                va=h_va,
+                fontsize=7.5,
+                color="#9A3412",
+                weight="bold",
+            )
+            ax.text(
+                xi - 0.18,
+                g_val + g_offset,
+                f"{g_val:.3f}",
+                ha="right",
+                va=g_va,
+                fontsize=7.5,
+                color="#166534",
+                weight="bold",
+            )
+            ax.text(
+                xi + 0.05,
+                gap_val + 0.0007,
+                f"{gap_val:.3f}",
+                ha="left",
+                va="bottom",
+                fontsize=7.3,
+                color="#5B21B6",
+                weight="bold",
+            )
+
+    ax.set_title(title, fontsize=11.4 if clean else 15.5, weight="bold", color="#111827", pad=7)
+    ax.set_ylabel(r"$\Delta \log p$ at object token", fontsize=8.7 if clean else 10.5, color="#111827")
+    ax.set_xticks(x)
+    if len(rows) > 8:
+        ax.set_xticklabels(labels, fontsize=6.0, fontweight="bold", color="#111827", rotation=90)
+    else:
+        ax.set_xticklabels(labels, fontsize=8.4 if clean else 9.4, fontweight="bold", color="#111827")
+    ax.tick_params(axis="y", labelsize=7.7 if clean else 8.5, colors="#475569")
+    y_min = min(-0.006, float(np.nanmin([grounded.min(), hall.min(), gap.min()])) - 0.002)
+    y_max = max(0.0325, float(np.nanmax([grounded.max(), hall.max(), gap.max()])) + 0.004)
+    ax.set_ylim(y_min, y_max)
+    ax.set_xlim(-0.55, len(rows) - 0.45)
+    ax.legend(
+        handles=[grounded_bars, hall_bars, gap_line],
+        labels=["grounded", "hallucinated", "H-G gap"],
+        frameon=False,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncols=3,
+        fontsize=7.4 if clean else 8.3,
+        handlelength=1.8 if clean else 2.0,
+        columnspacing=0.9 if clean else 1.2,
+    )
+    for fmt in ("png", "svg", "pdf"):
+        fig.savefig(out_dir / f"{stem}.{fmt}", bbox_inches="tight")
+    plt.close(fig)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", default="LLaVA/results/coco/layerwise_fragility_selectivity_figure")
+    parser.add_argument(
+        "--layerwise-gap-csv",
+        default="",
+        help="Optional layerwise_fragility_gap_summary.csv from analyze_layerwise_fragility_gap.py.",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -246,6 +393,17 @@ def main() -> None:
     for fmt in ("png", "svg", "pdf"):
         fig.savefig(out_dir / f"layerwise_fragility_line_plot_clean.{fmt}", bbox_inches="tight")
     plt.close(fig)
+
+    if args.layerwise_gap_csv:
+        layer_rows = read_layerwise_gap_csv(args.layerwise_gap_csv)
+        save_overlap_bar_gap_figure(
+            layer_rows,
+            out_dir,
+            "layerwise_fragility_32layer_mixed",
+            title="Layer-wise Text-Side Actuation",
+            figsize=(8.4, 3.2),
+            clean=True,
+        )
 
     width, height = 900, 560
     left, right, top, bottom = 95, 60, 72, 78
