@@ -111,7 +111,6 @@ def main() -> None:
     fig, ax = plt.subplots(figsize=(5.35, 3.75), constrained_layout=True)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#FBFCFF")
-    ax.axvspan(0.55, 1.45, color="#8B5CF6", alpha=0.10, zorder=0)
     ax.axhline(0, color="#94A3B8", lw=1.1, zorder=1)
     ax.grid(axis="y", color="#E5E7EB", lw=0.85, zorder=0)
 
@@ -129,17 +128,6 @@ def main() -> None:
         ax.text(xi, g_val - 0.0014, f"{g_val:.3f}", ha="center", va="top", fontsize=7.5, color="#166534", weight="bold")
         ax.text(xi + 0.05, gap_val + 0.0007, f"{gap_val:.3f}", ha="left", va="bottom", fontsize=7.3, color="#5B21B6", weight="bold")
 
-    ax.text(
-        1,
-        0.0314,
-        "L9-L16",
-        ha="center",
-        va="top",
-        fontsize=9.0,
-        color="#5B21B6",
-        weight="bold",
-        bbox=dict(boxstyle="round,pad=0.28", facecolor="#F5F0FF", edgecolor="#C4B5FD", linewidth=0.9),
-    )
     ax.set_title("Layer-wise text-side actuation", fontsize=15.5, weight="bold", color="#111827", pad=8)
     ax.set_ylabel(r"object-token $\Delta \log p$", fontsize=10.5, color="#111827")
     ax.set_xticks(x)
@@ -164,7 +152,6 @@ def main() -> None:
     fig, ax = plt.subplots(figsize=(4.45, 3.12), constrained_layout=True)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#FBFCFF")
-    ax.axvspan(0.55, 1.45, color="#8B5CF6", alpha=0.11, zorder=0)
     ax.axhline(0, color="#94A3B8", lw=1.0, zorder=1)
     ax.grid(axis="y", color="#E5E7EB", lw=0.75, zorder=0)
 
@@ -172,18 +159,6 @@ def main() -> None:
     ax.plot(x, hall, color="#F97316", lw=2.25, marker="o", ms=6.7, mfc="#FFEDD5", mec="#F97316", mew=1.7, label="hallucinated", zorder=4)
     ax.plot(x, gap, color="#7C3AED", lw=2.45, marker="o", ms=6.7, mfc="#F3E8FF", mec="#7C3AED", mew=1.7, label="H-G gap", zorder=5)
 
-    ax.annotate(
-        "largest gap\nlow grounded drop",
-        xy=(1, gap[1]),
-        xytext=(1.42, 0.0217),
-        ha="left",
-        va="center",
-        fontsize=7.4,
-        color="#5B21B6",
-        arrowprops=dict(arrowstyle="-", lw=1.0, color="#A78BFA"),
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="#F5F0FF", edgecolor="#C4B5FD", linewidth=0.8),
-    )
-    ax.text(1, -0.00515, "L9-L16", ha="center", va="bottom", fontsize=7.8, color="#5B21B6", weight="bold")
     ax.set_title("Layer-wise Text-Side Actuation", fontsize=11.4, weight="bold", color="#111827", pad=7)
     ax.set_ylabel(r"$\Delta \log p$ at object token", fontsize=8.7, color="#111827")
     ax.set_xticks(x)
