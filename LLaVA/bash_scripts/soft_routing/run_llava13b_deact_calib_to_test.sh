@@ -93,6 +93,7 @@ run_deact="${RUN_DEACT:-1}"
 run_test="${RUN_TEST:-1}"
 resume="${RESUME:-1}"
 dry_run="${DRY_RUN:-0}"
+stream_logs="${STREAM_LOGS:-0}"
 
 read -r -a gpu_list <<< "${GPU_LIST:-0 1}"
 num_chunks="${NUM_CHUNKS:-${#gpu_list[@]}}"
@@ -230,32 +231,38 @@ if bool_true "${run_calibration}"; then
       echo "[calibration][GPU ${gpu}] start chunk ${chunk_idx}/${num_chunks}"
       (
         cd "${ADHH_LLAVA_DIR}"
-        CUDA_VISIBLE_DEVICES="${gpu}" "${python_bin}" -m eval_scripts.eval_caption \
-          --model-path "${model_path}" \
-          --image-folder "${train_image_folder}" \
-          --caption_file_path "${train_caption_file}" \
-          --annotation-dir "${annotation_dir}" \
-          --answers-file "${calib_result_path}/captions.chunk${chunk_idx}.jsonl" \
-          --output-path "${chunk_analysis}" \
-          --dataset "${dataset}" \
-          --temperature 0 \
-          --conv-mode vicuna_v1 \
-          --num_samples "${train_num_samples}" \
-          --save-sample-ids "${calib_result_path}/sample_ids.chunk${chunk_idx}.json" \
-          --max_new_tokens "${max_new_tokens}" \
-          ${existing_sample_args[@]+"${existing_sample_args[@]}"} \
-          --enable-attention-analysis \
-          --enable-pre-token-analysis \
-          --enable-txtattn-trace \
-          --txtattn-trace-mode "${txtattn_trace_mode}" \
-          --txtattn-head-file "${candidate_head_file}" \
-          --txtattn-topk 0 \
-          --txtattn-output-file "${calib_result_path}/txtattn_trace.chunk${chunk_idx}.jsonl" \
-          --txtattn-summary-file "${calib_result_path}/txtattn_summary.chunk${chunk_idx}.json" \
-          --num-chunks "${num_chunks}" \
-          --chunk-idx "${chunk_idx}" \
-          ${resume_args[@]+"${resume_args[@]}"} \
-          > "${calib_result_path}/decode.chunk${chunk_idx}.log" 2>&1
+        run_calib_chunk_cmd() {
+          CUDA_VISIBLE_DEVICES="${gpu}" "${python_bin}" -m eval_scripts.eval_caption \
+            --model-path "${model_path}" \
+            --image-folder "${train_image_folder}" \
+            --caption_file_path "${train_caption_file}" \
+            --annotation-dir "${annotation_dir}" \
+            --answers-file "${calib_result_path}/captions.chunk${chunk_idx}.jsonl" \
+            --output-path "${chunk_analysis}" \
+            --dataset "${dataset}" \
+            --temperature 0 \
+            --conv-mode vicuna_v1 \
+            --num_samples "${train_num_samples}" \
+            --save-sample-ids "${calib_result_path}/sample_ids.chunk${chunk_idx}.json" \
+            --max_new_tokens "${max_new_tokens}" \
+            ${existing_sample_args[@]+"${existing_sample_args[@]}"} \
+            --enable-attention-analysis \
+            --enable-pre-token-analysis \
+            --enable-txtattn-trace \
+            --txtattn-trace-mode "${txtattn_trace_mode}" \
+            --txtattn-head-file "${candidate_head_file}" \
+            --txtattn-topk 0 \
+            --txtattn-output-file "${calib_result_path}/txtattn_trace.chunk${chunk_idx}.jsonl" \
+            --txtattn-summary-file "${calib_result_path}/txtattn_summary.chunk${chunk_idx}.json" \
+            --num-chunks "${num_chunks}" \
+            --chunk-idx "${chunk_idx}" \
+            ${resume_args[@]+"${resume_args[@]}"}
+        }
+        if bool_true "${stream_logs}"; then
+          run_calib_chunk_cmd 2>&1 | tee "${calib_result_path}/decode.chunk${chunk_idx}.log"
+        else
+          run_calib_chunk_cmd > "${calib_result_path}/decode.chunk${chunk_idx}.log" 2>&1
+        fi
       ) &
       pids+=("$!")
     done
@@ -368,11 +375,17 @@ run_chair_eval() {
   local result_dir=$1
   (
     cd "${ADHH_LLAVA_DIR}"
-    "${python_bin}" eval_scripts/eval_utils/eval_chair.py \
-      --annotation-dir "${annotation_dir}" \
-      --answers-file "${result_dir}/captions.jsonl" \
-      --caption_file captions_val2014.json \
-      > "${result_dir}/chair.log" 2>&1
+    run_chair_cmd() {
+      "${python_bin}" eval_scripts/eval_utils/eval_chair.py \
+        --annotation-dir "${annotation_dir}" \
+        --answers-file "${result_dir}/captions.jsonl" \
+        --caption_file captions_val2014.json
+    }
+    if bool_true "${stream_logs}"; then
+      run_chair_cmd 2>&1 | tee "${result_dir}/chair.log"
+    else
+      run_chair_cmd > "${result_dir}/chair.log" 2>&1
+    fi
   )
 }
 
@@ -381,21 +394,27 @@ if bool_true "${run_greedy}"; then
   echo "[test] greedy -> ${greedy_dir}"
   (
     cd "${ADHH_LLAVA_DIR}"
-    CUDA_VISIBLE_DEVICES="${gpu_list[0]}" "${python_bin}" -m eval_scripts.eval_caption_dynamic \
-      --model-path "${model_path}" \
-      --image-folder "${val_image_folder}" \
-      --caption_file_path "${val_caption_file}" \
-      --answers-file "${greedy_dir}/captions.jsonl" \
-      --dataset "${dataset}" \
-      --temperature 0 \
-      --conv-mode vicuna_v1 \
-      --num_samples "${num_samples}" \
-      --max_new_tokens "${max_new_tokens}" \
-      --seed "${seed}" \
-      --intervention none \
-      --sample-id-file "${sample_id_file}" \
-      ${resume_args[@]+"${resume_args[@]}"} \
-      > "${greedy_dir}/decode.log" 2>&1
+    run_greedy_cmd() {
+      CUDA_VISIBLE_DEVICES="${gpu_list[0]}" "${python_bin}" -m eval_scripts.eval_caption_dynamic \
+        --model-path "${model_path}" \
+        --image-folder "${val_image_folder}" \
+        --caption_file_path "${val_caption_file}" \
+        --answers-file "${greedy_dir}/captions.jsonl" \
+        --dataset "${dataset}" \
+        --temperature 0 \
+        --conv-mode vicuna_v1 \
+        --num_samples "${num_samples}" \
+        --max_new_tokens "${max_new_tokens}" \
+        --seed "${seed}" \
+        --intervention none \
+        --sample-id-file "${sample_id_file}" \
+        ${resume_args[@]+"${resume_args[@]}"}
+    }
+    if bool_true "${stream_logs}"; then
+      run_greedy_cmd 2>&1 | tee "${greedy_dir}/decode.log"
+    else
+      run_greedy_cmd > "${greedy_dir}/decode.log" 2>&1
+    fi
   )
   run_chair_eval "${greedy_dir}"
 fi
@@ -418,41 +437,47 @@ if bool_true "${run_deact}"; then
   echo "[test] DEACT ${intervention} -> ${deact_dir}"
   (
     cd "${ADHH_LLAVA_DIR}"
-    CUDA_VISIBLE_DEVICES="${gpu_list[0]}" "${python_bin}" -m eval_scripts.eval_caption_dynamic \
-      --model-path "${model_path}" \
-      --image-folder "${val_image_folder}" \
-      --caption_file_path "${val_caption_file}" \
-      --answers-file "${deact_dir}/captions.jsonl" \
-      --dataset "${dataset}" \
-      --temperature 0 \
-      --conv-mode vicuna_v1 \
-      --num_samples "${num_samples}" \
-      --max_new_tokens "${max_new_tokens}" \
-      --seed "${seed}" \
-      --intervention "${intervention}" \
-      --head-source file \
-      --head-file "${head_file}" \
-      --head-score-key "${head_score_key}" \
-      --head-score-normalize "${head_score_normalize}" \
-      --min-head-back-raw "${min_head_back_raw}" \
-      --topk "${topk}" \
-      --dynamic-strength "${dynamic_strength}" \
-      --dynamic-context-mode "${dynamic_context_mode}" \
-      --dynamic-tau "${dynamic_tau}" \
-      --dynamic-exp-sharpness "${dynamic_exp_sharpness}" \
-      --dynamic-late-boost-start "${dynamic_late_boost_start}" \
-      --dynamic-late-boost-end "${dynamic_late_boost_end}" \
-      --dynamic-late-boost-mode "${dynamic_late_boost_mode}" \
-      --dynamic-late-tau "${dynamic_late_tau}" \
-      --dynamic-score-power "${dynamic_score_power}" \
-      --dynamic-redistribute "${dynamic_redistribute}" \
-      ${renorm_args[@]+"${renorm_args[@]}"} \
-      ${score_args[@]+"${score_args[@]}"} \
-      ${trace_args[@]+"${trace_args[@]}"} \
-      --log-intervention-stats \
-      --sample-id-file "${sample_id_file}" \
-      ${resume_args[@]+"${resume_args[@]}"} \
-      > "${deact_dir}/decode.log" 2>&1
+    run_deact_cmd() {
+      CUDA_VISIBLE_DEVICES="${gpu_list[0]}" "${python_bin}" -m eval_scripts.eval_caption_dynamic \
+        --model-path "${model_path}" \
+        --image-folder "${val_image_folder}" \
+        --caption_file_path "${val_caption_file}" \
+        --answers-file "${deact_dir}/captions.jsonl" \
+        --dataset "${dataset}" \
+        --temperature 0 \
+        --conv-mode vicuna_v1 \
+        --num_samples "${num_samples}" \
+        --max_new_tokens "${max_new_tokens}" \
+        --seed "${seed}" \
+        --intervention "${intervention}" \
+        --head-source file \
+        --head-file "${head_file}" \
+        --head-score-key "${head_score_key}" \
+        --head-score-normalize "${head_score_normalize}" \
+        --min-head-back-raw "${min_head_back_raw}" \
+        --topk "${topk}" \
+        --dynamic-strength "${dynamic_strength}" \
+        --dynamic-context-mode "${dynamic_context_mode}" \
+        --dynamic-tau "${dynamic_tau}" \
+        --dynamic-exp-sharpness "${dynamic_exp_sharpness}" \
+        --dynamic-late-boost-start "${dynamic_late_boost_start}" \
+        --dynamic-late-boost-end "${dynamic_late_boost_end}" \
+        --dynamic-late-boost-mode "${dynamic_late_boost_mode}" \
+        --dynamic-late-tau "${dynamic_late_tau}" \
+        --dynamic-score-power "${dynamic_score_power}" \
+        --dynamic-redistribute "${dynamic_redistribute}" \
+        ${renorm_args[@]+"${renorm_args[@]}"} \
+        ${score_args[@]+"${score_args[@]}"} \
+        ${trace_args[@]+"${trace_args[@]}"} \
+        --log-intervention-stats \
+        --sample-id-file "${sample_id_file}" \
+        ${resume_args[@]+"${resume_args[@]}"}
+    }
+    if bool_true "${stream_logs}"; then
+      run_deact_cmd 2>&1 | tee "${deact_dir}/decode.log"
+    else
+      run_deact_cmd > "${deact_dir}/decode.log" 2>&1
+    fi
   )
   run_chair_eval "${deact_dir}"
 fi
