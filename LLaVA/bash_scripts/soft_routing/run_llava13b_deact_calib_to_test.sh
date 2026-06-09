@@ -82,6 +82,7 @@ results_root="${RESULTS_ROOT:-${ADHH_LLAVA_DIR}/results_deact}"
 calib_existing_sample_file="${CALIB_EXISTING_SAMPLE_FILE:-}"
 txtattn_trace_mode="${TXTATTN_TRACE_MODE:-last_row}"
 keep_merged_trace="${KEEP_MERGED_TRACE:-false}"
+calib_enable_attention_analysis="${CALIB_ENABLE_ATTENTION_ANALYSIS:-0}"
 
 run_calibration="${RUN_CALIBRATION:-1}"
 run_head_build="${RUN_HEAD_BUILD:-1}"
@@ -248,6 +249,14 @@ if bool_true "${run_calibration}"; then
       echo "[warn] ${ADHH_LLAVA_DIR}/eval_scripts/eval_caption.py does not support --txtattn-trace-mode; using its default trace mode"
     fi
 
+    calib_attention_args=()
+    if bool_true "${calib_enable_attention_analysis}"; then
+      calib_attention_args+=(--enable-attention-analysis --enable-pre-token-analysis)
+      echo "[calibration] full attention analysis enabled; this is much slower and writes analysis/chunk*/samples"
+    else
+      echo "[calibration] full attention analysis disabled; using txtattn ${txtattn_trace_mode} trace only"
+    fi
+
     pids=()
     for ((chunk_idx=0; chunk_idx<num_chunks; chunk_idx++)); do
       gpu="${gpu_list[$((chunk_idx % ${#gpu_list[@]}))]}"
@@ -271,8 +280,7 @@ if bool_true "${run_calibration}"; then
             --save-sample-ids "${calib_result_path}/sample_ids.chunk${chunk_idx}.json" \
             --max_new_tokens "${max_new_tokens}" \
             ${existing_sample_args[@]+"${existing_sample_args[@]}"} \
-            --enable-attention-analysis \
-            --enable-pre-token-analysis \
+            ${calib_attention_args[@]+"${calib_attention_args[@]}"} \
             --enable-txtattn-trace \
             ${txtattn_trace_args[@]+"${txtattn_trace_args[@]}"} \
             --txtattn-head-file "${candidate_head_file}" \
