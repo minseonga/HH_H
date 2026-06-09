@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # End-to-end LLaVA-1.5-13B DEACT run using the teammate ADHH clone:
-#   1) build a 13B all-head txt-attention calibration summary
+#   1) build a 13B layer-window all-head txt-attention calibration summary
 #   2) filter the summary to the target layer window
 #   3) build the rank-fused signed head pool
 #   4) run greedy and DEACT late-boost captioning on the same COCO-val samples
@@ -53,9 +53,7 @@ val_caption_file="${CAPTION_FILE_PATH:-${annotation_dir}/captions_val2014.json}"
 train_image_folder="${CALIB_IMAGE_FOLDER:-/home/kms/data/images/mscoco/train2014}"
 train_caption_file="${CALIB_CAPTION_FILE_PATH:-${annotation_dir}/captions_train2014.json}"
 
-num_layers="${NUM_LAYERS:-40}"
 num_heads="${NUM_HEADS:-40}"
-all_layer_spec="${ALL_LAYER_SPEC:-0:39}"
 selection_layers="${SELECTION_LAYERS:-9:16}"
 
 topk="${TOPK:-100}"
@@ -81,7 +79,6 @@ dynamic_trace_topn="${DYNAMIC_TRACE_TOPN:-10}"
 dynamic_trace_every="${DYNAMIC_TRACE_EVERY:-5}"
 
 results_root="${RESULTS_ROOT:-${ADHH_LLAVA_DIR}/results_deact}"
-calib_result_path="${CALIB_RESULT_PATH:-${ADHH_LLAVA_DIR}/results/${dataset}/${model_name}_base_original_qa_n${train_num_samples}_txtattn_l0_l$((num_layers - 1))_allheads}"
 calib_existing_sample_file="${CALIB_EXISTING_SAMPLE_FILE:-}"
 txtattn_trace_mode="${TXTATTN_TRACE_MODE:-last_row}"
 keep_merged_trace="${KEEP_MERGED_TRACE:-false}"
@@ -157,10 +154,10 @@ print((s or "0").replace(".", ""))
 PY
 }
 
-selection_slug="$(slug_layers "${selection_layers}")"
 q_slug="$(slug_float "${dynamic_exp_sharpness}")"
 tau_hi_slug="$(slug_float "${dynamic_tau}")"
 tau_lo_slug="$(slug_float "${dynamic_late_tau}")"
+selection_slug="$(slug_layers "${selection_layers}")"
 
 model_root="${results_root}/${dataset}/${model_name}"
 resources_root="${model_root}/resources/${selection_slug}_train_n${train_num_samples}"
@@ -168,7 +165,8 @@ filtered_summary="${resources_root}/txtattn_summary.json"
 surrogate_dir="${resources_root}/surrogate_score_zoo"
 head_file="${HEAD_FILE:-${surrogate_dir}/ranked_heads_${head_score_key}.json}"
 tau_file="${resources_root}/dynamic_tau_estimate.json"
-candidate_head_file="${calib_result_path}/surrogate_hh_scores/candidate_heads_l0_l$((num_layers - 1)).json"
+calib_result_path="${CALIB_RESULT_PATH:-${ADHH_LLAVA_DIR}/results/${dataset}/${model_name}_base_original_qa_n${train_num_samples}_txtattn_${selection_slug}_allheads}"
+candidate_head_file="${calib_result_path}/surrogate_hh_scores/candidate_heads_${selection_slug}.json"
 
 sample_dir="${model_root}/shared_samples"
 sample_id_file="${SAMPLE_ID_FILE:-${sample_dir}/val_seed${seed}_n${num_samples}.json}"
@@ -191,11 +189,31 @@ echo "[config] greedy=${greedy_dir}"
 echo "[config] deact=${deact_dir}"
 
 if [[ ! -f "${candidate_head_file}" ]]; then
-  echo "[heads] creating 13B all-head candidate file: ${candidate_head_file}"
-  run_cmd "${python_bin}" - "${candidate_head_file}" "${num_layers}" "${num_heads}" <<'PY'
+  echo "[heads] creating 13B ${selection_slug} all-head candidate file: ${candidate_head_file}"
+  run_cmd "${python_bin}" - "${candidate_head_file}" "${selection_layers}" "${num_heads}" <<'PY'
 import json, os, sys
-path, num_layers, num_heads = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-heads = [[l, h] for l in range(num_layers) for h in range(num_heads)]
+path, layer_spec, num_heads = sys.argv[1], sys.argv[2], int(sys.argv[3])
+layers = []
+for part in layer_spec.replace(";", ",").split(","):
+    part = part.strip()
+    if not part:
+        continue
+    if ":" in part:
+        a, b = map(int, part.split(":", 1))
+        step = 1 if b >= a else -1
+        layers.extend(range(a, b + step, step))
+    elif "-" in part and not part.startswith("-"):
+        a, b = map(int, part.split("-", 1))
+        step = 1 if b >= a else -1
+        layers.extend(range(a, b + step, step))
+    else:
+        layers.append(int(part))
+seen, uniq_layers = set(), []
+for layer in layers:
+    if layer not in seen:
+        seen.add(layer)
+        uniq_layers.append(layer)
+heads = [[l, h] for l in uniq_layers for h in range(num_heads)]
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, "w", encoding="utf-8") as f:
     json.dump(heads, f, indent=2)
@@ -221,6 +239,13 @@ if bool_true "${run_calibration}"; then
     if [[ -n "${calib_existing_sample_file}" && -f "${calib_existing_sample_file}" ]]; then
       existing_sample_args+=(--use-existing-sample-file --existing-sample-file "${calib_existing_sample_file}")
       echo "[calibration] using existing calibration samples: ${calib_existing_sample_file}"
+    fi
+
+    txtattn_trace_args=()
+    if grep -q -- "--txtattn-trace-mode" "${ADHH_LLAVA_DIR}/eval_scripts/eval_caption.py"; then
+      txtattn_trace_args+=(--txtattn-trace-mode "${txtattn_trace_mode}")
+    else
+      echo "[warn] ${ADHH_LLAVA_DIR}/eval_scripts/eval_caption.py does not support --txtattn-trace-mode; using its default trace mode"
     fi
 
     pids=()
@@ -249,7 +274,7 @@ if bool_true "${run_calibration}"; then
             --enable-attention-analysis \
             --enable-pre-token-analysis \
             --enable-txtattn-trace \
-            --txtattn-trace-mode "${txtattn_trace_mode}" \
+            ${txtattn_trace_args[@]+"${txtattn_trace_args[@]}"} \
             --txtattn-head-file "${candidate_head_file}" \
             --txtattn-topk 0 \
             --txtattn-output-file "${calib_result_path}/txtattn_trace.chunk${chunk_idx}.jsonl" \
