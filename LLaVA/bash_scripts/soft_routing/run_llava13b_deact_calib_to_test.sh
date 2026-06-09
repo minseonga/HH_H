@@ -93,10 +93,10 @@ run_deact="${RUN_DEACT:-1}"
 run_test="${RUN_TEST:-1}"
 resume="${RESUME:-1}"
 dry_run="${DRY_RUN:-0}"
-stream_logs="${STREAM_LOGS:-0}"
+stream_logs="${STREAM_LOGS:-1}"
 
 read -r -a gpu_list <<< "${GPU_LIST:-0 1}"
-num_chunks="${NUM_CHUNKS:-${#gpu_list[@]}}"
+num_chunks="${NUM_CHUNKS:-1}"
 
 export PYTHONUNBUFFERED=1
 
