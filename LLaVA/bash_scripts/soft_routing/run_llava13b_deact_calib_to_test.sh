@@ -74,6 +74,7 @@ dynamic_late_boost_start="${DYNAMIC_LATE_BOOST_START:-0}"
 dynamic_late_boost_end="${DYNAMIC_LATE_BOOST_END:-${max_new_tokens}}"
 dynamic_late_boost_mode="${DYNAMIC_LATE_BOOST_MODE:-linear}"
 dynamic_late_tau="${DYNAMIC_LATE_TAU:-0.80}"
+use_estimated_tau="${USE_ESTIMATED_TAU:-0}"
 log_dynamic_trace="${LOG_DYNAMIC_TRACE:-true}"
 dynamic_trace_topn="${DYNAMIC_TRACE_TOPN:-10}"
 dynamic_trace_every="${DYNAMIC_TRACE_EVERY:-5}"
@@ -172,13 +173,17 @@ candidate_head_file="${calib_result_path}/surrogate_hh_scores/candidate_heads_${
 sample_dir="${model_root}/shared_samples"
 sample_id_file="${SAMPLE_ID_FILE:-${sample_dir}/val_seed${seed}_n${num_samples}.json}"
 greedy_dir="${GREEDY_DIR:-${model_root}/baselines/greedy/tok${max_new_tokens}/n${num_samples}_seed${seed}}"
+deact_dir_override="${DEACT_DIR:-}"
 update_name="direct"
 if [[ "${dynamic_redistribute}" != "none" ]]; then
   update_name="redir_${dynamic_redistribute}"
 elif bool_true "${dynamic_renorm}"; then
   update_name="renorm"
 fi
-deact_dir="${DEACT_DIR:-${model_root}/main/${selection_slug}/k${topk}/${update_name}/tok${max_new_tokens}/q${q_slug}_tau${tau_hi_slug}-${tau_lo_slug}_n${num_samples}_seed${seed}}"
+make_deact_dir() {
+  echo "${model_root}/main/${selection_slug}/k${topk}/${update_name}/tok${max_new_tokens}/q${q_slug}_tau${tau_hi_slug}-${tau_lo_slug}_n${num_samples}_seed${seed}"
+}
+deact_dir="${deact_dir_override:-$(make_deact_dir)}"
 
 mkdir -p "${resources_root}" "${surrogate_dir}" "${sample_dir}" "$(dirname "${candidate_head_file}")"
 
@@ -369,6 +374,28 @@ if bool_true "${run_head_build}"; then
     --output-file "${tau_file}" \
     --round-step 0.01 \
     --round-mode floor
+fi
+
+if bool_true "${use_estimated_tau}"; then
+  if [[ ! -f "${tau_file}" ]]; then
+    echo "[error] USE_ESTIMATED_TAU=1 but missing tau estimate: ${tau_file}" >&2
+    echo "[hint] run head build first, or set RUN_HEAD_BUILD=1" >&2
+    exit 1
+  fi
+  read -r dynamic_tau dynamic_late_tau < <("${python_bin}" - "${tau_file}" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    data = json.load(f)
+print(data["recommended_tau_hi_str"], data["recommended_tau_lo_str"])
+PY
+)
+  tau_hi_slug="$(slug_float "${dynamic_tau}")"
+  tau_lo_slug="$(slug_float "${dynamic_late_tau}")"
+  if [[ -z "${deact_dir_override}" ]]; then
+    deact_dir="$(make_deact_dir)"
+  fi
+  echo "[config] using estimated tau from ${tau_file}: tau=${dynamic_tau}, late_tau=${dynamic_late_tau}"
+  echo "[config] updated deact=${deact_dir}"
 fi
 
 if ! bool_true "${run_test}"; then
