@@ -84,6 +84,7 @@ calib_existing_sample_file="${CALIB_EXISTING_SAMPLE_FILE:-}"
 txtattn_trace_mode="${TXTATTN_TRACE_MODE:-last_row}"
 keep_merged_trace="${KEEP_MERGED_TRACE:-false}"
 calib_enable_attention_analysis="${CALIB_ENABLE_ATTENTION_ANALYSIS:-0}"
+delete_calib_trace_after_summary="${DELETE_CALIB_TRACE_AFTER_SUMMARY:-0}"
 
 run_calibration="${RUN_CALIBRATION:-1}"
 run_head_build="${RUN_HEAD_BUILD:-1}"
@@ -335,6 +336,10 @@ if bool_true "${run_calibration}"; then
         --topk 0 \
         --summary-file "${calib_result_path}/txtattn_summary.json"
     )
+    if bool_true "${delete_calib_trace_after_summary}"; then
+      echo "[calibration] deleting trace chunks after summary to save disk"
+      rm -f ${trace_files[@]+"${trace_files[@]}"}
+    fi
   fi
 fi
 
