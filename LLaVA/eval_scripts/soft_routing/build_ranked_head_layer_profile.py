@@ -84,11 +84,11 @@ def contiguous_sum(values, start, width):
 def recommend_windows(layer_rows, min_layer, max_layer, window_sizes):
     score_by_layer = {row["layer"]: safe_float(row["score_sum"]) for row in layer_rows}
     count_by_layer = {row["layer"]: safe_int(row["count"]) for row in layer_rows}
+    total_score = sum(score_by_layer.values()) or 1.0
     rows = []
     for width in window_sizes:
         if width <= 0 or width > (max_layer - min_layer + 1):
             continue
-        total_score = sum(score_by_layer.values()) or 1.0
         for start in range(min_layer, max_layer - width + 2):
             end = start + width - 1
             score_sum = contiguous_sum(score_by_layer, start, width)
@@ -103,9 +103,18 @@ def recommend_windows(layer_rows, min_layer, max_layer, window_sizes):
                     "score_share": score_sum / total_score,
                     "selected_count": count,
                     "score_per_layer": score_sum / width,
+                    "selected_count_per_layer": count / width,
                 }
             )
-    rows.sort(key=lambda x: (x["score_sum"], x["selected_count"]), reverse=True)
+    for rank, row in enumerate(sorted(rows, key=lambda x: (x["score_sum"], x["selected_count"]), reverse=True), start=1):
+        row["rank_by_score_sum"] = rank
+    for rank, row in enumerate(sorted(rows, key=lambda x: (x["score_per_layer"], x["selected_count_per_layer"]), reverse=True), start=1):
+        row["rank_by_score_per_layer"] = rank
+    for width in sorted({row["width"] for row in rows}):
+        same_width = [row for row in rows if row["width"] == width]
+        for rank, row in enumerate(sorted(same_width, key=lambda x: (x["score_sum"], x["selected_count"]), reverse=True), start=1):
+            row["rank_within_width"] = rank
+    rows.sort(key=lambda x: (x["rank_within_width"], x["width"], x["start_layer"]))
     return rows
 
 
@@ -271,7 +280,7 @@ def main():
     rec_path = os.path.join(args.output_dir, "recommended_windows.csv")
     write_csv(rec_path, recommendations)
 
-    best = recommendations[0] if recommendations else None
+    best = min(recommendations, key=lambda x: x["rank_by_score_per_layer"]) if recommendations else None
     svg_path = os.path.join(args.output_dir, f"layer_profile_top{args.top_k}.svg")
     build_svg(svg_path, main_rows, args.title, args.top_k, best_window=best)
 
@@ -286,7 +295,8 @@ def main():
         "profile_csv": profile_path,
         "recommended_windows_csv": rec_path,
         "figure_svg": svg_path,
-        "best_window": best,
+        "highlighted_dense_window": best,
+        "best_score_sum_window": min(recommendations, key=lambda x: x["rank_by_score_sum"]) if recommendations else None,
     }
     config_path = os.path.join(args.output_dir, "layer_profile_config.json")
     with open(config_path, "w", encoding="utf-8") as f:
