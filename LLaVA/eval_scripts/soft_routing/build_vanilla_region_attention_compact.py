@@ -46,7 +46,23 @@ def load_rows(path):
         return list(csv.DictReader(f))
 
 
-def make_svg(rows, output_path):
+def parse_mark_layers(value):
+    if not value:
+        return [9, 16]
+    out = []
+    for part in value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, end = part.split("-", 1)
+            out.extend([int(start), int(end)])
+        else:
+            out.append(int(part))
+    return sorted(set(out))
+
+
+def make_svg(rows, output_path, title, subtitle, mark_layers):
     width, height = 640, 390
     left, top = 58, 100
     plot_w, plot_h = 472, 200
@@ -65,8 +81,8 @@ def make_svg(rows, output_path):
         return top + plot_h - value * plot_h
 
     body = []
-    body.append(text(width / 2, 28, "Vanilla attention by source region", 17, DARK, "middle", "700"))
-    body.append(text(width / 2, 48, "Generated-step attention averaged by layer; dashed lines mark L9-L16.", 9, MUTED, "middle"))
+    body.append(text(width / 2, 28, title, 17, DARK, "middle", "700"))
+    body.append(text(width / 2, 48, subtitle, 9, MUTED, "middle"))
     total_legend_w = 456
     cursor = left + (plot_w - total_legend_w) / 2
     for _, label, color in metrics:
@@ -83,7 +99,7 @@ def make_svg(rows, output_path):
 
     for layer in range(n_layers):
         x = sx(layer)
-        if layer in [9, 16]:
+        if layer in mark_layers:
             body.append(line(x, top, x, top + plot_h, "#334155", 1.15, "5 5"))
         elif layer % 4 == 0:
             body.append(line(x, top, x, top + plot_h, "#edf2f7", 0.8))
@@ -119,12 +135,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--layer-csv", required=True)
     parser.add_argument("--output", default=None)
+    parser.add_argument("--mark-layers", default="9,16", help="Comma list or range endpoints, e.g. 10,21 or 10-21")
+    parser.add_argument("--title", default="Vanilla attention by source region")
+    parser.add_argument(
+        "--subtitle",
+        default="Generated-step attention averaged by layer; dashed lines mark selected window.",
+    )
     args = parser.parse_args()
     output = args.output or os.path.join(
         os.path.dirname(args.layer_csv),
         "vanilla_region_attention_layer_lines_compact.svg",
     )
-    make_svg(load_rows(args.layer_csv), output)
+    make_svg(load_rows(args.layer_csv), output, args.title, args.subtitle, parse_mark_layers(args.mark_layers))
     print(output)
 
 
