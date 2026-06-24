@@ -122,6 +122,29 @@ def parse_int_ranges(spec):
     return sorted(set(values))
 
 
+def load_fixed_selected_heads(path, top_k):
+    if not path:
+        return []
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    heads = data.get("heads", data if isinstance(data, list) else [])
+    selected = []
+    for idx, row in enumerate(heads):
+        if top_k > 0 and len(selected) >= top_k:
+            break
+        if "layer" not in row or "head" not in row:
+            continue
+        score = (
+            row.get("score")
+            or row.get("sample_trace__itext_all__C_toi_HminusG")
+            or row.get("Itext_all")
+            or row.get("global_score")
+            or 1.0
+        )
+        selected.append((int(row["layer"]), int(row["head"]), finite(score, 1.0), idx + 1))
+    return selected
+
+
 def infer_step_layout(input_ids, generated_prefix_ids, att_seq_len, special_token_ids):
     prompt_ids = input_ids[0].detach().cpu().tolist()
     generated_prefix_ids = [int(token_id) for token_id in generated_prefix_ids]
@@ -782,9 +805,26 @@ def main(args):
                 "bounded_ratio_grounded": float(bounded_g.numpy().reshape(-1)[idx]) if bounded_g is not None else 0.0,
             }
         )
+    fixed_selected_heads = load_fixed_selected_heads(args.fixed_selected_head_file, args.top_k)
+    fixed_selected = {(layer, head): (score_value, fixed_rank) for layer, head, score_value, fixed_rank in fixed_selected_heads}
+    if fixed_selected:
+        for row in head_rows:
+            key = (int(row["layer"]), int(row["head"]))
+            is_selected = key in fixed_selected
+            row["selected"] = 1 if is_selected else 0
+            row["fixed_selection_rank"] = int(fixed_selected[key][1]) if is_selected else 0
+            row["fixed_selection_score"] = float(fixed_selected[key][0]) if is_selected else 0.0
+
     head_rows.sort(key=lambda row: int(row["rank"]))
 
-    selected_pairs = [(int(row["layer"]), int(row["head"]), float(row["score"])) for row in head_rows if int(row["selected"])]
+    if fixed_selected_heads:
+        valid_head_set = {(int(row["layer"]), int(row["head"])) for row in head_rows}
+        missing_heads = [(layer, head) for layer, head, _, _ in fixed_selected_heads if (layer, head) not in valid_head_set]
+        if missing_heads:
+            raise ValueError(f"Fixed selected head file contains heads outside this model trace: {missing_heads[:10]}")
+        selected_pairs = [(layer, head, score_value) for layer, head, score_value, _ in fixed_selected_heads]
+    else:
+        selected_pairs = [(int(row["layer"]), int(row["head"]), float(row["score"])) for row in head_rows if int(row["selected"])]
     selected_pair_set = {(layer, head) for layer, head, _ in selected_pairs}
     selected_score = {(layer, head): score for layer, head, score in selected_pairs}
 
@@ -964,6 +1004,7 @@ def main(args):
         "num_heads": int(num_heads),
         "top_k": int(args.top_k),
         "selection_layers": sorted(allowed_layers) if allowed_layers else "all",
+        "fixed_selected_head_file": args.fixed_selected_head_file or "",
         "gate": {
             "strength": float(args.gate_strength),
             "beta": float(args.gate_beta),
@@ -1007,6 +1048,11 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", default="Please describe this image in detail.")
     parser.add_argument("--top-k", type=int, default=150)
     parser.add_argument("--selection-layers", default="")
+    parser.add_argument(
+        "--fixed-selected-head-file",
+        default="",
+        help="Optional ranked-head JSON/list. When set, object-token ratio traces use this top-K pool instead of rank-fused selection.",
+    )
     parser.add_argument("--gate-strength", type=float, default=1.0)
     parser.add_argument("--gate-beta", type=float, default=10.0)
     parser.add_argument("--gate-tau", type=float, default=0.9)

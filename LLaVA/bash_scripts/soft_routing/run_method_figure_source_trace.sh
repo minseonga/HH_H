@@ -19,6 +19,7 @@ SEED="${SEED:-42}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-128}"
 TOP_K="${TOP_K:-150}"
 SELECTION_LAYERS="${SELECTION_LAYERS:-9-16}"
+FIXED_SELECTED_HEAD_FILE="${FIXED_SELECTED_HEAD_FILE:-}"
 GATE_STRENGTH="${GATE_STRENGTH:-1.0}"
 GATE_BETA="${GATE_BETA:-10}"
 GATE_TAU="${GATE_TAU:-0.9}"
@@ -48,6 +49,12 @@ if [ "${SAVE_ALL_HEAD_OBJECT_TRACE}" = "0" ]; then
     all_head_args=(--no-save-all-head-object-trace)
 fi
 
+fixed_head_args=()
+if [ -n "${FIXED_SELECTED_HEAD_FILE}" ]; then
+    fixed_head_args=(--fixed-selected-head-file "${FIXED_SELECTED_HEAD_FILE}")
+    echo "[info] fixed selected head file: ${FIXED_SELECTED_HEAD_FILE}"
+fi
+
 CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.extract_method_figure_source_data \
     --model-path "${MODEL_PATH}" \
     "${model_base_args[@]}" \
@@ -59,6 +66,7 @@ CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m eval_scripts.soft_routing.extract_met
     --max-new-tokens "${MAX_NEW_TOKENS}" \
     --top-k "${TOP_K}" \
     --selection-layers "${SELECTION_LAYERS}" \
+    "${fixed_head_args[@]}" \
     --gate-strength "${GATE_STRENGTH}" \
     --gate-beta "${GATE_BETA}" \
     --gate-tau "${GATE_TAU}" \
