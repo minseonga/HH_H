@@ -12,20 +12,36 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from build_dual_ratio_detector_diagnostics import (
-    COLORS,
-    auc_score,
-    compute_delta,
-    group_token_rows,
-    load_head_set,
-    read_rows,
-    roc_curve,
-    setup_style,
-    summarize_by_label,
-    threshold_metrics,
-    trigger_summary,
-    write_csv,
-)
+try:
+    from eval_scripts.soft_routing.build_dual_ratio_detector_diagnostics import (
+        COLORS,
+        auc_score,
+        compute_delta,
+        group_token_rows,
+        load_head_set,
+        read_rows,
+        roc_curve,
+        setup_style,
+        summarize_by_label,
+        threshold_metrics,
+        trigger_summary,
+        write_csv,
+    )
+except ImportError:
+    from build_dual_ratio_detector_diagnostics import (
+        COLORS,
+        auc_score,
+        compute_delta,
+        group_token_rows,
+        load_head_set,
+        read_rows,
+        roc_curve,
+        setup_style,
+        summarize_by_label,
+        threshold_metrics,
+        trigger_summary,
+        write_csv,
+    )
 
 
 def save(fig, output_dir, name, formats):
